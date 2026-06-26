@@ -701,12 +701,35 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if groupID > 0 {
+		// Cross-platform add-on: anthropic/kiro groups (both /v1/messages entry
+		// points) may also contain deepseek accounts so one key can call Claude
+		// and deepseek models side by side. Pull deepseek accounts alongside the
+		// group's native platform; model routing + the deepseek model-support
+		// guard ensure they're only picked for deepseek models.
+		if extra := crossPlatformAddons(bucket.Platform); len(extra) > 0 {
+			platforms := append([]string{bucket.Platform}, extra...)
+			return s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, groupID, platforms)
+		}
 		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, bucket.Platform)
 	}
 	if s.isRunModeSimple() {
 		return s.accountRepo.ListSchedulableByPlatform(ctx, bucket.Platform)
 	}
 	return s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, bucket.Platform)
+}
+
+// crossPlatformAddons returns extra account platforms that may co-exist in a
+// group of the given native platform. DeepSeek/OpenCode are
+// Anthropic-protocol-compatible add-ons, so anthropic/kiro groups (both
+// /v1/messages) may also hold those accounts. Returns nil for platforms with
+// no add-ons.
+func crossPlatformAddons(groupPlatform string) []string {
+	switch groupPlatform {
+	case PlatformAnthropic, PlatformKiro:
+		return []string{PlatformDeepseek, PlatformOpenCode}
+	default:
+		return nil
+	}
 }
 
 func (s *SchedulerSnapshotService) bucketFor(groupID *int64, platform string, mode string) SchedulerBucket {

@@ -45,10 +45,19 @@ export interface ServerConfig {
   mode: string
 }
 
+export interface BootstrapSSHConfig {
+  host: string
+  port: number
+  user: string
+  deployment_dir: string
+  bootstrap_only: boolean
+}
+
 export interface InstallRequest {
   database: DatabaseConfig
   redis: RedisConfig
   admin: AdminConfig
+  bootstrap_ssh: BootstrapSSHConfig
   server: ServerConfig
 }
 

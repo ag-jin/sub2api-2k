@@ -15085,6 +15085,7 @@ type GroupMutation struct {
 	addfallback_group_id_on_invalid_request *int64
 	model_routing                           *map[string][]int64
 	model_routing_enabled                   *bool
+	intra_group_balance                     *bool
 	mcp_xml_inject                          *bool
 	supported_model_scopes                  *[]string
 	appendsupported_model_scopes            []string
@@ -15096,6 +15097,8 @@ type GroupMutation struct {
 	default_mapped_model                    *string
 	messages_dispatch_model_config          *domain.OpenAIMessagesDispatchModelConfig
 	models_list_config                      *domain.GroupModelsListConfig
+	enforce_models_list                     *bool
+	model_alias_mappings                    *domain.GroupModelAliasMappings
 	rpm_limit                               *int
 	addrpm_limit                            *int
 	clearedFields                           map[string]struct{}
@@ -16491,6 +16494,42 @@ func (m *GroupMutation) ResetModelRoutingEnabled() {
 	m.model_routing_enabled = nil
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (m *GroupMutation) SetIntraGroupBalance(b bool) {
+	m.intra_group_balance = &b
+}
+
+// IntraGroupBalance returns the value of the "intra_group_balance" field in the mutation.
+func (m *GroupMutation) IntraGroupBalance() (r bool, exists bool) {
+	v := m.intra_group_balance
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldIntraGroupBalance returns the old "intra_group_balance" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldIntraGroupBalance(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldIntraGroupBalance is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldIntraGroupBalance requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldIntraGroupBalance: %w", err)
+	}
+	return oldValue.IntraGroupBalance, nil
+}
+
+// ResetIntraGroupBalance resets all changes to the "intra_group_balance" field.
+func (m *GroupMutation) ResetIntraGroupBalance() {
+	m.intra_group_balance = nil
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (m *GroupMutation) SetMcpXMLInject(b bool) {
 	m.mcp_xml_inject = &b
@@ -16848,6 +16887,78 @@ func (m *GroupMutation) OldModelsListConfig(ctx context.Context) (v domain.Group
 // ResetModelsListConfig resets all changes to the "models_list_config" field.
 func (m *GroupMutation) ResetModelsListConfig() {
 	m.models_list_config = nil
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (m *GroupMutation) SetEnforceModelsList(b bool) {
+	m.enforce_models_list = &b
+}
+
+// EnforceModelsList returns the value of the "enforce_models_list" field in the mutation.
+func (m *GroupMutation) EnforceModelsList() (r bool, exists bool) {
+	v := m.enforce_models_list
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEnforceModelsList returns the old "enforce_models_list" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldEnforceModelsList(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEnforceModelsList is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEnforceModelsList requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEnforceModelsList: %w", err)
+	}
+	return oldValue.EnforceModelsList, nil
+}
+
+// ResetEnforceModelsList resets all changes to the "enforce_models_list" field.
+func (m *GroupMutation) ResetEnforceModelsList() {
+	m.enforce_models_list = nil
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (m *GroupMutation) SetModelAliasMappings(dmam domain.GroupModelAliasMappings) {
+	m.model_alias_mappings = &dmam
+}
+
+// ModelAliasMappings returns the value of the "model_alias_mappings" field in the mutation.
+func (m *GroupMutation) ModelAliasMappings() (r domain.GroupModelAliasMappings, exists bool) {
+	v := m.model_alias_mappings
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldModelAliasMappings returns the old "model_alias_mappings" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldModelAliasMappings(ctx context.Context) (v domain.GroupModelAliasMappings, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldModelAliasMappings is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldModelAliasMappings requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldModelAliasMappings: %w", err)
+	}
+	return oldValue.ModelAliasMappings, nil
+}
+
+// ResetModelAliasMappings resets all changes to the "model_alias_mappings" field.
+func (m *GroupMutation) ResetModelAliasMappings() {
+	m.model_alias_mappings = nil
 }
 
 // SetRpmLimit sets the "rpm_limit" field.
@@ -17264,7 +17375,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 35)
+	fields := make([]string, 0, 38)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -17340,6 +17451,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.model_routing_enabled != nil {
 		fields = append(fields, group.FieldModelRoutingEnabled)
 	}
+	if m.intra_group_balance != nil {
+		fields = append(fields, group.FieldIntraGroupBalance)
+	}
 	if m.mcp_xml_inject != nil {
 		fields = append(fields, group.FieldMcpXMLInject)
 	}
@@ -17366,6 +17480,12 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.models_list_config != nil {
 		fields = append(fields, group.FieldModelsListConfig)
+	}
+	if m.enforce_models_list != nil {
+		fields = append(fields, group.FieldEnforceModelsList)
+	}
+	if m.model_alias_mappings != nil {
+		fields = append(fields, group.FieldModelAliasMappings)
 	}
 	if m.rpm_limit != nil {
 		fields = append(fields, group.FieldRpmLimit)
@@ -17428,6 +17548,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ModelRouting()
 	case group.FieldModelRoutingEnabled:
 		return m.ModelRoutingEnabled()
+	case group.FieldIntraGroupBalance:
+		return m.IntraGroupBalance()
 	case group.FieldMcpXMLInject:
 		return m.McpXMLInject()
 	case group.FieldSupportedModelScopes:
@@ -17446,6 +17568,10 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.MessagesDispatchModelConfig()
 	case group.FieldModelsListConfig:
 		return m.ModelsListConfig()
+	case group.FieldEnforceModelsList:
+		return m.EnforceModelsList()
+	case group.FieldModelAliasMappings:
+		return m.ModelAliasMappings()
 	case group.FieldRpmLimit:
 		return m.RpmLimit()
 	}
@@ -17507,6 +17633,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldModelRouting(ctx)
 	case group.FieldModelRoutingEnabled:
 		return m.OldModelRoutingEnabled(ctx)
+	case group.FieldIntraGroupBalance:
+		return m.OldIntraGroupBalance(ctx)
 	case group.FieldMcpXMLInject:
 		return m.OldMcpXMLInject(ctx)
 	case group.FieldSupportedModelScopes:
@@ -17525,6 +17653,10 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldMessagesDispatchModelConfig(ctx)
 	case group.FieldModelsListConfig:
 		return m.OldModelsListConfig(ctx)
+	case group.FieldEnforceModelsList:
+		return m.OldEnforceModelsList(ctx)
+	case group.FieldModelAliasMappings:
+		return m.OldModelAliasMappings(ctx)
 	case group.FieldRpmLimit:
 		return m.OldRpmLimit(ctx)
 	}
@@ -17711,6 +17843,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetModelRoutingEnabled(v)
 		return nil
+	case group.FieldIntraGroupBalance:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetIntraGroupBalance(v)
+		return nil
 	case group.FieldMcpXMLInject:
 		v, ok := value.(bool)
 		if !ok {
@@ -17773,6 +17912,20 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetModelsListConfig(v)
+		return nil
+	case group.FieldEnforceModelsList:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEnforceModelsList(v)
+		return nil
+	case group.FieldModelAliasMappings:
+		v, ok := value.(domain.GroupModelAliasMappings)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetModelAliasMappings(v)
 		return nil
 	case group.FieldRpmLimit:
 		v, ok := value.(int)
@@ -18133,6 +18286,9 @@ func (m *GroupMutation) ResetField(name string) error {
 	case group.FieldModelRoutingEnabled:
 		m.ResetModelRoutingEnabled()
 		return nil
+	case group.FieldIntraGroupBalance:
+		m.ResetIntraGroupBalance()
+		return nil
 	case group.FieldMcpXMLInject:
 		m.ResetMcpXMLInject()
 		return nil
@@ -18159,6 +18315,12 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldModelsListConfig:
 		m.ResetModelsListConfig()
+		return nil
+	case group.FieldEnforceModelsList:
+		m.ResetEnforceModelsList()
+		return nil
+	case group.FieldModelAliasMappings:
+		m.ResetModelAliasMappings()
 		return nil
 	case group.FieldRpmLimit:
 		m.ResetRpmLimit()

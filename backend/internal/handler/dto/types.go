@@ -132,6 +132,8 @@ type AdminGroup struct {
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`
 	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
+	// 组内负载均衡（企业号组）
+	IntraGroupBalance bool `json:"intra_group_balance"`
 
 	// MCP XML 协议注入（仅 antigravity 平台使用）
 	MCPXMLInject bool `json:"mcp_xml_inject"`
@@ -170,6 +172,7 @@ type Account struct {
 	LoadFactor              *int            `json:"load_factor,omitempty"`
 	Priority                int             `json:"priority"`
 	RateMultiplier          float64         `json:"rate_multiplier"`
+	UpstreamCostFactor      float64         `json:"upstream_cost_factor"`
 	Status                  string          `json:"status"`
 	ErrorMessage            string          `json:"error_message"`
 	LastUsedAt              *time.Time      `json:"last_used_at"`

@@ -277,8 +277,23 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	continuationTail := ""
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	resultWithUsage := func() *OpenAIForwardResult {
+		return &OpenAIForwardResult{
+			RequestID:       requestID,
+			Usage:           usage,
+			Model:           originalModel,
+			BillingModel:    billingModel,
+			UpstreamModel:   upstreamModel,
+			ReasoningEffort: reasoningEffort,
+			ServiceTier:     serviceTier,
+			Stream:          true,
+			Duration:        time.Since(startTime),
+			FirstTokenMs:    firstTokenMs,
+		}
+	}
 
 	writeLine := func(line string) {
 		if clientDisconnected {
@@ -322,6 +337,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				if u := extractCCStreamUsage(payload); u != nil {
 					usage = *u
 				}
+				continuationTail = appendOpenAIChatCompletionsContinuationTail(continuationTail, payload)
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
@@ -348,6 +364,26 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				zap.String("request_id", requestID),
 			)
 		}
+		if openAIStreamClientOutputStarted(c, clientOutputStarted) && !clientDisconnected &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			msg := "OpenAI chat completions stream disconnected before completion"
+			if errText := strings.TrimSpace(err.Error()); errText != "" {
+				msg += ": " + errText
+			}
+			body, _ := json.Marshal(gin.H{
+				"error": gin.H{
+					"type":    "upstream_error",
+					"message": sanitizeUpstreamErrorMessage(msg),
+				},
+			})
+			return resultWithUsage(), &UpstreamFailoverError{
+				StatusCode:                 http.StatusBadGateway,
+				ResponseBody:               body,
+				RetryableOnSameAccount:     account != nil && account.IsPoolMode(),
+				PostFirstTokenContinuation: true,
+				ContinuationTail:           strings.TrimSpace(continuationTail),
+			}
+		}
 	} else if !clientDisconnected && !clientOutputStarted {
 		if refusalDetector.IsSilentRefusal() {
 			return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
@@ -371,18 +407,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          true,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    firstTokenMs,
-	}, nil
+	return resultWithUsage(), nil
 }
 
 // ensureOpenAIChatStreamUsage 确保 raw Chat Completions 流式请求会让上游返回 usage。
@@ -404,6 +429,30 @@ func isOpenAIChatUsageOnlyStreamChunk(payload string) bool {
 	}
 	choices := gjson.Get(payload, "choices")
 	return choices.Exists() && choices.IsArray() && len(choices.Array()) == 0
+}
+
+const openAIContinuationTailMaxRunes = 2048
+
+func appendOpenAIChatCompletionsContinuationTail(tail string, payload string) string {
+	if strings.TrimSpace(payload) == "" || !gjson.Valid(payload) {
+		return tail
+	}
+	choices := gjson.Get(payload, "choices")
+	if !choices.IsArray() {
+		return tail
+	}
+	for _, choice := range choices.Array() {
+		delta := choice.Get("delta.content").String()
+		if delta == "" {
+			continue
+		}
+		tail += delta
+	}
+	runes := []rune(tail)
+	if len(runes) <= openAIContinuationTailMaxRunes {
+		return tail
+	}
+	return string(runes[len(runes)-openAIContinuationTailMaxRunes:])
 }
 
 // extractCCStreamUsage 从单个 CC 流式 chunk 的 payload 中提取 usage 字段。

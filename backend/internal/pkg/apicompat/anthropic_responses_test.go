@@ -414,6 +414,66 @@ func TestResponsesToAnthropic_Incomplete(t *testing.T) {
 	assert.Equal(t, "max_tokens", anth.StopReason)
 }
 
+func TestResponsesToAnthropic_StopReasonMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		resp       *ResponsesResponse
+		wantReason string
+	}{
+		{
+			name: "completed text maps to end_turn",
+			resp: &ResponsesResponse{
+				ID:     "resp_end_turn",
+				Status: "completed",
+				Output: []ResponsesOutput{{
+					Type:    "message",
+					Content: []ResponsesContentPart{{Type: "output_text", Text: "done"}},
+				}},
+			},
+			wantReason: "end_turn",
+		},
+		{
+			name: "incomplete max_output_tokens maps to max_tokens",
+			resp: &ResponsesResponse{
+				ID:                "resp_max_tokens",
+				Status:            "incomplete",
+				IncompleteDetails: &ResponsesIncompleteDetails{Reason: "max_output_tokens"},
+			},
+			wantReason: "max_tokens",
+		},
+		{
+			name: "completed tool call maps to tool_use",
+			resp: &ResponsesResponse{
+				ID:     "resp_tool",
+				Status: "completed",
+				Output: []ResponsesOutput{{
+					Type:      "function_call",
+					CallID:    "call_1",
+					Name:      "lookup",
+					Arguments: `{}`,
+				}},
+			},
+			wantReason: "tool_use",
+		},
+		{
+			name: "content_filter maps to max_tokens",
+			resp: &ResponsesResponse{
+				ID:                "resp_content_filter",
+				Status:            "incomplete",
+				IncompleteDetails: &ResponsesIncompleteDetails{Reason: "content_filter"},
+			},
+			wantReason: "max_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			anth := ResponsesToAnthropic(tt.resp, "claude-opus-4-6")
+			assert.Equal(t, tt.wantReason, anth.StopReason)
+		})
+	}
+}
+
 func TestResponsesToAnthropic_EmptyOutput(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_empty",
@@ -554,6 +614,24 @@ func TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete(t *testing.T) {
 			Status:            "incomplete",
 			IncompleteDetails: &ResponsesIncompleteDetails{Reason: "max_output_tokens"},
 			Usage:             &ResponsesUsage{InputTokens: 12, OutputTokens: 4},
+		},
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "message_delta", events[0].Type)
+	assert.Equal(t, "max_tokens", events[0].Delta.StopReason)
+	assert.Equal(t, "message_stop", events[1].Type)
+	assert.Nil(t, FinalizeResponsesAnthropicStream(state))
+}
+
+func TestResponsesEventToAnthropicEvents_ResponseDoneContentFilter(t *testing.T) {
+	state := NewResponsesEventToAnthropicState()
+	state.Model = "gpt-4o"
+
+	events := ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
+		Type: "response.done",
+		Response: &ResponsesResponse{
+			Status:            "incomplete",
+			IncompleteDetails: &ResponsesIncompleteDetails{Reason: "content_filter"},
 		},
 	}, state)
 	require.Len(t, events, 2)

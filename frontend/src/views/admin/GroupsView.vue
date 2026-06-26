@@ -749,6 +749,47 @@
           </div>
         </div>
 
+          <div class="mt-3 flex items-center justify-between gap-3">
+            <div>
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t("admin.groups.enforceModelsList.title") }}
+              </label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.enforceModelsList.hint") }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="createForm.enforce_models_list = !createForm.enforce_models_list"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors',
+                createForm.enforce_models_list ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  createForm.enforce_models_list ? 'translate-x-6' : 'translate-x-1',
+                ]"
+              />
+            </button>
+          </div>
+
+          <div class="mt-3">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.modelAlias.title") }}
+            </label>
+            <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t("admin.groups.modelAlias.hint") }}
+            </p>
+            <textarea
+              v-model="createForm.model_alias_mappings_text"
+              rows="3"
+              placeholder="claude-sonnet-4=real-model-in-pool"
+              class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-700 focus:border-primary-500 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
+            />
+          </div>
+
         <!-- 图片生成计费配置 -->
         <div
           v-if="
@@ -1058,6 +1099,49 @@
               {{ t("admin.groups.claudeCode.fallbackHint") }}
             </p>
           </div>
+        </div>
+
+        <!-- 企业号组（组内负载均衡，仅 kiro 平台） -->
+        <div v-if="createForm.platform === 'kiro'" class="border-t pt-4">
+          <div class="mb-1.5 flex items-center gap-1">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.intraGroupBalance.title") }}
+            </label>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              @click="
+                createForm.intra_group_balance =
+                  !createForm.intra_group_balance
+              "
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                createForm.intra_group_balance
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  createForm.intra_group_balance
+                    ? 'translate-x-6'
+                    : 'translate-x-1',
+                ]"
+              />
+            </button>
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+              {{
+                createForm.intra_group_balance
+                  ? t("admin.groups.intraGroupBalance.enabled")
+                  : t("admin.groups.intraGroupBalance.disabled")
+              }}
+            </span>
+          </div>
+          <p class="input-hint mt-2">
+            {{ t("admin.groups.intraGroupBalance.hint") }}
+          </p>
         </div>
 
         <!-- OpenAI Messages 调度配置（仅 openai 平台） -->
@@ -2035,6 +2119,47 @@
               </div>
             </div>
           </div>
+
+          <div class="mt-3 flex items-center justify-between gap-3">
+            <div>
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t("admin.groups.enforceModelsList.title") }}
+              </label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.enforceModelsList.hint") }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="editForm.enforce_models_list = !editForm.enforce_models_list"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors',
+                editForm.enforce_models_list ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  editForm.enforce_models_list ? 'translate-x-6' : 'translate-x-1',
+                ]"
+              />
+            </button>
+          </div>
+
+          <div class="mt-3">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.modelAlias.title") }}
+            </label>
+            <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t("admin.groups.modelAlias.hint") }}
+            </p>
+            <textarea
+              v-model="editForm.model_alias_mappings_text"
+              rows="3"
+              placeholder="claude-sonnet-4=real-model-in-pool"
+              class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-700 focus:border-primary-500 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
+            />
+          </div>
         </div>
 
         <!-- 图片生成计费配置 -->
@@ -2342,6 +2467,48 @@
               {{ t("admin.groups.claudeCode.fallbackHint") }}
             </p>
           </div>
+        </div>
+
+        <!-- 企业号组（组内负载均衡，仅 kiro 平台） -->
+        <div v-if="editForm.platform === 'kiro'" class="border-t pt-4">
+          <div class="mb-1.5 flex items-center gap-1">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.intraGroupBalance.title") }}
+            </label>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              @click="
+                editForm.intra_group_balance = !editForm.intra_group_balance
+              "
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                editForm.intra_group_balance
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  editForm.intra_group_balance
+                    ? 'translate-x-6'
+                    : 'translate-x-1',
+                ]"
+              />
+            </button>
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+              {{
+                editForm.intra_group_balance
+                  ? t("admin.groups.intraGroupBalance.enabled")
+                  : t("admin.groups.intraGroupBalance.disabled")
+              }}
+            </span>
+          </div>
+          <p class="input-hint mt-2">
+            {{ t("admin.groups.intraGroupBalance.hint") }}
+          </p>
         </div>
 
         <!-- OpenAI Messages 调度配置（仅 openai 平台） -->
@@ -3138,6 +3305,9 @@ const platformOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
+  { value: "kiro", label: "Kiro" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "opencode", label: "OpenCode" },
 ]);
 
 const platformFilterOptions = computed(() => [
@@ -3146,6 +3316,9 @@ const platformFilterOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
+  { value: "kiro", label: "Kiro" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "opencode", label: "OpenCode" },
 ]);
 
 const editStatusOptions = computed(() => [
@@ -3311,6 +3484,30 @@ const rpmOverridesGroup = ref<AdminGroup | null>(null);
 const sortableGroups = ref<AdminGroup[]>([]);
 const createMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
 const editMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
+// 别名映射文本 ↔ map 互转。文本格式：每行 "对外名=池内真实名"，忽略空行与无效行。
+function parseModelAliasMappings(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    const val = line.slice(eq + 1).trim();
+    if (key && val) out[key] = val;
+  }
+  return out;
+}
+
+function stringifyModelAliasMappings(
+  mappings: Record<string, string> | undefined | null,
+): string {
+  if (!mappings) return "";
+  return Object.entries(mappings)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+}
+
 const createModelsListState = reactive(createInitialModelsListState());
 const editModelsListState = reactive(createInitialModelsListState());
 const createModelsListLoading = ref(false);
@@ -3342,6 +3539,7 @@ const createForm = reactive({
   image_price_4k: null as number | null,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
+  intra_group_balance: false,
   fallback_group_id: null as number | null,
   fallback_group_id_on_invalid_request: null as number | null,
   // OpenAI Messages 调度配置（仅 openai 平台使用）
@@ -3363,6 +3561,10 @@ const createForm = reactive({
   copy_accounts_from_group_ids: [] as number[],
   // 分组级 RPM 限制（每用户每分钟最大请求数；0 = 不限制）
   rpm_limit: 0 as number,
+  // 输出模型清单强制拦截：开启后 models_list 既过滤展示也拦截越界请求
+  enforce_models_list: false,
+  // 对外统一名→池内真实模型 映射（每行 "对外名=真实名"）
+  model_alias_mappings_text: "",
 });
 
 // 简单账号类型（用于模型路由选择）
@@ -3673,6 +3875,7 @@ const editForm = reactive({
   image_price_4k: null as number | null,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
+  intra_group_balance: false,
   fallback_group_id: null as number | null,
   fallback_group_id_on_invalid_request: null as number | null,
   // OpenAI Messages 调度配置（仅 openai 平台使用）
@@ -3695,6 +3898,10 @@ const editForm = reactive({
   copy_accounts_from_group_ids: [] as number[],
   // 分组级 RPM 限制（每用户每分钟最大请求数；0 = 不限制）
   rpm_limit: 0 as number,
+  // 输出模型清单强制拦截：开启后 models_list 既过滤展示也拦截越界请求
+  enforce_models_list: false,
+  // 对外统一名→池内真实模型 映射（每行 "对外名=真实名"）
+  model_alias_mappings_text: "",
 });
 
 type ImagePricingFormState = {
@@ -3923,6 +4130,7 @@ const closeCreateModal = () => {
   createForm.image_price_2k = null;
   createForm.image_price_4k = null;
   createForm.claude_code_only = false;
+  createForm.intra_group_balance = false;
   createForm.fallback_group_id = null;
   createForm.fallback_group_id_on_invalid_request = null;
   resetMessagesDispatchFormState(createForm);
@@ -4002,7 +4210,11 @@ const handleCreateGroup = async () => {
               exact_model_mappings: createForm.exact_model_mappings,
             })
           : undefined,
+      model_alias_mappings: parseModelAliasMappings(
+        createForm.model_alias_mappings_text,
+      ),
     };
+    delete (requestData as any).model_alias_mappings_text;
     // v-model.number 清空输入框时产生 ""，转为 null 让后端设为无限制
     const emptyToNull = (v: any) => (v === "" ? null : v);
     requestData.daily_limit_usd = emptyToNull(requestData.daily_limit_usd);
@@ -4049,6 +4261,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.image_price_2k = group.image_price_2k;
   editForm.image_price_4k = group.image_price_4k;
   editForm.claude_code_only = group.claude_code_only || false;
+  editForm.intra_group_balance = group.intra_group_balance || false;
   editForm.fallback_group_id = group.fallback_group_id;
   editForm.fallback_group_id_on_invalid_request =
     group.fallback_group_id_on_invalid_request;
@@ -4074,6 +4287,10 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.mcp_xml_inject = group.mcp_xml_inject ?? true;
   editForm.copy_accounts_from_group_ids = []; // 复制账号字段每次编辑时重置为空
   editForm.rpm_limit = group.rpm_limit ?? 0;
+  editForm.enforce_models_list = group.enforce_models_list ?? false;
+  editForm.model_alias_mappings_text = stringifyModelAliasMappings(
+    group.model_alias_mappings,
+  );
   resetModelsListState(editModelsListState, group.models_list_config);
   // 加载模型路由规则（异步加载账号名称）
   editModelRoutingRules.value = await convertApiFormatToRoutingRules(
@@ -4141,7 +4358,11 @@ const handleUpdateGroup = async () => {
               exact_model_mappings: editForm.exact_model_mappings,
             })
           : undefined,
+      model_alias_mappings: parseModelAliasMappings(
+        editForm.model_alias_mappings_text,
+      ),
     };
+    delete (payload as any).model_alias_mappings_text;
     // v-model.number 清空输入框时产生 ""，转为 null 让后端设为无限制
     const emptyToNull = (v: any) => (v === "" ? null : v);
     payload.daily_limit_usd = emptyToNull(payload.daily_limit_usd);

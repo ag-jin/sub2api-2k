@@ -38,6 +38,82 @@ func TestNeedsToolContinuationSignals(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAIStreamContinuationMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		body     []byte
+		want     OpenAIStreamContinuationMode
+	}{
+		{
+			name:     "responses_text_stream_is_aggressive",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"input":"write a short paragraph"}`),
+			want:     OpenAIStreamContinuationTextAggressive,
+		},
+		{
+			name:     "chat_text_stream_is_aggressive",
+			endpoint: "/v1/chat/completions",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+			want:     OpenAIStreamContinuationTextAggressive,
+		},
+		{
+			name:     "non_stream_defaults_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":false,"input":"hello"}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "tools_are_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"input":"hello","tools":[{"type":"function","name":"lookup"}]}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "strict_json_schema_is_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"input":"hello","text":{"format":{"type":"json_schema","strict":true,"schema":{"type":"object"}}}}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "chat_json_object_is_strict_safe",
+			endpoint: "/v1/chat/completions",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hello"}],"response_format":{"type":"json_object"}}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "image_request_is_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-image-2","stream":true,"input":"draw"}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "multimodal_input_is_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"input":[{"type":"message","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,abc"}]}]}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "invalid_json_defaults_strict_safe",
+			endpoint: "/v1/responses",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+		{
+			name:     "images_endpoint_is_strict_safe",
+			endpoint: "/v1/images/generations",
+			body:     []byte(`{"model":"gpt-5.4","stream":true,"prompt":"draw"}`),
+			want:     OpenAIStreamContinuationStrictSafe,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ClassifyOpenAIStreamContinuationMode(tt.endpoint, tt.body))
+		})
+	}
+}
+
 func TestHasFunctionCallOutput(t *testing.T) {
 	// 所有 Codex 工具输出都应视为续链输出，避免 WS 续链时丢失 previous_response_id。
 	require.False(t, HasFunctionCallOutput(nil))

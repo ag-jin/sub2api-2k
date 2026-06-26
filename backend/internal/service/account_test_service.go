@@ -192,6 +192,14 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
 
+	if account.Platform == PlatformKiro {
+		return NewKiroGatewayService(nil).TestConnection(c, account, modelID)
+	}
+
+	if account.Platform == PlatformDeepseek || account.Platform == PlatformOpenCode {
+		return NewDeepseekGatewayService(nil).TestConnection(c, account, modelID)
+	}
+
 	return s.testClaudeAccountConnection(c, account, modelID)
 }
 

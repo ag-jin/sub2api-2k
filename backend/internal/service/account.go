@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -100,6 +101,23 @@ func (a *Account) BillingRateMultiplier() float64 {
 		return 1.0
 	}
 	return *a.RateMultiplier
+}
+
+// GetUpstreamCostFactor returns the account scheduling cost factor.
+// It is stored in extra.upstream_cost_factor and never affects user billing.
+func (a *Account) GetUpstreamCostFactor() float64 {
+	if a == nil || a.Extra == nil {
+		return 1.0
+	}
+	v, ok := a.Extra["upstream_cost_factor"]
+	if !ok {
+		return 1.0
+	}
+	factor := parseExtraFloat64(v)
+	if factor <= 0 || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		return 1.0
+	}
+	return factor
 }
 
 func (a *Account) EffectiveLoadFactor() int {

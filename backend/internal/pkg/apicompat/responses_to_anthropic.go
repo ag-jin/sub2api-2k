@@ -115,8 +115,15 @@ func anthropicUsageFromResponsesUsage(usage *ResponsesUsage) AnthropicUsage {
 func responsesStatusToAnthropicStopReason(status string, details *ResponsesIncompleteDetails, blocks []AnthropicContentBlock) string {
 	switch status {
 	case "incomplete":
-		if details != nil && details.Reason == "max_output_tokens" {
-			return "max_tokens"
+		if details != nil {
+			switch details.Reason {
+			case "max_output_tokens":
+				return "max_tokens"
+			case "content_filter":
+				// Anthropic has no content-filter stop_reason; max_tokens is the
+				// closest non-end_turn terminal reason because output was cut short.
+				return "max_tokens"
+			}
 		}
 		return "end_turn"
 	case "completed":
@@ -588,8 +595,11 @@ func resToAnthHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 		}
 		switch evt.Response.Status {
 		case "incomplete":
-			if evt.Response.IncompleteDetails != nil && evt.Response.IncompleteDetails.Reason == "max_output_tokens" {
-				stopReason = "max_tokens"
+			if evt.Response.IncompleteDetails != nil {
+				switch evt.Response.IncompleteDetails.Reason {
+				case "max_output_tokens", "content_filter":
+					stopReason = "max_tokens"
+				}
 			}
 		case "completed":
 			if state.HasToolCall {

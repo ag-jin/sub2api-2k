@@ -41,7 +41,11 @@
                   ? 'https://generativelanguage.googleapis.com'
                   : account.platform === 'antigravity'
                     ? 'https://cloudcode-pa.googleapis.com'
-                    : 'https://api.anthropic.com'
+                    : account.platform === 'deepseek'
+                      ? 'https://api.deepseek.com'
+                      : account.platform === 'opencode'
+                        ? 'https://opencode.ai/zen/go/v1'
+                      : 'https://api.anthropic.com'
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
@@ -63,10 +67,24 @@
                   ? 'AIza...'
                   : account.platform === 'antigravity'
                     ? 'sk-...'
-                    : 'sk-ant-...'
+                    : account.platform === 'deepseek'
+                      ? 'sk-...'
+                      : 'sk-ant-...'
             "
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+        </div>
+
+        <!-- Proxy URL (credentials-level, for deepseek/openai/anthropic apikey accounts) -->
+        <div>
+          <label class="input-label">{{ t('admin.accounts.proxyUrl') }}</label>
+          <input
+            v-model="editProxyUrl"
+            type="text"
+            class="input mt-1"
+            placeholder="socks5://user:pass@host:port"
+          />
+          <p class="input-hint">{{ t('admin.accounts.proxyUrlHint') }}</p>
         </div>
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
@@ -556,6 +574,184 @@
       </div>
 
       <!-- Upstream fields (only for upstream type) -->
+      <!-- Kiro (platform=kiro, type=oauth) credential editing -->
+      <div v-if="isKiroAccount" class="space-y-4">
+        <!-- Model Restriction Section for Kiro -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <!-- Mode Toggle -->
+          <div class="mb-4 flex gap-2">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              <svg
+                class="mr-1.5 inline h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              <svg
+                class="mr-1.5 inline h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+                />
+              </svg>
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+
+          <!-- Whitelist Mode -->
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+              <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
+                t('admin.accounts.supportsAllModels')
+              }}</span>
+            </p>
+          </div>
+
+          <!-- Mapping Mode -->
+          <div v-else>
+            <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
+              <p class="text-xs text-purple-700 dark:text-purple-400">
+                <svg
+                  class="mr-1 inline h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                {{ t('admin.accounts.mapRequestModels') }}
+              </p>
+            </div>
+
+            <!-- Model Mapping List -->
+            <div v-if="modelMappings.length > 0" class="mb-3 space-y-2">
+              <div
+                v-for="(mapping, index) in modelMappings"
+                :key="getModelMappingKey(mapping)"
+                class="flex items-center gap-2"
+              >
+                <input
+                  v-model="mapping.from"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.requestModel')"
+                />
+                <svg
+                  class="h-4 w-4 flex-shrink-0 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M14 5l7 7m0 0l-7 7m7-7H3"
+                  />
+                </svg>
+                <input
+                  v-model="mapping.to"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.actualModel')"
+                />
+                <button
+                  type="button"
+                  @click="removeModelMapping(index)"
+                  class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                >
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              @click="addModelMapping"
+              class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
+            >
+              <svg
+                class="mr-1 inline h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M12 4v16m8-8H4"
+                />
+              </svg>
+              {{ t('admin.accounts.addMapping') }}
+            </button>
+
+            <!-- Quick Add Buttons -->
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presetMappings"
+                :key="preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="account.type === 'upstream'" class="space-y-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.upstream.baseUrl') }}</label>
@@ -1289,7 +1485,7 @@
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
@@ -1317,6 +1513,11 @@
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstreamCostFactor') }}</label>
+          <input v-model.number="form.upstream_cost_factor" type="number" min="0.001" step="0.001" class="input" />
+          <p class="input-hint">{{ t('admin.accounts.upstreamCostFactorHint') }}</p>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -2441,6 +2642,7 @@ const baseUrlHint = computed(() => {
   if (!props.account) return t('admin.accounts.baseUrlHint')
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
+  if (props.account.platform === 'opencode') return t('admin.accounts.opencode.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -2464,6 +2666,7 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editProxyUrl = ref('')
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -2488,6 +2691,20 @@ const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const poolModeEnabled = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
+
+const normalizePoolModeRetryCount = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_POOL_MODE_RETRY_COUNT
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < 0) {
+    return 0
+  }
+  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
+    return MAX_POOL_MODE_RETRY_COUNT
+  }
+  return normalized
+}
 
 function parsePoolModeRetryStatusCodes(input: string): number[] {
   if (!input || !input.trim()) return []
@@ -2842,6 +3059,7 @@ const tempUnschedPresets = computed(() => [
 const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
+  if (props.account?.platform === 'opencode') return 'https://opencode.ai/zen/go/v1'
   return 'https://api.anthropic.com'
 })
 
@@ -2860,10 +3078,14 @@ const form = reactive({
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
+  upstream_cost_factor: 1,
   status: 'active' as 'active' | 'inactive' | 'error',
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+// --- Kiro (platform=kiro, type=oauth) credential editing ---
+const isKiroAccount = computed(() => props.account?.platform === 'kiro')
 
 const statusOptions = computed(() => {
   const options = [
@@ -2884,20 +3106,6 @@ const expiresAtInput = computed({
 })
 
 // Watchers
-const normalizePoolModeRetryCount = (value: number) => {
-  if (!Number.isFinite(value)) {
-    return DEFAULT_POOL_MODE_RETRY_COUNT
-  }
-  const normalized = Math.trunc(value)
-  if (normalized < 0) {
-    return 0
-  }
-  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
-    return MAX_POOL_MODE_RETRY_COUNT
-  }
-  return normalized
-}
-
 const loadModelRestrictionFromMapping = (rawMapping?: Record<string, unknown>) => {
   const parsed = splitModelMappingObject(rawMapping)
   allowedModels.value = parsed.allowedModels
@@ -2927,11 +3135,23 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
+  form.upstream_cost_factor = newAccount.upstream_cost_factor ?? 1
   form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
     ? newAccount.status
     : 'active'
   form.group_ids = newAccount.group_ids || []
   form.expires_at = newAccount.expires_at ?? null
+
+  // Load Kiro credentials into editable fields (secrets are redacted by the
+  // backend; leaving them blank on save keeps the existing stored value).
+  if (newAccount.platform === 'kiro') {
+    const kc = (newAccount.credentials as Record<string, unknown>) || {}
+    loadModelRestrictionFromMapping(kc.model_mapping as Record<string, unknown> | undefined)
+  }
+  if (newAccount.platform === 'deepseek' || newAccount.platform === 'opencode') {
+    const compatibleCredentials = (newAccount.credentials as Record<string, unknown>) || {}
+    loadModelRestrictionFromMapping(compatibleCredentials.model_mapping as Record<string, unknown> | undefined)
+  }
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
@@ -3097,8 +3317,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+          : newAccount.platform === 'deepseek'
+            ? 'https://api.deepseek.com'
+            : newAccount.platform === 'opencode'
+              ? 'https://opencode.ai/zen/go/v1'
+            : 'https://api.anthropic.com'
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
+    editProxyUrl.value = (credentials.proxy_url as string) || ''
 
     // Load model mappings and detect mode
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
@@ -3679,7 +3904,36 @@ const handleSubmit = async () => {
     if (lf == null || Number.isNaN(lf) || lf <= 0) {
       updatePayload.load_factor = 0
     }
+    if (!Number.isFinite(form.upstream_cost_factor) || form.upstream_cost_factor <= 0) {
+      updatePayload.upstream_cost_factor = 1
+    }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+
+    // Kiro accounts: edit page only changes config (model restriction), aligned
+    // with other OAuth platforms which do not edit credentials inline. Credential
+    // rotation is done by re-importing the account JSON. Preserve existing
+    // credentials and only update the model_mapping (whitelist / mapping).
+    if (props.account.platform === 'kiro') {
+      const creds: Record<string, unknown> = { ...((props.account.credentials as Record<string, unknown>) || {}) }
+      const kiroModelMapping = buildModelRestrictionMapping()
+      if (kiroModelMapping) {
+        creds.model_mapping = kiroModelMapping
+      } else {
+        delete creds.model_mapping
+      }
+      updatePayload.credentials = creds
+    }
+
+    if (props.account.platform === 'deepseek' || props.account.platform === 'opencode') {
+      const creds: Record<string, unknown> = { ...((props.account.credentials as Record<string, unknown>) || {}) }
+      const compatibleModelMapping = buildModelRestrictionMapping()
+      if (compatibleModelMapping) {
+        creds.model_mapping = compatibleModelMapping
+      } else {
+        delete creds.model_mapping
+      }
+      updatePayload.credentials = creds
+    }
 
     // For apikey type, handle credentials update
     if (props.account.type === 'apikey') {
@@ -3705,6 +3959,13 @@ const handleSubmit = async () => {
       } else if (!hasExistingApiKey) {
         appStore.showError(t('admin.accounts.apiKeyIsRequired'))
         return
+      }
+
+      // Proxy URL — only meaningful for deepseek/openai/antigravity apikey accounts
+      if (editProxyUrl.value.trim()) {
+        newCredentials.proxy_url = editProxyUrl.value.trim()
+      } else {
+        delete newCredentials.proxy_url
       }
 
       // Add model mapping if configured（OpenAI 开启自动透传时保留现有映射，不再编辑）

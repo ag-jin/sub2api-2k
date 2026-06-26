@@ -781,6 +781,67 @@ func TestResponsesToChatCompletions_Incomplete(t *testing.T) {
 	assert.Equal(t, "length", chat.Choices[0].FinishReason)
 }
 
+func TestResponsesToChatCompletions_FinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		resp       *ResponsesResponse
+		wantReason string
+	}{
+		{
+			name: "completed text maps to stop",
+			resp: &ResponsesResponse{
+				ID:     "resp_stop",
+				Status: "completed",
+				Output: []ResponsesOutput{{
+					Type:    "message",
+					Content: []ResponsesContentPart{{Type: "output_text", Text: "done"}},
+				}},
+			},
+			wantReason: "stop",
+		},
+		{
+			name: "incomplete max_output_tokens maps to length",
+			resp: &ResponsesResponse{
+				ID:                "resp_length",
+				Status:            "incomplete",
+				IncompleteDetails: &ResponsesIncompleteDetails{Reason: "max_output_tokens"},
+			},
+			wantReason: "length",
+		},
+		{
+			name: "completed tool call maps to tool_calls",
+			resp: &ResponsesResponse{
+				ID:     "resp_tool",
+				Status: "completed",
+				Output: []ResponsesOutput{{
+					Type:      "function_call",
+					CallID:    "call_1",
+					Name:      "lookup",
+					Arguments: `{}`,
+				}},
+			},
+			wantReason: "tool_calls",
+		},
+		{
+			name: "content_filter maps to content_filter",
+			resp: &ResponsesResponse{
+				ID:                "resp_content_filter",
+				Status:            "incomplete",
+				IncompleteDetails: &ResponsesIncompleteDetails{Reason: "content_filter"},
+			},
+			wantReason: "content_filter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chat := ResponsesToChatCompletions(tt.resp, "gpt-4o")
+			require.Len(t, chat.Choices, 1)
+			assert.Equal(t, tt.wantReason, chat.Choices[0].FinishReason)
+		})
+	}
+}
+
 func TestResponsesToChatCompletions_CachedTokens(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_cache",
@@ -1171,6 +1232,23 @@ func TestResponsesEventToChatChunks_ResponseDoneIncomplete(t *testing.T) {
 	require.NotNil(t, chunks[1].Usage)
 	assert.Equal(t, 13, chunks[1].Usage.PromptTokens)
 	assert.Equal(t, 7, chunks[1].Usage.CompletionTokens)
+	assert.Nil(t, FinalizeResponsesChatStream(state))
+}
+
+func TestResponsesEventToChatChunks_ResponseDoneContentFilter(t *testing.T) {
+	state := NewResponsesEventToChatState()
+	state.Model = "gpt-4o"
+
+	chunks := ResponsesEventToChatChunks(&ResponsesStreamEvent{
+		Type: "response.done",
+		Response: &ResponsesResponse{
+			Status:            "incomplete",
+			IncompleteDetails: &ResponsesIncompleteDetails{Reason: "content_filter"},
+		},
+	}, state)
+	require.Len(t, chunks, 1)
+	require.NotNil(t, chunks[0].Choices[0].FinishReason)
+	assert.Equal(t, "content_filter", *chunks[0].Choices[0].FinishReason)
 	assert.Nil(t, FinalizeResponsesChatStream(state))
 }
 

@@ -80,6 +80,7 @@ type APIKeyAuthGroupSnapshot struct {
 	// Only anthropic groups use these fields; others may leave them empty.
 	ModelRouting        map[string][]int64 `json:"model_routing,omitempty"`
 	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
+	IntraGroupBalance   bool               `json:"intra_group_balance"`
 	MCPXMLInject        bool               `json:"mcp_xml_inject"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
@@ -90,6 +91,8 @@ type APIKeyAuthGroupSnapshot struct {
 	DefaultMappedModel          string                            `json:"default_mapped_model,omitempty"`
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
 	ModelsListConfig            GroupModelsListConfig             `json:"models_list_config,omitempty"`
+	EnforceModelsList           bool                              `json:"enforce_models_list,omitempty"`
+	ModelAliasMappings          GroupModelAliasMappings           `json:"model_alias_mappings,omitempty"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 级联判断。
 	RPMLimit int `json:"rpm_limit"`

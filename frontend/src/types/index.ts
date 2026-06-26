@@ -487,7 +487,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'deepseek' | 'opencode'
 
 export type SubscriptionType = 'standard' | 'subscription'
 
@@ -520,6 +520,7 @@ export interface Group {
   image_price_4k: number | null
   // Claude Code 客户端限制
   claude_code_only: boolean
+  intra_group_balance: boolean
   fallback_group_id: number | null
   fallback_group_id_on_invalid_request: number | null
   // OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
@@ -552,6 +553,8 @@ export interface AdminGroup extends Group {
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   models_list_config?: ModelsListConfig
+  enforce_models_list?: boolean
+  model_alias_mappings?: Record<string, string>
 
   // 分组排序
   sort_order: number
@@ -637,11 +640,14 @@ export interface CreateGroupRequest {
   image_price_2k?: number | null
   image_price_4k?: number | null
   claude_code_only?: boolean
+  intra_group_balance?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  enforce_models_list?: boolean
+  model_alias_mappings?: Record<string, string>
   allow_messages_dispatch?: boolean
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
@@ -672,11 +678,14 @@ export interface UpdateGroupRequest {
   image_price_2k?: number | null
   image_price_4k?: number | null
   claude_code_only?: boolean
+  intra_group_balance?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  enforce_models_list?: boolean
+  model_alias_mappings?: Record<string, string>
   allow_messages_dispatch?: boolean
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
@@ -690,7 +699,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'deepseek' | 'opencode'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -842,6 +851,7 @@ export interface Account {
   current_concurrency?: number // Real-time concurrency count from Redis
   priority: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
+  upstream_cost_factor?: number // Scheduling cost factor only; lower is preferred
   status: 'active' | 'inactive' | 'error'
   error_message: string | null
   last_used_at: string | null
@@ -957,6 +967,17 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  // Kiro / Antigravity subscription tier (e.g. "KIRO POWER")
+  subscription_tier?: string
+  subscription_tier_raw?: string
+  // Kiro overage (read-only)
+  kiro_overage_capable?: boolean
+  kiro_overage_enabled?: boolean
+  kiro_overage_cap?: number
+  kiro_overage_used?: number
+  kiro_overage_rate?: number
+  kiro_overage_charges?: number
+  kiro_usage_unit?: string
   ai_credits?: Array<{
     credit_type?: string
     amount?: number
@@ -1033,6 +1054,7 @@ export interface CreateAccountRequest {
   load_factor?: number | null
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
+  upstream_cost_factor?: number // Scheduling cost factor only; lower is preferred
   group_ids?: number[]
   expires_at?: number | null
   auto_pause_on_expired?: boolean
@@ -1050,6 +1072,7 @@ export interface UpdateAccountRequest {
   load_factor?: number | null
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
+  upstream_cost_factor?: number // Scheduling cost factor only; lower is preferred
   schedulable?: boolean
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
@@ -1089,6 +1112,14 @@ export interface CreateProxyRequest {
   fallback_mode?: 'none' | 'proxy' | 'direct'
   backup_proxy_id?: number | null
   expiry_warn_days?: number
+}
+
+export interface DeploySSHRequest {
+  name?: string
+  ssh_host: string
+  ssh_port?: number
+  ssh_user: string
+  ssh_password: string
 }
 
 export interface UpdateProxyRequest {
@@ -1165,6 +1196,7 @@ export interface CodexSessionImportRequest {
   concurrency?: number
   priority?: number
   rate_multiplier?: number
+  upstream_cost_factor?: number
   load_factor?: number | null
   expires_at?: number | null
   auto_pause_on_expired?: boolean

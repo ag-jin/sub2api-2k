@@ -171,7 +171,6 @@ type cachedCyberSessionBlockRuntime struct {
 const cyberSessionBlockRuntimeCacheTTL = 60 * time.Second
 const cyberSessionBlockRuntimeErrorTTL = 5 * time.Second
 const cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
-
 const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
 const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
 const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
@@ -205,7 +204,6 @@ type SettingService struct {
 
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime
 	cyberSessionBlockRuntimeSF    singleflight.Group
-
 	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
 	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
 	// path without ever blocking on the DB; when the cached entry expires, a background

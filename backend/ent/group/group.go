@@ -66,6 +66,8 @@ const (
 	FieldModelRouting = "model_routing"
 	// FieldModelRoutingEnabled holds the string denoting the model_routing_enabled field in the database.
 	FieldModelRoutingEnabled = "model_routing_enabled"
+	// FieldIntraGroupBalance holds the string denoting the intra_group_balance field in the database.
+	FieldIntraGroupBalance = "intra_group_balance"
 	// FieldMcpXMLInject holds the string denoting the mcp_xml_inject field in the database.
 	FieldMcpXMLInject = "mcp_xml_inject"
 	// FieldSupportedModelScopes holds the string denoting the supported_model_scopes field in the database.
@@ -84,6 +86,10 @@ const (
 	FieldMessagesDispatchModelConfig = "messages_dispatch_model_config"
 	// FieldModelsListConfig holds the string denoting the models_list_config field in the database.
 	FieldModelsListConfig = "models_list_config"
+	// FieldEnforceModelsList holds the string denoting the enforce_models_list field in the database.
+	FieldEnforceModelsList = "enforce_models_list"
+	// FieldModelAliasMappings holds the string denoting the model_alias_mappings field in the database.
+	FieldModelAliasMappings = "model_alias_mappings"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
@@ -186,6 +192,7 @@ var Columns = []string{
 	FieldFallbackGroupIDOnInvalidRequest,
 	FieldModelRouting,
 	FieldModelRoutingEnabled,
+	FieldIntraGroupBalance,
 	FieldMcpXMLInject,
 	FieldSupportedModelScopes,
 	FieldSortOrder,
@@ -195,6 +202,8 @@ var Columns = []string{
 	FieldDefaultMappedModel,
 	FieldMessagesDispatchModelConfig,
 	FieldModelsListConfig,
+	FieldEnforceModelsList,
+	FieldModelAliasMappings,
 	FieldRpmLimit,
 }
 
@@ -261,6 +270,8 @@ var (
 	DefaultClaudeCodeOnly bool
 	// DefaultModelRoutingEnabled holds the default value on creation for the "model_routing_enabled" field.
 	DefaultModelRoutingEnabled bool
+	// DefaultIntraGroupBalance holds the default value on creation for the "intra_group_balance" field.
+	DefaultIntraGroupBalance bool
 	// DefaultMcpXMLInject holds the default value on creation for the "mcp_xml_inject" field.
 	DefaultMcpXMLInject bool
 	// DefaultSupportedModelScopes holds the default value on creation for the "supported_model_scopes" field.
@@ -281,6 +292,10 @@ var (
 	DefaultMessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig
 	// DefaultModelsListConfig holds the default value on creation for the "models_list_config" field.
 	DefaultModelsListConfig domain.GroupModelsListConfig
+	// DefaultEnforceModelsList holds the default value on creation for the "enforce_models_list" field.
+	DefaultEnforceModelsList bool
+	// DefaultModelAliasMappings holds the default value on creation for the "model_alias_mappings" field.
+	DefaultModelAliasMappings domain.GroupModelAliasMappings
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
 )
@@ -413,6 +428,11 @@ func ByModelRoutingEnabled(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldModelRoutingEnabled, opts...).ToFunc()
 }
 
+// ByIntraGroupBalance orders the results by the intra_group_balance field.
+func ByIntraGroupBalance(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldIntraGroupBalance, opts...).ToFunc()
+}
+
 // ByMcpXMLInject orders the results by the mcp_xml_inject field.
 func ByMcpXMLInject(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldMcpXMLInject, opts...).ToFunc()
@@ -441,6 +461,11 @@ func ByRequirePrivacySet(opts ...sql.OrderTermOption) OrderOption {
 // ByDefaultMappedModel orders the results by the default_mapped_model field.
 func ByDefaultMappedModel(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDefaultMappedModel, opts...).ToFunc()
+}
+
+// ByEnforceModelsList orders the results by the enforce_models_list field.
+func ByEnforceModelsList(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldEnforceModelsList, opts...).ToFunc()
 }
 
 // ByRpmLimit orders the results by the rpm_limit field.

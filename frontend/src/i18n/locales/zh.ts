@@ -304,6 +304,7 @@ export default {
     contactSupport: '联系客服',
     add: '添加',
     invalidEmail: '请输入有效的邮箱地址',
+    required: '不能为空',
     optional: '可选',
     selectOption: '请选择',
     searchPlaceholder: '搜索...',
@@ -2247,6 +2248,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -2338,6 +2340,14 @@ export default {
         loading: '正在加载模型列表...',
         empty: '暂无可展示模型'
       },
+      enforceModelsList: {
+        title: '强制模型清单（白名单）',
+        hint: '开启后上面的模型清单同时作为调用白名单：请求清单外的模型将被直接拒绝（400）。关闭时清单仅影响 /v1/models 展示。'
+      },
+      modelAlias: {
+        title: '模型别名映射',
+        hint: '对外统一模型名 → 池内真实模型名，每行一条，格式「对外名=真实名」。当前仅保存配置，运行时改写将在跨池功能中启用。'
+      },
       claudeCode: {
         title: 'Claude Code 客户端限制',
         tooltip:
@@ -2347,6 +2357,12 @@ export default {
         fallbackGroup: '降级分组',
         fallbackHint: '非 Claude Code 请求将使用此分组，留空则直接拒绝',
         noFallback: '不降级（直接拒绝）'
+      },
+      intraGroupBalance: {
+        title: '企业号组（组内负载均衡）',
+        enabled: '已启用：组内多账号分散调度',
+        disabled: '未启用：维持会话粘性',
+        hint: '启用后，同一会话不再固定绑定单个账号，而是在组内多个账号间负载均衡、遇限流即时换号。适用于 Kiro 企业账号编组。'
       },
       openaiMessages: {
         title: 'OpenAI Messages 调度配置',
@@ -3106,6 +3122,13 @@ export default {
     accounts: {
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
+      enterpriseGroups: {
+        title: '企业号组',
+        memberCount: '{count} 个账号',
+        statusActive: '活跃',
+        statusRateLimited: '限流中',
+        empty: '当前页无成员账号'
+      },
       createAccount: '添加账号',
       autoRefresh: '自动刷新',
       enableAutoRefresh: '启用自动刷新',
@@ -3208,6 +3231,7 @@ export default {
         notes: '备注',
         priority: '优先级',
         billingRateMultiplier: '账号倍率',
+        upstreamCostFactor: '调度成本',
         weight: '权重',
         status: '状态',
         schedulable: '调度',
@@ -3810,6 +3834,9 @@ export default {
       priorityHint: '优先级越小的账号优先使用',
       billingRateMultiplier: '账号计费倍率',
       billingRateMultiplierHint: '0 表示不计费，仅影响账号计费',
+      upstreamCostFactor: '上游成本因子',
+      upstreamCostFactorHint: '仅影响池模式调度优先级，不影响用户计费',
+      schedulingOnly: '调度成本',
       expiresAt: '过期时间',
       expiresAtHint: '留空表示不过期',
       higherPriorityFirst: '数值越小优先级越高',
@@ -3830,6 +3857,52 @@ export default {
       pleaseSelectStatus: '请选择有效的账号状态',
       mixedChannelWarningTitle: '混合渠道警告',
       mixedChannelWarning: '警告：分组 "{groupName}" 中同时包含 {currentPlatform} 和 {otherPlatform} 账号。混合使用不同渠道可能导致 thinking block 签名验证问题，会自动回退到非 thinking 模式。确定要继续吗？',
+      kiro: {
+        authMethod: '认证方式',
+        refreshToken: 'Refresh Token',
+        refreshTokenPlaceholder: '粘贴 Kiro 的 refreshToken',
+        refreshTokenRequired: '请输入 Refresh Token',
+        idcFieldsRequired: 'IdC 认证需要填写 Client ID 和 Client Secret',
+        region: '区域',
+        machineId: 'Machine ID',
+        proxyUrl: '代理地址',
+        optional: '可选',
+        clientId: 'Client ID',
+        clientSecret: 'Client Secret',
+        editHint: 'Kiro 账号凭证。密钥类字段留空则保持当前已存值。启用账号前请先在下方绑定代理。',
+        keepCurrent: '留空则保持当前值',
+        machineIdPlaceholder: '可选；留空将根据 refreshToken 派生',
+        machineIdHint: '可选的设备指纹。留空将为该账号派生一个稳定的 ID。',
+        creditsLabel: '额度',
+        quotaLine: '额度',
+        overage: '超额',
+        overageOn: '已开启',
+        overageOff: '已关闭',
+        overageIncapable: '不支持超额',
+        overageCap: '上限',
+        overageRate: '单价'
+      },
+      deepseek: {
+        upstreamOfficial: 'DeepSeek 官方',
+        upstreamOfficialDesc: 'api.deepseek.com — 按量付费',
+        upstreamOpenCode: 'OpenCode Go',
+        upstreamOpenCodeDesc: 'opencode.ai — 订阅制',
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: '请输入 DeepSeek API Key',
+        baseUrl: '基础 URL',
+        baseUrlPlaceholder: '根据上游选择自动填充',
+        baseUrlHint: '自动填充。仅在使用自定义端点时修改。',
+        proxyUrl: '代理 URL（可选）',
+      },
+      opencode: {
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: '请输入 OpenCode API Key',
+        baseUrl: '基础 URL',
+        baseUrlHint: '默认 https://opencode.ai/zen/go/v1。仅在使用自定义端点时修改。',
+        proxyUrl: '代理 URL（可选）',
+      },
       pleaseEnterAccountName: '请输入账号名称',
       pleaseEnterApiKey: '请输入 API Key',
       bedrockAccessKeyId: 'AWS Access Key ID',
@@ -3854,6 +3927,8 @@ export default {
       bedrockApiKeyLeaveEmpty: '留空以保持当前密钥',
       apiKeyIsRequired: 'API Key 是必需的',
       leaveEmptyToKeep: '留空以保持当前密钥',
+      proxyUrl: '代理 URL（凭据级）',
+      proxyUrlHint: '上游 API 连接使用的 SOCKS5 / HTTP 代理。不需要则留空。',
       // Upstream type
       upstream: {
         baseUrl: '上游 Base URL',
@@ -4292,6 +4367,16 @@ export default {
       title: 'IP管理',
       description: '管理代理服务器配置',
       createProxy: '添加代理',
+      deploySSH: 'SSH部署SOCKS5',
+      deploySSHTitle: 'SSH自动部署SOCKS5',
+      sshHost: 'SSH主机',
+      sshPort: 'SSH端口',
+      sshUser: 'SSH用户',
+      sshPassword: 'SSH密码',
+      deploying: '部署中...',
+      deploySuccess: 'SOCKS5部署成功并已加入代理池',
+      deploySSHHint: '将通过SSH登录目标服务器自动安装SOCKS5代理(随机端口+随机认证),SSH密码仅用于本次部署不会保存,部署约需1分钟',
+      nameAutoGen: '留空自动生成',
       editProxy: '编辑代理',
       deleteProxy: '删除代理',
       ad: {
@@ -6478,6 +6563,14 @@ export default {
         thresholdWindowMinutesHint: '超时计数的时间窗口（1-60分钟）',
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
+      },
+      streamContinuation: {
+        title: 'OpenAI 文本流续写',
+        description: '仅控制文本流中断后的最小恢复入口，不暴露 continuation 内部参数。',
+        enabled: '启用文本流不中断续写',
+        enabledHint: '仅影响文本流恢复调度，不改变用户计费或账号计费倍率。',
+        budgetSeconds: '流中恢复总预算',
+        budgetSecondsHint: '首 token 后文本流恢复的总等待预算，默认 10 秒；到期后按协议结束。'
       },
       rectifier: {
         title: '请求整流器',

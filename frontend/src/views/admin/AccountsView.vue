@@ -183,6 +183,90 @@
           @select-page="selectPage"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
+        <!-- 企业号组聚合面板 -->
+        <div
+          v-if="enterpriseGroups.length > 0"
+          class="mb-3 flex flex-col gap-2"
+        >
+          <div class="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            <Icon name="grid" size="xs" class="text-gray-400" />
+            <span>{{ t('admin.accounts.enterpriseGroups.title') }}</span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div
+              v-for="group in enterpriseGroups"
+              :key="group.id"
+              class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-dark-400 dark:bg-dark-800"
+            >
+              <button
+                type="button"
+                @click="toggleEnterpriseGroup(group.id)"
+                class="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 dark:hover:bg-dark-700"
+              >
+                <Icon
+                  name="chevronDown"
+                  size="xs"
+                  class="flex-shrink-0 text-gray-400 transition-transform duration-200"
+                  :class="[isEnterpriseGroupExpanded(group.id) ? 'rotate-0' : '-rotate-90']"
+                />
+                <span class="truncate font-medium text-gray-900 dark:text-white">{{ group.name }}</span>
+                <span class="flex-shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-600 dark:text-gray-300">
+                  {{ t('admin.accounts.enterpriseGroups.memberCount', { count: group.memberCount }) }}
+                </span>
+                <div class="ml-auto flex flex-shrink-0 items-center gap-1.5">
+                  <template v-if="group.activeCount > 0">
+                    <span class="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      {{ t('admin.accounts.enterpriseGroups.statusActive') }}
+                    </span>
+                  </template>
+                  <template v-else-if="group.memberCount > 0 && group.rateLimitedCount === group.memberCount">
+                    <span class="h-2 w-2 rounded-full bg-amber-500" />
+                    <span class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                      {{ t('admin.accounts.enterpriseGroups.statusRateLimited') }}
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span class="h-2 w-2 rounded-full bg-gray-300 dark:bg-dark-500" />
+                  </template>
+                </div>
+              </button>
+              <div
+                v-if="isEnterpriseGroupExpanded(group.id)"
+                class="border-t border-gray-100 px-3 py-2 dark:border-dark-600"
+              >
+                <div v-if="group.members.length === 0" class="py-1 pl-6 text-sm text-gray-400 dark:text-dark-500">
+                  {{ t('admin.accounts.enterpriseGroups.empty') }}
+                </div>
+                <ul v-else class="flex flex-col gap-1">
+                  <li
+                    v-for="member in group.members"
+                    :key="member.id"
+                    class="flex items-center gap-2 py-1 pl-6 text-sm"
+                  >
+                    <span
+                      class="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                      :class="[
+                        isAccountActive(member)
+                          ? 'bg-emerald-500'
+                          : isAccountRateLimited(member)
+                            ? 'bg-amber-500'
+                            : 'bg-gray-300 dark:bg-dark-500'
+                      ]"
+                    />
+                    <span class="truncate text-gray-700 dark:text-gray-300">{{ member.name }}</span>
+                    <span
+                      v-if="!member.schedulable"
+                      class="ml-auto flex-shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-dark-600 dark:text-gray-400"
+                    >
+                      {{ t('admin.accounts.schedulableDisabled') }}
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           ref="dataTableRef"
@@ -315,6 +399,16 @@
             <span class="text-sm font-mono text-gray-700 dark:text-gray-300">
               {{ (row.rate_multiplier ?? 1).toFixed(2) }}x
             </span>
+          </template>
+          <template #cell-upstream_cost_factor="{ row }">
+            <div class="flex flex-col">
+              <span class="text-sm font-mono text-gray-700 dark:text-gray-300">
+                {{ (row.upstream_cost_factor ?? 1).toFixed(3) }}x
+              </span>
+              <span class="text-[11px] text-gray-400 dark:text-dark-400">
+                {{ t('admin.accounts.schedulingOnly') }}
+              </span>
+            </div>
           </template>
           <template #cell-priority="{ value }">
             <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
@@ -1155,6 +1249,7 @@ const allColumns = computed(() => {
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
     { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
+    { key: 'upstream_cost_factor', label: t('admin.accounts.columns.upstreamCostFactor'), sortable: false },
     { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true },
     { key: 'created_at', label: t('admin.accounts.columns.createdAt'), sortable: true },
     { key: 'expires_at', label: t('admin.accounts.columns.expiresAt'), sortable: true },
@@ -1175,6 +1270,57 @@ const cols = computed(() =>
     col.key === 'select' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
   )
 )
+
+// 企业号组聚合面板：纯前端从已加载的 groups/accounts 派生，不发起额外请求
+interface EnterpriseGroupSummary {
+  id: number
+  name: string
+  memberCount: number
+  members: Account[]
+  activeCount: number
+  rateLimitedCount: number
+}
+
+const isAccountRateLimited = (account: Account): boolean => {
+  if (!account.rate_limit_reset_at) return false
+  return new Date(account.rate_limit_reset_at) > new Date()
+}
+
+const isAccountActive = (account: Account): boolean => {
+  return account.status === 'active' && account.schedulable && !isAccountRateLimited(account)
+}
+
+const enterpriseGroups = computed<EnterpriseGroupSummary[]>(() => {
+  return groups.value
+    .filter(group => group.platform === 'kiro' && group.intra_group_balance === true)
+    .map(group => {
+      const members = accounts.value.filter(account =>
+        (account.group_ids ?? []).includes(group.id)
+      )
+      return {
+        id: group.id,
+        name: group.name,
+        memberCount: members.length,
+        members,
+        activeCount: members.filter(isAccountActive).length,
+        rateLimitedCount: members.filter(isAccountRateLimited).length
+      }
+    })
+})
+
+const expandedEnterpriseGroups = ref<Set<number>>(new Set())
+
+const isEnterpriseGroupExpanded = (groupId: number) => expandedEnterpriseGroups.value.has(groupId)
+
+const toggleEnterpriseGroup = (groupId: number) => {
+  const next = new Set(expandedEnterpriseGroups.value)
+  if (next.has(groupId)) {
+    next.delete(groupId)
+  } else {
+    next.add(groupId)
+  }
+  expandedEnterpriseGroups.value = next
+}
 
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
 const openMenu = (a: Account, e: MouseEvent) => {

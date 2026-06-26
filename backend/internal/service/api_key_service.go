@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"html"
 	"strconv"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apikeygen"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -248,22 +247,10 @@ func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
 	apiKey.CompiledIPBlacklist = ip.CompileIPRules(apiKey.IPBlacklist)
 }
 
-// GenerateKey 生成随机API Key
+// GenerateKey 生成随机API Key(新版格式,见 internal/pkg/apikeygen)。
+// 旧版 key 仍可正常认证(整串明文查库),无需迁移。
 func (s *APIKeyService) GenerateKey() (string, error) {
-	// 生成32字节随机数据
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate random bytes: %w", err)
-	}
-
-	// 转换为十六进制字符串并添加前缀
-	prefix := s.cfg.Default.APIKeyPrefix
-	if prefix == "" {
-		prefix = "sk-"
-	}
-
-	key := prefix + hex.EncodeToString(bytes)
-	return key, nil
+	return apikeygen.Generate(s.cfg.Default.APIKeyPrefix)
 }
 
 // ValidateCustomKey 验证自定义API Key格式

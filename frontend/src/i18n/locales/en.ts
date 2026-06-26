@@ -304,6 +304,7 @@ export default {
     contactSupport: 'Contact Support',
     add: 'Add',
     invalidEmail: 'Please enter a valid email address',
+    required: 'is required',
     optional: 'optional',
     selectOption: 'Select an option',
     searchPlaceholder: 'Search...',
@@ -2219,6 +2220,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -2255,6 +2257,14 @@ export default {
         loading: 'Loading model list...',
         empty: 'No displayable models'
       },
+      enforceModelsList: {
+        title: 'Enforce Model List (Whitelist)',
+        hint: 'When on, the model list above also acts as a call whitelist: requests for models not in the list are rejected (400). When off, the list only affects the /v1/models display.'
+      },
+      modelAlias: {
+        title: 'Model Alias Mappings',
+        hint: 'External unified model name → pool-internal real model name, one per line as "external=real". Currently config-only; runtime rewrite activates with the cross-pool feature.'
+      },
       claudeCode: {
         title: 'Claude Code Client Restriction',
         tooltip: 'When enabled, this group only allows official Claude Code clients. Non-Claude Code requests will be rejected or fallback to the specified group.',
@@ -2263,6 +2273,12 @@ export default {
         fallbackGroup: 'Fallback Group',
         fallbackHint: 'Non-Claude Code requests will use this group. Leave empty to reject directly.',
         noFallback: 'No Fallback (Reject)'
+      },
+      intraGroupBalance: {
+        title: 'Enterprise Group (Intra-group Load Balancing)',
+        enabled: 'Enabled: distribute scheduling across accounts in the group',
+        disabled: 'Disabled: keep session stickiness',
+        hint: 'When enabled, a session is no longer pinned to a single account. Instead, requests are load-balanced across multiple accounts in the group and switched immediately on rate limit. Designed for Kiro enterprise account grouping.'
       },
       openaiMessages: {
         title: 'OpenAI Messages Dispatch',
@@ -3030,6 +3046,13 @@ export default {
     accounts: {
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
+      enterpriseGroups: {
+        title: 'Enterprise Groups',
+        memberCount: '{count} accounts',
+        statusActive: 'Active',
+        statusRateLimited: 'Rate Limited',
+        empty: 'No member accounts on this page'
+      },
       createAccount: 'Create Account',
       autoRefresh: 'Auto Refresh',
       enableAutoRefresh: 'Enable auto refresh',
@@ -3170,6 +3193,7 @@ export default {
         notes: 'Notes',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
+        upstreamCostFactor: 'Scheduling Cost',
         weight: 'Weight',
         status: 'Status',
         schedulable: 'Schedulable',
@@ -3659,6 +3683,9 @@ export default {
       priorityHint: 'Lower value accounts are used first',
       billingRateMultiplier: 'Billing Rate Multiplier',
       billingRateMultiplierHint: '0 = free, affects account billing only',
+      upstreamCostFactor: 'Upstream Cost Factor',
+      upstreamCostFactorHint: 'Affects pool scheduling priority only, not user billing',
+      schedulingOnly: 'Scheduling cost',
       expiresAt: 'Expires At',
       expiresAtHint: 'Leave empty for no expiration',
       higherPriorityFirst: 'Lower value means higher priority',
@@ -3679,6 +3706,52 @@ export default {
       pleaseSelectStatus: 'Please select a valid account status',
       mixedChannelWarningTitle: 'Mixed Channel Warning',
       mixedChannelWarning: 'Warning: Group "{groupName}" contains both {currentPlatform} and {otherPlatform} accounts. Mixing different channels may cause thinking block signature validation issues, which will fallback to non-thinking mode. Are you sure you want to continue?',
+      kiro: {
+        authMethod: 'Auth Method',
+        refreshToken: 'Refresh Token',
+        refreshTokenPlaceholder: 'Paste the Kiro refreshToken',
+        refreshTokenRequired: 'Please enter the Refresh Token',
+        idcFieldsRequired: 'IdC auth requires Client ID and Client Secret',
+        region: 'Region',
+        machineId: 'Machine ID',
+        proxyUrl: 'Proxy URL',
+        optional: 'Optional',
+        clientId: 'Client ID',
+        clientSecret: 'Client Secret',
+        editHint: 'Kiro account credentials. Leave a secret field blank to keep its current stored value. Bind a proxy below before enabling this account.',
+        keepCurrent: 'Leave blank to keep current',
+        machineIdPlaceholder: 'Optional; derived from refreshToken if empty',
+        machineIdHint: 'Optional device fingerprint. Leave empty to derive a stable per-account id.',
+        creditsLabel: 'Credits',
+        quotaLine: 'Quota',
+        overage: 'Overage',
+        overageOn: 'On',
+        overageOff: 'Off',
+        overageIncapable: 'Not supported',
+        overageCap: 'Cap',
+        overageRate: 'Rate'
+      },
+      deepseek: {
+        upstreamOfficial: 'DeepSeek Official',
+        upstreamOfficialDesc: 'api.deepseek.com — Pay-as-you-go',
+        upstreamOpenCode: 'OpenCode Go',
+        upstreamOpenCodeDesc: 'opencode.ai — Subscription',
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: 'Please enter DeepSeek API Key',
+        baseUrl: 'Base URL',
+        baseUrlPlaceholder: 'Auto-filled by upstream selection',
+        baseUrlHint: 'Auto-filled. Override only if you have a custom endpoint.',
+        proxyUrl: 'Proxy URL (Optional)',
+      },
+      opencode: {
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: 'Please enter OpenCode API Key',
+        baseUrl: 'Base URL',
+        baseUrlHint: 'Defaults to https://opencode.ai/zen/go/v1. Override only if you have a custom endpoint.',
+        proxyUrl: 'Proxy URL (Optional)',
+      },
       pleaseEnterAccountName: 'Please enter account name',
       pleaseEnterApiKey: 'Please enter API Key',
       bedrockAccessKeyId: 'AWS Access Key ID',
@@ -3703,6 +3776,8 @@ export default {
       bedrockApiKeyLeaveEmpty: 'Leave empty to keep current key',
       apiKeyIsRequired: 'API Key is required',
       leaveEmptyToKeep: 'Leave empty to keep current key',
+      proxyUrl: 'Proxy URL (credentials-level)',
+      proxyUrlHint: 'SOCKS5 / HTTP proxy for the upstream API connection. Leave empty if not needed.',
       // Upstream type
       upstream: {
         baseUrl: 'Upstream Base URL',
@@ -4200,6 +4275,16 @@ export default {
       title: 'Proxy Management',
       description: 'Manage proxy servers for accounts',
       createProxy: 'Create Proxy',
+      deploySSH: 'Deploy SOCKS5 via SSH',
+      deploySSHTitle: 'Auto-deploy SOCKS5 via SSH',
+      sshHost: 'SSH Host',
+      sshPort: 'SSH Port',
+      sshUser: 'SSH User',
+      sshPassword: 'SSH Password',
+      deploying: 'Deploying...',
+      deploySuccess: 'SOCKS5 deployed and added to proxy pool',
+      deploySSHHint: 'Will SSH into the target server and auto-install a SOCKS5 proxy (random port + random auth). SSH password is used only for this deployment and not stored. Takes ~1 minute.',
+      nameAutoGen: 'Leave empty to auto-generate',
       editProxy: 'Edit Proxy',
       deleteProxy: 'Delete Proxy',
       ad: {
@@ -6323,6 +6408,14 @@ export default {
         thresholdWindowMinutesHint: 'Time window for counting timeouts (1-60 minutes)',
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
+      },
+      streamContinuation: {
+        title: 'OpenAI Text Stream Continuation',
+        description: 'Minimal controls for recovering interrupted text streams without exposing internal continuation parameters.',
+        enabled: 'Continue interrupted text streams',
+        enabledHint: 'Affects text stream recovery scheduling only; it does not change user billing or account billing multipliers.',
+        budgetSeconds: 'Stream recovery budget',
+        budgetSecondsHint: 'Total post-first-token text stream recovery budget. Defaults to 10 seconds; after expiry the stream ends by protocol.'
       },
       rectifier: {
         title: 'Request Rectifier',

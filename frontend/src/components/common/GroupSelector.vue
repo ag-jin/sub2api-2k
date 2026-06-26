@@ -96,6 +96,11 @@ const filteredGroups = computed(() => {
       result = result.filter(
         (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini'
       )
+    } else if (props.platform === 'deepseek' || props.platform === 'opencode') {
+      // DeepSeek/OpenCode 是 Anthropic 协议兼容的附加 provider：可加入同类/anthropic/kiro 组。
+      result = result.filter(
+        (g) => g.platform === props.platform || g.platform === 'anthropic' || g.platform === 'kiro'
+      )
     } else {
       // 默认：只能选择同 platform 的分组
       result = result.filter((g) => g.platform === props.platform)

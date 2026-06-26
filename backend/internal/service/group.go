@@ -9,6 +9,7 @@ import (
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
 type GroupModelsListConfig = domain.GroupModelsListConfig
+type GroupModelAliasMappings = domain.GroupModelAliasMappings
 
 type Group struct {
 	ID             int64
@@ -46,6 +47,11 @@ type Group struct {
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool
 
+	// 组内负载均衡（企业号组）：开启后会话粘到本组而非组内单个账号，每次请求在
+	// 组内成员账号间负载均衡选号。用于把多个 Kiro 企业账号编成一组、组内分发、
+	// 遭 429 即时换号。默认 false，其他分组行为不变。
+	IntraGroupBalance bool
+
 	// MCP XML 协议注入开关（仅 antigravity 平台使用）
 	MCPXMLInject bool
 
@@ -63,6 +69,12 @@ type Group struct {
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            GroupModelsListConfig
+
+	// EnforceModelsList：开启后 ModelsListConfig.Models 既过滤 /v1/models 展示、
+	// 也在请求时拦截越界模型（请求清单外模型直接 400）。默认 false 维持仅展示。
+	EnforceModelsList bool
+	// ModelAliasMappings：对外统一模型名 → 池内真实模型名。调度匹配账号前归一化。
+	ModelAliasMappings GroupModelAliasMappings
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。
@@ -167,3 +179,56 @@ func matchModelPattern(pattern, model string) bool {
 
 	return false
 }
+
+// EnforceModelsListActive 报告该组是否启用「清单即白名单」强制拦截。
+// 需同时满足：开关开启 + 清单非空（空清单不拦，避免误锁全部模型）。
+func (g *Group) EnforceModelsListActive() bool {
+	return g != nil && g.EnforceModelsList && len(g.ModelsListConfig.Models) > 0
+}
+
+// AllowsOutputModel 报告对外模型名是否在该组输出清单内（支持 * 末尾通配）。
+// 仅在 EnforceModelsListActive 时有意义；未启用时调用方应放行。
+func (g *Group) AllowsOutputModel(model string) bool {
+	if g == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	for _, pattern := range g.ModelsListConfig.Models {
+		if matchModelPattern(strings.TrimSpace(pattern), model) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveModelAlias 把对外统一模型名翻译为池内真实模型名。
+// 未配置或未命中时原样返回（不改变行为）。仅精确匹配，不做通配。
+func (g *Group) ResolveModelAlias(externalName string) string {
+	if g == nil || len(g.ModelAliasMappings) == 0 {
+		return externalName
+	}
+	if real, ok := g.ModelAliasMappings[strings.TrimSpace(externalName)]; ok {
+		if real = strings.TrimSpace(real); real != "" {
+			return real
+		}
+	}
+	return externalName
+}
+
+// normalizeGroupModelAliasMappings 清洗别名映射：trim 键值、去空。
+func normalizeGroupModelAliasMappings(in GroupModelAliasMappings) GroupModelAliasMappings {
+	if len(in) == 0 {
+		return GroupModelAliasMappings{}
+	}
+	out := make(GroupModelAliasMappings, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+

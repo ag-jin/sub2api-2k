@@ -147,6 +147,156 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="sparkles" size="sm" />
+            Kiro
+          </button>
+          <button type="button" @click="form.platform = 'deepseek'" :class="['flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all', form.platform === 'deepseek' ? 'bg-white text-indigo-600 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200']">
+            <PlatformIcon platform="deepseek" size="sm" />
+            DeepSeek
+          </button>
+          <button type="button" @click="form.platform = 'opencode'" :class="['flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all', form.platform === 'opencode' ? 'bg-white text-violet-600 shadow-sm dark:bg-dark-600 dark:text-violet-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200']">
+            <PlatformIcon platform="opencode" size="sm" />
+            OpenCode
+          </button>
+        </div>
+      </div>
+
+      <!-- Kiro credential fields -->
+      <div v-if="form.platform === 'kiro'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.authMethod') }}</label>
+          <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click="kiroAuthMethod = 'idc'"
+              :class="[
+                'flex flex-1 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'idc'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400'
+              ]"
+            >
+              IdC / Builder ID
+            </button>
+            <button
+              type="button"
+              @click="kiroAuthMethod = 'social'"
+              :class="[
+                'flex flex-1 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'social'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400'
+              ]"
+            >
+              Social
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }} <span class="text-red-500">*</span></label>
+          <textarea
+            v-model="kiroRefreshToken"
+            rows="3"
+            class="input mt-1 font-mono text-xs"
+            :placeholder="t('admin.accounts.kiro.refreshTokenPlaceholder')"
+          ></textarea>
+        </div>
+
+        <div v-if="kiroAuthMethod === 'idc'" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">Client ID <span class="text-red-500">*</span></label>
+            <input v-model="kiroClientId" type="text" class="input mt-1" placeholder="clientId" />
+          </div>
+          <div>
+            <label class="input-label">Client Secret <span class="text-red-500">*</span></label>
+            <input v-model="kiroClientSecret" type="password" class="input mt-1" placeholder="clientSecret" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+            <input v-model="kiroRegion" type="text" class="input mt-1" placeholder="us-east-1" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.machineId') }}</label>
+            <input v-model="kiroMachineId" type="text" class="input mt-1" :placeholder="t('admin.accounts.kiro.optional')" />
+          </div>
+        </div>
+
+        <div>
+          <label class="input-label">Profile ARN</label>
+          <input v-model="kiroProfileArn" type="text" class="input mt-1" :placeholder="t('admin.accounts.kiro.optional')" />
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.proxyUrl') }}</label>
+          <input v-model="kiroProxyUrl" type="text" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <div class="mt-2">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+          </div>
+        </div>
+      </div>
+
+      <!-- DeepSeek credential fields -->
+      <div v-if="form.platform === 'deepseek'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.upstream') }}</label>
+          <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button type="button" @click="deepseekUpstream = 'official'" :class="['flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-all', deepseekUpstream === 'official' ? 'bg-white text-indigo-700 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200']">{{ t('admin.accounts.deepseek.upstreamOfficial') }}</button>
+            <button type="button" @click="deepseekUpstream = 'opencode'" :class="['flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-all', deepseekUpstream === 'opencode' ? 'bg-white text-indigo-700 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200']">{{ t('admin.accounts.deepseek.upstreamOpenCode') }}</button>
+          </div>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.apiKey') }} <span class="text-red-500">*</span></label>
+          <input v-model="deepseekApiKey" type="password" class="input mt-1" :placeholder="t('admin.accounts.deepseek.apiKeyPlaceholder')" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.baseUrl') }}</label>
+          <input v-model="deepseekBaseUrl" type="url" class="input mt-1" :placeholder="deepseekDefaultBaseUrl" />
+          <p class="input-hint text-[11px] text-gray-400">{{ deepseekDefaultBaseUrl }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.proxyUrl') }}</label>
+          <input v-model="deepseekProxyUrl" type="url" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+      </div>
+
+      <!-- OpenCode credential fields -->
+      <div v-if="form.platform === 'opencode'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.apiKey') }} <span class="text-red-500">*</span></label>
+          <input v-model="opencodeApiKey" type="password" class="input mt-1" :placeholder="t('admin.accounts.opencode.apiKeyPlaceholder')" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.baseUrl') }}</label>
+          <input v-model="opencodeBaseUrl" type="url" class="input mt-1" :placeholder="OPENCODE_DEFAULT_BASE_URL" />
+          <p class="input-hint text-[11px] text-gray-400">{{ t('admin.accounts.opencode.baseUrlHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.proxyUrl') }}</label>
+          <input v-model="opencodeProxyUrl" type="url" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <div class="mt-2">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+          </div>
         </div>
       </div>
 
@@ -2470,7 +2620,7 @@
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
@@ -2498,6 +2648,11 @@
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstreamCostFactor') }}</label>
+          <input v-model.number="form.upstream_cost_factor" type="number" min="0.001" step="0.001" class="input" />
+          <p class="input-hint">{{ t('admin.accounts.upstreamCostFactorHint') }}</p>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -3392,6 +3547,20 @@ const poolModeEnabled = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
 
+const normalizePoolModeRetryCount = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_POOL_MODE_RETRY_COUNT
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < 0) {
+    return 0
+  }
+  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
+    return MAX_POOL_MODE_RETRY_COUNT
+  }
+  return normalized
+}
+
 function parsePoolModeRetryStatusCodes(input: string): number[] {
   if (!input || !input.trim()) return []
   const seen = new Set<number>()
@@ -3692,12 +3861,48 @@ const form = reactive({
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
+  upstream_cost_factor: 1,
   group_ids: [] as number[],
   expires_at: null as number | null
 })
 
+// ── Kiro credential inputs ──────────────────────────────────────────
+const kiroRefreshToken = ref('')
+const kiroAuthMethod = ref<'idc' | 'social'>('idc')
+const kiroClientId = ref('')
+const kiroClientSecret = ref('')
+const kiroRegion = ref('us-east-1')
+const kiroMachineId = ref('')
+const kiroProfileArn = ref('')
+const kiroProxyUrl = ref('')
+
+// ── DeepSeek credential inputs ─────────────────────────────────────
+const OPENCODE_DEFAULT_BASE_URL = 'https://opencode.ai/zen/go/v1'
+const deepseekUpstream = ref<'official' | 'opencode'>('official')
+const deepseekApiKey = ref('')
+const deepseekBaseUrl = ref('')
+const deepseekProxyUrl = ref('')
+const deepseekDefaultBaseUrl = computed(() =>
+  deepseekUpstream.value === 'opencode'
+    ? OPENCODE_DEFAULT_BASE_URL
+    : 'https://api.deepseek.com'
+)
+const opencodeApiKey = ref('')
+const opencodeBaseUrl = ref(OPENCODE_DEFAULT_BASE_URL)
+const opencodeProxyUrl = ref('')
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
+  // Kiro 不使用 OAuth 流程，直接填凭证创建
+  if (form.platform === 'kiro') {
+    return false
+  }
+  if (form.platform === 'deepseek') {
+    return false
+  }
+  if (form.platform === 'opencode') {
+    return false
+  }
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
@@ -3798,10 +4003,15 @@ watch(
         ? 'https://api.openai.com'
         : newPlatform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
+          : newPlatform === 'opencode'
+            ? OPENCODE_DEFAULT_BASE_URL
           : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
+    if (newPlatform === 'opencode') {
+      opencodeBaseUrl.value = OPENCODE_DEFAULT_BASE_URL
+    }
     // Antigravity: 默认使用映射模式并填充默认映射
     if (newPlatform === 'antigravity') {
       antigravityModelRestrictionMode.value = 'mapping'
@@ -4207,6 +4417,7 @@ const resetForm = () => {
   form.load_factor = null
   form.priority = 1
   form.rate_multiplier = 1
+  form.upstream_cost_factor = 1
   form.group_ids = []
   form.expires_at = null
   accountCategory.value = 'oauth-based'
@@ -4226,6 +4437,13 @@ const resetForm = () => {
   openAICompactModelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
   allowedModels.value = [...claudeModels] // Default fill related models
+  deepseekUpstream.value = 'official'
+  deepseekApiKey.value = ''
+  deepseekBaseUrl.value = ''
+  deepseekProxyUrl.value = ''
+  opencodeApiKey.value = ''
+  opencodeBaseUrl.value = OPENCODE_DEFAULT_BASE_URL
+  opencodeProxyUrl.value = ''
 
   antigravityModelRestrictionMode.value = 'mapping'
   antigravityWhitelistModels.value = []
@@ -4405,20 +4623,6 @@ const handleMixedChannelCancel = () => {
   clearMixedChannelDialog()
 }
 
-const normalizePoolModeRetryCount = (value: number) => {
-  if (!Number.isFinite(value)) {
-    return DEFAULT_POOL_MODE_RETRY_COUNT
-  }
-  const normalized = Math.trunc(value)
-  if (normalized < 0) {
-    return 0
-  }
-  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
-    return MAX_POOL_MODE_RETRY_COUNT
-  }
-  return normalized
-}
-
 const applyVertexServiceAccountJson = (value: string) => {
   const raw = value.trim()
   if (!raw) {
@@ -4466,6 +4670,69 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'opencode') {
+    if (!form.name.trim()) { appStore.showError(t('admin.accounts.pleaseEnterAccountName')); return }
+    if (!opencodeApiKey.value.trim()) { appStore.showError(t('admin.accounts.opencode.apiKeyRequired')); return }
+    const credentials: Record<string, unknown> = {
+      api_key: opencodeApiKey.value.trim(),
+      base_url: opencodeBaseUrl.value.trim() || OPENCODE_DEFAULT_BASE_URL
+    }
+    if (opencodeProxyUrl.value.trim()) credentials.proxy_url = opencodeProxyUrl.value.trim()
+    const modelMapping = buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+    await createAccountAndFinish('opencode', 'apikey' as AccountType, credentials)
+    return
+  }
+
+  // DeepSeek: direct create with API Key + Base URL
+  if (form.platform === 'deepseek') {
+    if (!form.name.trim()) { appStore.showError(t('admin.accounts.pleaseEnterAccountName')); return }
+    if (!deepseekApiKey.value.trim()) { appStore.showError(t('admin.accounts.deepseek.apiKeyRequired')); return }
+    const credentials: Record<string, unknown> = { api_key: deepseekApiKey.value.trim() }
+    if (deepseekBaseUrl.value.trim()) credentials.base_url = deepseekBaseUrl.value.trim()
+    if (deepseekProxyUrl.value.trim()) credentials.proxy_url = deepseekProxyUrl.value.trim()
+    await createAccountAndFinish('deepseek', 'apikey' as AccountType, credentials)
+    return
+  }
+
+  // Kiro: direct create with refresh-token credentials
+  if (form.platform === 'kiro') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!kiroRefreshToken.value.trim()) {
+      appStore.showError(t('admin.accounts.kiro.refreshTokenRequired'))
+      return
+    }
+    if (kiroAuthMethod.value === 'idc' && (!kiroClientId.value.trim() || !kiroClientSecret.value.trim())) {
+      appStore.showError(t('admin.accounts.kiro.idcFieldsRequired'))
+      return
+    }
+    const credentials: Record<string, unknown> = {
+      refreshToken: kiroRefreshToken.value.trim(),
+      authMethod: kiroAuthMethod.value,
+      region: kiroRegion.value.trim() || 'us-east-1'
+    }
+    if (kiroAuthMethod.value === 'idc') {
+      credentials.clientId = kiroClientId.value.trim()
+      credentials.clientSecret = kiroClientSecret.value.trim()
+    }
+    if (kiroMachineId.value.trim()) credentials.machineId = kiroMachineId.value.trim()
+    if (kiroProfileArn.value.trim()) credentials.profileArn = kiroProfileArn.value.trim()
+    if (kiroProxyUrl.value.trim()) credentials.proxyUrl = kiroProxyUrl.value.trim()
+    const modelMapping = buildModelMappingObject(
+      modelRestrictionMode.value, allowedModels.value, modelMappings.value
+    )
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+    await createAccountAndFinish('kiro', 'oauth' as AccountType, credentials)
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!form.name.trim()) {
@@ -4781,6 +5048,7 @@ const createAccountAndFinish = async (
     load_factor: form.load_factor ?? undefined,
     priority: form.priority,
     rate_multiplier: form.rate_multiplier,
+    upstream_cost_factor: form.upstream_cost_factor,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
     auto_pause_on_expired: autoPauseOnExpired.value
@@ -4848,6 +5116,7 @@ const handleOpenAIExchange = async (authCode: string) => {
         load_factor: form.load_factor ?? undefined,
         priority: form.priority,
         rate_multiplier: form.rate_multiplier,
+        upstream_cost_factor: form.upstream_cost_factor,
         group_ids: form.group_ids,
         expires_at: form.expires_at,
         auto_pause_on_expired: autoPauseOnExpired.value
@@ -4925,6 +5194,7 @@ const handleOpenAIImportCodexSession = async (content: string) => {
       load_factor: form.load_factor ?? undefined,
       priority: form.priority,
       rate_multiplier: form.rate_multiplier,
+      upstream_cost_factor: form.upstream_cost_factor,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value,
@@ -5052,6 +5322,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
             load_factor: form.load_factor ?? undefined,
             priority: form.priority,
             rate_multiplier: form.rate_multiplier,
+            upstream_cost_factor: form.upstream_cost_factor,
             group_ids: form.group_ids,
             expires_at: form.expires_at,
             auto_pause_on_expired: autoPauseOnExpired.value
@@ -5150,6 +5421,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+          upstream_cost_factor: form.upstream_cost_factor,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
@@ -5491,6 +5763,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+          upstream_cost_factor: form.upstream_cost_factor,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value

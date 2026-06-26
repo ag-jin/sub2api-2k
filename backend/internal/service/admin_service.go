@@ -30,6 +30,8 @@ import (
 
 // AdminService interface defines admin management operations
 type AdminService interface {
+	// NewProxyPlannerForPlatform builds a proxy auto-assignment planner for a platform.
+	NewProxyPlannerForPlatform(ctx context.Context, platform string, perProxyCap int) (*ProxyAssignmentPlanner, error)
 	// User management
 	ListUsers(ctx context.Context, page, pageSize int, filters UserListFilters, sortBy, sortOrder string) ([]User, int64, error)
 	GetUser(ctx context.Context, id int64) (*User, error)
@@ -218,6 +220,7 @@ type CreateGroupInput struct {
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool // 是否启用模型路由
+	IntraGroupBalance   bool // 组内负载均衡（企业号组）
 	MCPXMLInject        *bool
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string
@@ -228,6 +231,8 @@ type CreateGroupInput struct {
 	RequirePrivacySet           bool
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            GroupModelsListConfig
+	EnforceModelsList           bool
+	ModelAliasMappings          GroupModelAliasMappings
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit int
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
@@ -259,6 +264,7 @@ type UpdateGroupInput struct {
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled *bool // 是否启用模型路由
+	IntraGroupBalance   *bool // 组内负载均衡（企业号组）
 	MCPXMLInject        *bool
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string
@@ -269,6 +275,8 @@ type UpdateGroupInput struct {
 	RequirePrivacySet           *bool
 	MessagesDispatchModelConfig *OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            *GroupModelsListConfig
+	EnforceModelsList           *bool
+	ModelAliasMappings          *GroupModelAliasMappings
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit *int
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
@@ -295,6 +303,10 @@ type CreateAccountInput struct {
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
+	// Schedulable controls the initial schedulable flag. nil => default (true).
+	// Used to pre-store accounts that could not be auto-assigned a proxy in a
+	// disabled (unschedulable) state until a proxy is configured for them.
+	Schedulable *bool
 }
 
 type UpdateAccountInput struct {
@@ -1897,6 +1909,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		FallbackGroupID:                 input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
 		ModelRouting:                    input.ModelRouting,
+		IntraGroupBalance:               input.IntraGroupBalance,
 		MCPXMLInject:                    mcpXMLInject,
 		SupportedModelScopes:            input.SupportedModelScopes,
 		AllowMessagesDispatch:           input.AllowMessagesDispatch,
@@ -1905,6 +1918,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		DefaultMappedModel:              input.DefaultMappedModel,
 		MessagesDispatchModelConfig:     normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
 		ModelsListConfig:                normalizeGroupModelsListConfig(input.ModelsListConfig),
+		EnforceModelsList:               input.EnforceModelsList,
+		ModelAliasMappings:              normalizeGroupModelAliasMappings(input.ModelAliasMappings),
 		RPMLimit:                        input.RPMLimit,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
@@ -2127,6 +2142,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.ModelRoutingEnabled != nil {
 		group.ModelRoutingEnabled = *input.ModelRoutingEnabled
 	}
+	if input.IntraGroupBalance != nil {
+		group.IntraGroupBalance = *input.IntraGroupBalance
+	}
 	if input.MCPXMLInject != nil {
 		group.MCPXMLInject = *input.MCPXMLInject
 	}
@@ -2154,6 +2172,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.ModelsListConfig != nil {
 		group.ModelsListConfig = normalizeGroupModelsListConfig(*input.ModelsListConfig)
+	}
+	if input.EnforceModelsList != nil {
+		group.EnforceModelsList = *input.EnforceModelsList
+	}
+	if input.ModelAliasMappings != nil {
+		group.ModelAliasMappings = normalizeGroupModelAliasMappings(*input.ModelAliasMappings)
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit
@@ -2593,6 +2617,12 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// Kiro 平台：强制每个出口（代理或服务器直连）的账号数不超过 KiroProxyCap，
+	// 避免多个 Kiro 账号共用一个出口 IP 被关联。
+	if err := s.checkKiroEgressCapacity(ctx, input.Platform, input.ProxyID, 0); err != nil {
+		return nil, err
+	}
+
 	account := &Account{
 		Name:        input.Name,
 		Notes:       normalizeAccountNotes(input.Notes),
@@ -2605,6 +2635,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		Priority:    input.Priority,
 		Status:      StatusActive,
 		Schedulable: true,
+	}
+	if input.Schedulable != nil {
+		account.Schedulable = *input.Schedulable
 	}
 	// 预计算固定时间重置的下次重置时间
 	if account.Extra != nil {
@@ -2731,6 +2764,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			account.ProxyID = input.ProxyID
 		}
 		account.Proxy = nil // 清除关联对象，防止 GORM Save 时根据 Proxy.ID 覆盖 ProxyID
+		// Kiro 平台：改动出口（代理或直连）时，校验目标出口未超 KiroProxyCap。
+		// 排除自身，避免“原地保存”被自己计数误拦。
+		if err := s.checkKiroEgressCapacity(ctx, account.Platform, account.ProxyID, account.ID); err != nil {
+			return nil, err
+		}
 	}
 	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
 	if input.Concurrency != nil {

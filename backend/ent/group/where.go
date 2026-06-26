@@ -175,6 +175,11 @@ func ModelRoutingEnabled(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldModelRoutingEnabled, v))
 }
 
+// IntraGroupBalance applies equality check predicate on the "intra_group_balance" field. It's identical to IntraGroupBalanceEQ.
+func IntraGroupBalance(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldIntraGroupBalance, v))
+}
+
 // McpXMLInject applies equality check predicate on the "mcp_xml_inject" field. It's identical to McpXMLInjectEQ.
 func McpXMLInject(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldMcpXMLInject, v))
@@ -203,6 +208,11 @@ func RequirePrivacySet(v bool) predicate.Group {
 // DefaultMappedModel applies equality check predicate on the "default_mapped_model" field. It's identical to DefaultMappedModelEQ.
 func DefaultMappedModel(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultMappedModel, v))
+}
+
+// EnforceModelsList applies equality check predicate on the "enforce_models_list" field. It's identical to EnforceModelsListEQ.
+func EnforceModelsList(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldEnforceModelsList, v))
 }
 
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
@@ -1255,6 +1265,16 @@ func ModelRoutingEnabledNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldModelRoutingEnabled, v))
 }
 
+// IntraGroupBalanceEQ applies the EQ predicate on the "intra_group_balance" field.
+func IntraGroupBalanceEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldIntraGroupBalance, v))
+}
+
+// IntraGroupBalanceNEQ applies the NEQ predicate on the "intra_group_balance" field.
+func IntraGroupBalanceNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldIntraGroupBalance, v))
+}
+
 // McpXMLInjectEQ applies the EQ predicate on the "mcp_xml_inject" field.
 func McpXMLInjectEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldMcpXMLInject, v))
@@ -1398,6 +1418,16 @@ func DefaultMappedModelEqualFold(v string) predicate.Group {
 // DefaultMappedModelContainsFold applies the ContainsFold predicate on the "default_mapped_model" field.
 func DefaultMappedModelContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldDefaultMappedModel, v))
+}
+
+// EnforceModelsListEQ applies the EQ predicate on the "enforce_models_list" field.
+func EnforceModelsListEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldEnforceModelsList, v))
+}
+
+// EnforceModelsListNEQ applies the NEQ predicate on the "enforce_models_list" field.
+func EnforceModelsListNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldEnforceModelsList, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

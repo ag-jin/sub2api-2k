@@ -69,6 +69,8 @@ type Group struct {
 	ModelRouting map[string][]int64 `json:"model_routing,omitempty"`
 	// 是否启用模型路由配置
 	ModelRoutingEnabled bool `json:"model_routing_enabled,omitempty"`
+	// 组内负载均衡：会话粘组、组内成员间分发（企业号组）
+	IntraGroupBalance bool `json:"intra_group_balance,omitempty"`
 	// 是否注入 MCP XML 调用协议提示词（仅 antigravity 平台）
 	McpXMLInject bool `json:"mcp_xml_inject,omitempty"`
 	// 支持的模型系列：claude, gemini_text, gemini_image
@@ -85,8 +87,12 @@ type Group struct {
 	DefaultMappedModel string `json:"default_mapped_model,omitempty"`
 	// OpenAI Messages 调度模型配置：按 Claude 系列/精确模型映射到目标 GPT 模型
 	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
-	// 自定义 /v1/models 展示列表配置；仅影响模型列表响应，不影响调度
+	// 自定义 /v1/models 展示列表配置；enforce_models_list=true 时同时作为调度白名单
 	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config,omitempty"`
+	// 启用后 models_list_config.Models 既过滤 /v1/models 展示、也在请求时拦截越界模型
+	EnforceModelsList bool `json:"enforce_models_list,omitempty"`
+	// 对外统一模型名→池内真实模型名映射；调度匹配账号前归一化
+	ModelAliasMappings domain.GroupModelAliasMappings `json:"model_alias_mappings,omitempty"`
 	// 分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流
 	RpmLimit int `json:"rpm_limit,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
@@ -195,9 +201,9 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelsListConfig:
+		case group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelsListConfig, group.FieldModelAliasMappings:
 			values[i] = new([]byte)
-		case group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldImageRateIndependent, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet:
+		case group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldImageRateIndependent, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldIntraGroupBalance, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldEnforceModelsList:
 			values[i] = new(sql.NullBool)
 		case group.FieldRateMultiplier, group.FieldDailyLimitUsd, group.FieldWeeklyLimitUsd, group.FieldMonthlyLimitUsd, group.FieldImageRateMultiplier, group.FieldImagePrice1k, group.FieldImagePrice2k, group.FieldImagePrice4k:
 			values[i] = new(sql.NullFloat64)
@@ -390,6 +396,12 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ModelRoutingEnabled = value.Bool
 			}
+		case group.FieldIntraGroupBalance:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field intra_group_balance", values[i])
+			} else if value.Valid {
+				_m.IntraGroupBalance = value.Bool
+			}
 		case group.FieldMcpXMLInject:
 			if value, ok := values[i].(*sql.NullBool); !ok {
 				return fmt.Errorf("unexpected type %T for field mcp_xml_inject", values[i])
@@ -448,6 +460,20 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value != nil && len(*value) > 0 {
 				if err := json.Unmarshal(*value, &_m.ModelsListConfig); err != nil {
 					return fmt.Errorf("unmarshal field models_list_config: %w", err)
+				}
+			}
+		case group.FieldEnforceModelsList:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field enforce_models_list", values[i])
+			} else if value.Valid {
+				_m.EnforceModelsList = value.Bool
+			}
+		case group.FieldModelAliasMappings:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field model_alias_mappings", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.ModelAliasMappings); err != nil {
+					return fmt.Errorf("unmarshal field model_alias_mappings: %w", err)
 				}
 			}
 		case group.FieldRpmLimit:
@@ -627,6 +653,9 @@ func (_m *Group) String() string {
 	builder.WriteString("model_routing_enabled=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ModelRoutingEnabled))
 	builder.WriteString(", ")
+	builder.WriteString("intra_group_balance=")
+	builder.WriteString(fmt.Sprintf("%v", _m.IntraGroupBalance))
+	builder.WriteString(", ")
 	builder.WriteString("mcp_xml_inject=")
 	builder.WriteString(fmt.Sprintf("%v", _m.McpXMLInject))
 	builder.WriteString(", ")
@@ -653,6 +682,12 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("models_list_config=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ModelsListConfig))
+	builder.WriteString(", ")
+	builder.WriteString("enforce_models_list=")
+	builder.WriteString(fmt.Sprintf("%v", _m.EnforceModelsList))
+	builder.WriteString(", ")
+	builder.WriteString("model_alias_mappings=")
+	builder.WriteString(fmt.Sprintf("%v", _m.ModelAliasMappings))
 	builder.WriteString(", ")
 	builder.WriteString("rpm_limit=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RpmLimit))

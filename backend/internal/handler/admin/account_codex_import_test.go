@@ -1,12 +1,16 @@
 package admin
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 func TestParseCodexSessionImportEntriesSupportsRawTokenJSONAndArray(t *testing.T) {
@@ -315,6 +319,136 @@ func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
 	}
 	if !hasEmail {
 		t.Fatalf("weak identity should include email fallback: %v", keys)
+	}
+}
+
+func TestImportCodexSessionsCreatePersistsUpstreamCostFactor(t *testing.T) {
+	adminSvc := newStubAdminService()
+	adminSvc.accounts = nil
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	factor := 0.42
+	token := buildCodexImportTestJWT(t, time.Now().Add(time.Hour), map[string]any{
+		"email": "create@example.com",
+	})
+	entries := []codexImportEntry{{Index: 1, Value: map[string]any{
+		"accessToken":   token,
+		"refresh_token": "refresh-token",
+	}}}
+
+	result, err := handler.importCodexSessions(context.Background(), CodexSessionImportRequest{
+		UpstreamCostFactor: &factor,
+		Extra: map[string]any{
+			"keep": "request-extra",
+		},
+	}, entries)
+	if err != nil {
+		t.Fatalf("importCodexSessions error = %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("Created = %d, want 1", result.Created)
+	}
+	if len(adminSvc.createdAccounts) != 1 {
+		t.Fatalf("createdAccounts len = %d, want 1", len(adminSvc.createdAccounts))
+	}
+	extra := adminSvc.createdAccounts[0].Extra
+	if extra["keep"] != "request-extra" {
+		t.Fatalf("extra keep = %v, want request-extra", extra["keep"])
+	}
+	if got := extra["upstream_cost_factor"]; got != factor {
+		t.Fatalf("upstream_cost_factor = %v, want %v", got, factor)
+	}
+}
+
+func TestImportCodexSessionsUpdatePersistsUpstreamCostFactorAndPreservesExtra(t *testing.T) {
+	adminSvc := newStubAdminService()
+	token := buildCodexImportTestJWT(t, time.Now().Add(time.Hour), map[string]any{
+		"email": "update@example.com",
+	})
+	adminSvc.accounts = []service.Account{{
+		ID:       88,
+		Name:     "existing",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email":           "update@example.com",
+			"chatgpt_user_id": "user-from-sub",
+		},
+		Extra: map[string]any{
+			"existing":             "preserved",
+			"upstream_cost_factor": 9.9,
+		},
+	}}
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	factor := 0.55
+	entries := []codexImportEntry{{Index: 1, Value: map[string]any{
+		"accessToken":   token,
+		"refresh_token": "refresh-token",
+	}}}
+
+	result, err := handler.importCodexSessions(context.Background(), CodexSessionImportRequest{
+		UpstreamCostFactor: &factor,
+		Extra: map[string]any{
+			"request": "preserved",
+		},
+	}, entries)
+	if err != nil {
+		t.Fatalf("importCodexSessions error = %v", err)
+	}
+	if result.Updated != 1 {
+		t.Fatalf("Updated = %d, want 1", result.Updated)
+	}
+	if len(adminSvc.updatedAccounts) != 1 {
+		t.Fatalf("updatedAccounts len = %d, want 1", len(adminSvc.updatedAccounts))
+	}
+	extra := adminSvc.updatedAccounts[0].Extra
+	if extra["existing"] != "preserved" {
+		t.Fatalf("existing extra = %v, want preserved", extra["existing"])
+	}
+	if extra["request"] != "preserved" {
+		t.Fatalf("request extra = %v, want preserved", extra["request"])
+	}
+	if got := extra["upstream_cost_factor"]; got != factor {
+		t.Fatalf("upstream_cost_factor = %v, want %v", got, factor)
+	}
+}
+
+func TestImportCodexSessionsIgnoresInvalidUpstreamCostFactor(t *testing.T) {
+	tests := []struct {
+		name   string
+		factor float64
+	}{
+		{name: "zero", factor: 0},
+		{name: "negative", factor: -1},
+		{name: "nan", factor: math.NaN()},
+		{name: "inf", factor: math.Inf(1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adminSvc := newStubAdminService()
+			adminSvc.accounts = nil
+			handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			token := buildCodexImportTestJWT(t, time.Now().Add(time.Hour), map[string]any{
+				"email": tt.name + "@example.com",
+			})
+			entries := []codexImportEntry{{Index: 1, Value: map[string]any{
+				"accessToken":   token,
+				"refresh_token": "refresh-token",
+			}}}
+
+			result, err := handler.importCodexSessions(context.Background(), CodexSessionImportRequest{
+				UpstreamCostFactor: &tt.factor,
+			}, entries)
+			if err != nil {
+				t.Fatalf("importCodexSessions error = %v", err)
+			}
+			if result.Created != 1 {
+				t.Fatalf("Created = %d, want 1", result.Created)
+			}
+			if _, ok := adminSvc.createdAccounts[0].Extra["upstream_cost_factor"]; ok {
+				t.Fatalf("upstream_cost_factor should not be persisted for %v", tt.factor)
+			}
+		})
 	}
 }
 

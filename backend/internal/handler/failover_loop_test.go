@@ -70,6 +70,143 @@ func TestNewFailoverState(t *testing.T) {
 	})
 }
 
+func TestFailoverStatePreFirstTokenRecoveryBudget(t *testing.T) {
+	t.Run("默认预算为2秒", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+
+		require.Equal(t, 2*time.Second, fs.PreFirstTokenRecoveryBudget())
+	})
+
+	t.Run("预算耗尽后停止透明恢复", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.preFirstTokenRecoveryStartedAt = time.Now().Add(-3 * time.Second)
+
+		require.False(t, fs.CanRecoverBeforeFirstToken())
+	})
+
+	t.Run("预算内允许透明恢复", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.preFirstTokenRecoveryStartedAt = time.Now().Add(-500 * time.Millisecond)
+
+		require.True(t, fs.CanRecoverBeforeFirstToken())
+	})
+
+	t.Run("剩余预算不足时不再等待重试", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.preFirstTokenRecoveryStartedAt = time.Now().Add(-1900 * time.Millisecond)
+
+		require.False(t, fs.SleepBeforeFirstTokenRetry(context.Background(), 200*time.Millisecond))
+	})
+}
+
+func TestFailoverStatePostFirstTokenTextContinuation(t *testing.T) {
+	t.Run("默认预算为10秒且同账号短重试为2次", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+
+		require.Equal(t, 10*time.Second, fs.PostFirstTokenRecoveryBudget())
+		require.Equal(t, 2, fs.PostFirstTokenSameAccountRetryLimit())
+	})
+
+	t.Run("text aggressive 同账号短重试不加入失败账号", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, true, false)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, err)
+
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.SameAccountRetryCount[100])
+		require.NotContains(t, fs.FailedAccountIDs, int64(100))
+		require.Equal(t, err, fs.LastFailoverErr)
+	})
+
+	t.Run("同账号短重试耗尽后跨账号 continuation 并排除失败账号", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, true, false)
+
+		for i := 0; i < fs.PostFirstTokenSameAccountRetryLimit(); i++ {
+			require.Equal(t, FailoverContinue, fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, err))
+		}
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, err)
+
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.SwitchCount)
+		require.Contains(t, fs.FailedAccountIDs, int64(100))
+	})
+
+	t.Run("strict safe 不跨账号续写", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, false, false)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationStrictSafe, 100, err)
+
+		require.Equal(t, FailoverExhausted, action)
+		require.NotContains(t, fs.FailedAccountIDs, int64(100))
+		require.Equal(t, 0, fs.SwitchCount)
+	})
+
+	t.Run("预算耗尽发终止动作", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.postFirstTokenRecoveryStartedAt = time.Now().Add(-11 * time.Second)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, newTestFailoverErr(502, false, false))
+
+		require.Equal(t, FailoverExhausted, action)
+		require.NotContains(t, fs.FailedAccountIDs, int64(100))
+	})
+}
+
+func TestFailoverStateContinuationObservabilitySnapshot(t *testing.T) {
+	t.Run("pre first token recovery is counted and duration is visible", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+
+		require.True(t, fs.CanRecoverBeforeFirstToken())
+		snapshot := fs.ContinuationMetricsSnapshot()
+
+		require.Equal(t, int64(1), snapshot.PreFirstTokenRecoverTotal)
+		require.GreaterOrEqual(t, snapshot.PreFirstTokenDurationMs, int64(0))
+	})
+
+	t.Run("post first token same account recovery is counted without cross account success", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(429, true, false)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, err)
+
+		require.Equal(t, FailoverContinue, action)
+		snapshot := fs.ContinuationMetricsSnapshot()
+		require.Equal(t, int64(1), snapshot.PostFirstTokenSameAccountRecoverTotal)
+		require.Equal(t, int64(0), snapshot.CrossAccountContinuationSuccessTotal)
+		require.Equal(t, int64(0), snapshot.CrossAccountContinuationFailTotal)
+		require.GreaterOrEqual(t, snapshot.ContinuationDurationMs, int64(0))
+	})
+
+	t.Run("cross account continuation success and fail are explicit", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, false, false)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationTextAggressive, 100, err)
+		require.Equal(t, FailoverContinue, action)
+		fs.RecordCrossAccountContinuationResult(true)
+		fs.RecordCrossAccountContinuationResult(false)
+
+		snapshot := fs.ContinuationMetricsSnapshot()
+		require.Equal(t, int64(1), snapshot.CrossAccountContinuationSuccessTotal)
+		require.Equal(t, int64(1), snapshot.CrossAccountContinuationFailTotal)
+		require.Equal(t, int64(1), snapshot.CrossAccountContinuationAttemptTotal)
+	})
+
+	t.Run("strict safe conservative failure is counted", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, false, false)
+
+		action := fs.HandlePostFirstTokenFailover(context.Background(), service.OpenAIStreamContinuationStrictSafe, 100, err)
+
+		require.Equal(t, FailoverExhausted, action)
+		snapshot := fs.ContinuationMetricsSnapshot()
+		require.Equal(t, int64(1), snapshot.StrictSafeConservativeFailTotal)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // sleepWithContext 测试
 // ---------------------------------------------------------------------------

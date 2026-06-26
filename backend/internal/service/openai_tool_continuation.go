@@ -1,10 +1,85 @@
 package service
 
 import (
+	"context"
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
+
+type OpenAIStreamContinuationMode string
+
+const (
+	OpenAIStreamContinuationStrictSafe     OpenAIStreamContinuationMode = "strict_safe"
+	OpenAIStreamContinuationTextAggressive OpenAIStreamContinuationMode = "text_aggressive"
+)
+
+type openAITextStreamContinuationKey struct{}
+
+type OpenAITextStreamContinuationState struct {
+	Tail string
+}
+
+func WithOpenAITextStreamContinuation(ctx context.Context, tail string) context.Context {
+	return context.WithValue(ctx, openAITextStreamContinuationKey{}, OpenAITextStreamContinuationState{
+		Tail: strings.TrimSpace(tail),
+	})
+}
+
+func OpenAITextStreamContinuationFromContext(ctx context.Context) (OpenAITextStreamContinuationState, bool) {
+	if ctx == nil {
+		return OpenAITextStreamContinuationState{}, false
+	}
+	state, ok := ctx.Value(openAITextStreamContinuationKey{}).(OpenAITextStreamContinuationState)
+	if !ok {
+		return OpenAITextStreamContinuationState{}, false
+	}
+	return state, strings.TrimSpace(state.Tail) != ""
+}
+
+func BuildOpenAITextContinuationRequest(body []byte, tail string) ([]byte, error) {
+	tail = strings.TrimSpace(tail)
+	if tail == "" {
+		return body, nil
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body, nil
+	}
+	instruction := "The previous streamed assistant response was interrupted after this already-sent text tail:\n" +
+		tail +
+		"\nContinue from the interruption point. Do not repeat text already emitted. Preserve the same direction, language, and tone."
+
+	if messages := gjson.GetBytes(body, "messages"); messages.Exists() && messages.IsArray() {
+		next, err := sjson.SetBytes(body, "messages.-1", map[string]string{
+			"role":    "system",
+			"content": instruction,
+		})
+		if err != nil {
+			return nil, err
+		}
+		next, err = sjson.SetBytes(next, "stream", true)
+		if err != nil {
+			return nil, err
+		}
+		return next, nil
+	}
+
+	existing := strings.TrimSpace(gjson.GetBytes(body, "instructions").String())
+	combined := instruction
+	if existing != "" {
+		combined = existing + "\n\n" + instruction
+	}
+	next, err := sjson.SetBytes(body, "instructions", combined)
+	if err != nil {
+		return nil, err
+	}
+	next, err = sjson.SetBytes(next, "stream", true)
+	if err != nil {
+		return nil, err
+	}
+	return next, nil
+}
 
 // ToolContinuationSignals 聚合工具续链相关信号，避免重复遍历 input。
 type ToolContinuationSignals struct {
@@ -81,6 +156,95 @@ func NeedsToolContinuation(reqBody map[string]any) bool {
 		}
 	}
 	return false
+}
+
+func ClassifyOpenAIStreamContinuationMode(endpoint string, body []byte) OpenAIStreamContinuationMode {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return OpenAIStreamContinuationStrictSafe
+	}
+	endpoint = strings.TrimRight(strings.ToLower(strings.TrimSpace(endpoint)), "/")
+	if IsImageGenerationEndpoint(endpoint) {
+		return OpenAIStreamContinuationStrictSafe
+	}
+	if gjson.GetBytes(body, "stream").Type != gjson.True {
+		return OpenAIStreamContinuationStrictSafe
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if IsImageGenerationIntent(endpoint, model, body) {
+		return OpenAIStreamContinuationStrictSafe
+	}
+	if openAIStreamBodyHasToolSignal(body) ||
+		openAIStreamBodyHasStructuredOutputSignal(body) ||
+		openAIStreamBodyHasMultimodalSignal(body) {
+		return OpenAIStreamContinuationStrictSafe
+	}
+	switch endpoint {
+	case "/v1/responses", "/openai/v1/responses", "/v1/chat/completions", "/openai/v1/chat/completions":
+		return OpenAIStreamContinuationTextAggressive
+	default:
+		return OpenAIStreamContinuationStrictSafe
+	}
+}
+
+func openAIStreamBodyHasToolSignal(body []byte) bool {
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() && len(tools.Array()) > 0 {
+		return true
+	}
+	toolChoice := gjson.GetBytes(body, "tool_choice")
+	if !toolChoice.Exists() {
+		return false
+	}
+	switch toolChoice.Type {
+	case gjson.String:
+		return strings.TrimSpace(toolChoice.String()) != ""
+	case gjson.JSON:
+		if toolChoice.IsObject() {
+			return len(toolChoice.Map()) > 0
+		}
+	}
+	return false
+}
+
+func openAIStreamBodyHasStructuredOutputSignal(body []byte) bool {
+	for _, path := range []string{
+		"response_format.type",
+		"text.format.type",
+	} {
+		value := strings.TrimSpace(gjson.GetBytes(body, path).String())
+		switch value {
+		case "json_schema", "json_object":
+			return true
+		}
+	}
+	if gjson.GetBytes(body, "text.format.strict").Type == gjson.True {
+		return true
+	}
+	if gjson.GetBytes(body, "response_format.json_schema.strict").Type == gjson.True {
+		return true
+	}
+	return false
+}
+
+func openAIStreamBodyHasMultimodalSignal(body []byte) bool {
+	if openAIRequestBodyMayContainImageInput(body) {
+		return true
+	}
+	modalities := gjson.GetBytes(body, "modalities")
+	if modalities.IsArray() {
+		strict := false
+		modalities.ForEach(func(_, item gjson.Result) bool {
+			if strings.TrimSpace(item.String()) != "" && strings.TrimSpace(item.String()) != "text" {
+				strict = true
+				return false
+			}
+			return true
+		})
+		if strict {
+			return true
+		}
+	}
+	return gjson.GetBytes(body, "audio").Exists()
 }
 
 // AnalyzeToolContinuationSignals 单次遍历 input，提取工具输出/工具调用上下文/item_reference 相关信号。

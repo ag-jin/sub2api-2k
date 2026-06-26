@@ -91,18 +91,6 @@
             </div>
           </div>
 
-          <div class="flex items-center justify-between rounded-xl border border-gray-200 p-3 dark:border-dark-700">
-            <div>
-              <p class="text-sm font-medium text-gray-900 dark:text-white">
-                {{ t("setup.redis.enableTls") }}
-              </p>
-              <p class="text-xs text-gray-500 dark:text-dark-400">
-                {{ t("setup.redis.enableTlsHint") }}
-              </p>
-            </div>
-            <Toggle v-model="formData.redis.enable_tls" />
-          </div>
-
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="input-label">{{ t('setup.database.username') }}</label>
@@ -339,8 +327,87 @@
           </div>
         </div>
 
-        <!-- Step 4: Complete -->
+        <!-- Step 4: Bootstrap SSH -->
         <div v-if="currentStep === 3" class="space-y-6">
+          <div class="mb-6 text-center">
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
+              {{ t('setup.bootstrap.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">
+              {{ t('setup.bootstrap.description') }}
+            </p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="input-label">{{ t('setup.bootstrap.host') }}</label>
+              <input
+                v-model.trim="formData.bootstrap_ssh.host"
+                data-testid="bootstrap-ssh-host"
+                type="text"
+                class="input"
+                :placeholder="t('setup.bootstrap.hostPlaceholder')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('setup.bootstrap.port') }}</label>
+              <input
+                v-model.number="formData.bootstrap_ssh.port"
+                data-testid="bootstrap-ssh-port"
+                type="number"
+                class="input"
+                :placeholder="t('setup.bootstrap.portPlaceholder')"
+              />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="input-label">{{ t('setup.bootstrap.user') }}</label>
+              <input
+                v-model.trim="formData.bootstrap_ssh.user"
+                data-testid="bootstrap-ssh-user"
+                type="text"
+                class="input"
+                :placeholder="t('setup.bootstrap.userPlaceholder')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('setup.bootstrap.deploymentDir') }}</label>
+              <input
+                v-model.trim="formData.bootstrap_ssh.deployment_dir"
+                data-testid="bootstrap-ssh-deployment-dir"
+                type="text"
+                class="input"
+                :placeholder="t('setup.bootstrap.deploymentDirPlaceholder')"
+              />
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between rounded-xl border border-gray-200 p-3 dark:border-dark-700">
+            <div>
+              <p class="text-sm font-medium text-gray-900 dark:text-white">
+                {{ t('setup.bootstrap.bootstrapOnly') }}
+              </p>
+              <p class="text-xs text-gray-500 dark:text-dark-400">
+                {{ t('setup.bootstrap.bootstrapOnlyHint') }}
+              </p>
+            </div>
+            <input
+              v-model="formData.bootstrap_ssh.bootstrap_only"
+              data-testid="bootstrap-ssh-bootstrap-only"
+              type="checkbox"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600"
+            />
+          </div>
+
+          <p v-if="hasBootstrapSSHInput && !isBootstrapSSHValid" class="input-error-text">
+            {{ t('setup.bootstrap.validationHint') }}
+          </p>
+        </div>
+
+        <!-- Step 5: Complete -->
+        <div v-if="currentStep === 4" class="space-y-6">
           <div class="mb-6 text-center">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
               {{ t('setup.ready.title') }}
@@ -376,6 +443,24 @@
                 {{ t('setup.ready.adminEmail') }}
               </h3>
               <p class="text-gray-900 dark:text-white">{{ formData.admin.email }}</p>
+            </div>
+
+            <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-700">
+              <h3 class="mb-2 text-sm font-medium text-gray-500 dark:text-dark-400">
+                {{ t('setup.ready.bootstrap') }}
+              </h3>
+              <template v-if="hasBootstrapSSHInput">
+                <p class="text-gray-900 dark:text-white">
+                  {{ formData.bootstrap_ssh.user }}@{{ formData.bootstrap_ssh.host }}:{{ bootstrapDisplayPort }}
+                </p>
+                <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">
+                  {{ formData.bootstrap_ssh.deployment_dir }} ·
+                  {{ formData.bootstrap_ssh.bootstrap_only ? t('setup.bootstrap.bootstrapOnly') : t('common.no') }}
+                </p>
+              </template>
+              <p v-else class="text-gray-500 dark:text-dark-400">
+                {{ t('setup.ready.bootstrapNotConfigured') }}
+              </p>
             </div>
           </div>
         </div>
@@ -446,7 +531,7 @@
           <div v-else></div>
 
           <button
-            v-if="currentStep < 3"
+            v-if="currentStep < 4"
             @click="nextStep"
             :disabled="!canProceed"
             class="btn btn-primary"
@@ -503,6 +588,7 @@ const steps = computed(() => [
   { id: 'database', title: t('setup.database.title') },
   { id: 'redis', title: t('setup.redis.title') },
   { id: 'admin', title: t('setup.admin.title') },
+  { id: 'bootstrap', title: t('setup.bootstrap.title') },
   { id: 'complete', title: t('setup.ready.title') }
 ])
 
@@ -518,6 +604,35 @@ const redisConnected = ref(false)
 const installing = ref(false)
 const confirmPassword = ref('')
 const serviceReady = ref(false)
+
+const hasBootstrapSSHInput = computed(() => {
+  const config = formData.bootstrap_ssh
+  return Boolean(
+    config.host.trim() ||
+      config.port ||
+      config.user.trim() ||
+      config.deployment_dir.trim() ||
+      config.bootstrap_only
+  )
+})
+
+const isBootstrapSSHValid = computed(() => {
+  if (!hasBootstrapSSHInput.value) {
+    return true
+  }
+
+  const config = formData.bootstrap_ssh
+  return (
+    config.bootstrap_only &&
+    !!config.host.trim() &&
+    !!config.user.trim() &&
+    !!config.deployment_dir.trim() &&
+    config.deployment_dir.startsWith('/') &&
+    (!config.port || (config.port >= 1 && config.port <= 65535))
+  )
+})
+
+const bootstrapDisplayPort = computed(() => formData.bootstrap_ssh.port || 22)
 
 // Default server port
 const getCurrentPort = (): number => {
@@ -549,6 +664,13 @@ const formData = reactive<InstallRequest>({
     email: '',
     password: ''
   },
+  bootstrap_ssh: {
+    host: '',
+    port: 0,
+    user: '',
+    deployment_dir: '',
+    bootstrap_only: false
+  },
   server: {
     host: '0.0.0.0',
     port: getCurrentPort(), // Use current port from browser
@@ -568,6 +690,8 @@ const canProceed = computed(() => {
         formData.admin.password.length >= 8 &&
         formData.admin.password === confirmPassword.value
       )
+    case 3:
+      return isBootstrapSSHValid.value
     default:
       return true
   }
@@ -614,12 +738,27 @@ function nextStep() {
   }
 }
 
+function buildInstallPayload(): InstallRequest {
+  const bootstrapPort = hasBootstrapSSHInput.value ? bootstrapDisplayPort.value : 0
+
+  return {
+    database: { ...formData.database },
+    redis: { ...formData.redis },
+    admin: { ...formData.admin },
+    bootstrap_ssh: {
+      ...formData.bootstrap_ssh,
+      port: bootstrapPort
+    },
+    server: { ...formData.server }
+  }
+}
+
 async function performInstall() {
   installing.value = true
   errorMessage.value = ''
 
   try {
-    await install(formData)
+    await install(buildInstallPayload())
     installSuccess.value = true
     // Start polling for service restart
     waitForServiceRestart()

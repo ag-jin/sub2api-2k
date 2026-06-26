@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type CodexSessionImportRequest struct {
 	Concurrency             *int           `json:"concurrency"`
 	Priority                *int           `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64       `json:"upstream_cost_factor"`
 	LoadFactor              *int           `json:"load_factor"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
@@ -217,6 +219,7 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		}
 		credentials := mergeCodexImportMap(item.Credentials, credentialExtras)
 		extra := mergeCodexImportMap(req.Extra, item.Extra)
+		mergeCodexImportUpstreamCostFactor(extra, req.UpstreamCostFactor)
 		for _, warning := range item.WarningTexts {
 			result.Warnings = append(result.Warnings, CodexSessionImportMessage{
 				Index:   entry.Index,
@@ -885,6 +888,16 @@ func mergeCodexImportMap(existing, incoming map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func mergeCodexImportUpstreamCostFactor(extra map[string]any, factor *float64) {
+	if extra == nil || factor == nil {
+		return
+	}
+	if *factor <= 0 || math.IsNaN(*factor) || math.IsInf(*factor, 0) {
+		return
+	}
+	extra["upstream_cost_factor"] = *factor
 }
 
 func mergeCodexImportCredentials(existing, incoming map[string]any, item *codexImportAccount) map[string]any {

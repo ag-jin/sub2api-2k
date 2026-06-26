@@ -41,6 +41,8 @@ type GatewayHandler struct {
 	gatewayService            *service.GatewayService
 	geminiCompatService       *service.GeminiMessagesCompatService
 	antigravityGatewayService *service.AntigravityGatewayService
+	kiroGatewayService        *service.KiroGatewayService
+	deepseekGatewayService    *service.DeepseekGatewayService
 	userService               *service.UserService
 	billingCacheService       *service.BillingCacheService
 	usageService              *service.UsageService
@@ -96,6 +98,8 @@ func NewGatewayHandler(
 		gatewayService:            gatewayService,
 		geminiCompatService:       geminiCompatService,
 		antigravityGatewayService: antigravityGatewayService,
+		kiroGatewayService:        service.NewKiroGatewayService(gatewayService.AccountRepo()),
+		deepseekGatewayService:    service.NewDeepseekGatewayService(gatewayService.AccountRepo()),
 		userService:               userService,
 		billingCacheService:       billingCacheService,
 		usageService:              usageService,
@@ -192,6 +196,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 验证 model 必填
 	if reqModel == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	// 分组输出模型清单强制拦截（启用 enforce_models_list 时，越界模型直接拒绝）
+	if !apiKeyModelAllowed(apiKey, reqModel) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", modelGuardErrorMessage)
 		return
 	}
 
@@ -775,6 +785,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
+			} else if account.Platform == service.PlatformKiro {
+				result, err = h.kiroGatewayService.Forward(requestCtx, c, account, attemptBody)
+			} else if account.Platform == service.PlatformDeepseek || account.Platform == service.PlatformOpenCode {
+				result, err = h.deepseekGatewayService.Forward(requestCtx, c, account, attemptBody)
 			} else {
 				result, err = h.gatewayService.Forward(requestCtx, c, account, attemptParsedReq)
 			}
@@ -988,7 +1002,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Get available models from account configurations for the selected group platform.
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
-	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+	// 展示清单：Enabled（仅展示开关）或 EnforceModelsList（强制白名单）任一开启时，
+	// /v1/models 都收敛到声明清单，确保“能看到的”与“能调的”一致。
+	if apiKey != nil && apiKey.Group != nil && (apiKey.Group.CustomModelsListEnabled() || apiKey.Group.EnforceModelsListActive()) {
 		availableModels = filterModelsByCustomList(availableModels, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)
 		return

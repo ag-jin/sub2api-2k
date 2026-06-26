@@ -363,6 +363,20 @@ func (_c *GroupCreate) SetNillableModelRoutingEnabled(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (_c *GroupCreate) SetIntraGroupBalance(v bool) *GroupCreate {
+	_c.mutation.SetIntraGroupBalance(v)
+	return _c
+}
+
+// SetNillableIntraGroupBalance sets the "intra_group_balance" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableIntraGroupBalance(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetIntraGroupBalance(*v)
+	}
+	return _c
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (_c *GroupCreate) SetMcpXMLInject(v bool) *GroupCreate {
 	_c.mutation.SetMcpXMLInject(v)
@@ -478,6 +492,26 @@ func (_c *GroupCreate) SetNillableModelsListConfig(v *domain.GroupModelsListConf
 	if v != nil {
 		_c.SetModelsListConfig(*v)
 	}
+	return _c
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (_c *GroupCreate) SetEnforceModelsList(v bool) *GroupCreate {
+	_c.mutation.SetEnforceModelsList(v)
+	return _c
+}
+
+// SetNillableEnforceModelsList sets the "enforce_models_list" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableEnforceModelsList(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetEnforceModelsList(*v)
+	}
+	return _c
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (_c *GroupCreate) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupCreate {
+	_c.mutation.SetModelAliasMappings(v)
 	return _c
 }
 
@@ -680,6 +714,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultModelRoutingEnabled
 		_c.mutation.SetModelRoutingEnabled(v)
 	}
+	if _, ok := _c.mutation.IntraGroupBalance(); !ok {
+		v := group.DefaultIntraGroupBalance
+		_c.mutation.SetIntraGroupBalance(v)
+	}
 	if _, ok := _c.mutation.McpXMLInject(); !ok {
 		v := group.DefaultMcpXMLInject
 		_c.mutation.SetMcpXMLInject(v)
@@ -715,6 +753,14 @@ func (_c *GroupCreate) defaults() error {
 	if _, ok := _c.mutation.ModelsListConfig(); !ok {
 		v := group.DefaultModelsListConfig
 		_c.mutation.SetModelsListConfig(v)
+	}
+	if _, ok := _c.mutation.EnforceModelsList(); !ok {
+		v := group.DefaultEnforceModelsList
+		_c.mutation.SetEnforceModelsList(v)
+	}
+	if _, ok := _c.mutation.ModelAliasMappings(); !ok {
+		v := group.DefaultModelAliasMappings
+		_c.mutation.SetModelAliasMappings(v)
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		v := group.DefaultRpmLimit
@@ -787,6 +833,9 @@ func (_c *GroupCreate) check() error {
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		return &ValidationError{Name: "model_routing_enabled", err: errors.New(`ent: missing required field "Group.model_routing_enabled"`)}
 	}
+	if _, ok := _c.mutation.IntraGroupBalance(); !ok {
+		return &ValidationError{Name: "intra_group_balance", err: errors.New(`ent: missing required field "Group.intra_group_balance"`)}
+	}
 	if _, ok := _c.mutation.McpXMLInject(); !ok {
 		return &ValidationError{Name: "mcp_xml_inject", err: errors.New(`ent: missing required field "Group.mcp_xml_inject"`)}
 	}
@@ -818,6 +867,12 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ModelsListConfig(); !ok {
 		return &ValidationError{Name: "models_list_config", err: errors.New(`ent: missing required field "Group.models_list_config"`)}
+	}
+	if _, ok := _c.mutation.EnforceModelsList(); !ok {
+		return &ValidationError{Name: "enforce_models_list", err: errors.New(`ent: missing required field "Group.enforce_models_list"`)}
+	}
+	if _, ok := _c.mutation.ModelAliasMappings(); !ok {
+		return &ValidationError{Name: "model_alias_mappings", err: errors.New(`ent: missing required field "Group.model_alias_mappings"`)}
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		return &ValidationError{Name: "rpm_limit", err: errors.New(`ent: missing required field "Group.rpm_limit"`)}
@@ -949,6 +1004,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
 		_node.ModelRoutingEnabled = value
 	}
+	if value, ok := _c.mutation.IntraGroupBalance(); ok {
+		_spec.SetField(group.FieldIntraGroupBalance, field.TypeBool, value)
+		_node.IntraGroupBalance = value
+	}
 	if value, ok := _c.mutation.McpXMLInject(); ok {
 		_spec.SetField(group.FieldMcpXMLInject, field.TypeBool, value)
 		_node.McpXMLInject = value
@@ -984,6 +1043,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
 		_node.ModelsListConfig = value
+	}
+	if value, ok := _c.mutation.EnforceModelsList(); ok {
+		_spec.SetField(group.FieldEnforceModelsList, field.TypeBool, value)
+		_node.EnforceModelsList = value
+	}
+	if value, ok := _c.mutation.ModelAliasMappings(); ok {
+		_spec.SetField(group.FieldModelAliasMappings, field.TypeJSON, value)
+		_node.ModelAliasMappings = value
 	}
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -1565,6 +1632,18 @@ func (u *GroupUpsert) UpdateModelRoutingEnabled() *GroupUpsert {
 	return u
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (u *GroupUpsert) SetIntraGroupBalance(v bool) *GroupUpsert {
+	u.Set(group.FieldIntraGroupBalance, v)
+	return u
+}
+
+// UpdateIntraGroupBalance sets the "intra_group_balance" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateIntraGroupBalance() *GroupUpsert {
+	u.SetExcluded(group.FieldIntraGroupBalance)
+	return u
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (u *GroupUpsert) SetMcpXMLInject(v bool) *GroupUpsert {
 	u.Set(group.FieldMcpXMLInject, v)
@@ -1676,6 +1755,30 @@ func (u *GroupUpsert) SetModelsListConfig(v domain.GroupModelsListConfig) *Group
 // UpdateModelsListConfig sets the "models_list_config" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateModelsListConfig() *GroupUpsert {
 	u.SetExcluded(group.FieldModelsListConfig)
+	return u
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (u *GroupUpsert) SetEnforceModelsList(v bool) *GroupUpsert {
+	u.Set(group.FieldEnforceModelsList, v)
+	return u
+}
+
+// UpdateEnforceModelsList sets the "enforce_models_list" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateEnforceModelsList() *GroupUpsert {
+	u.SetExcluded(group.FieldEnforceModelsList)
+	return u
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (u *GroupUpsert) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupUpsert {
+	u.Set(group.FieldModelAliasMappings, v)
+	return u
+}
+
+// UpdateModelAliasMappings sets the "model_alias_mappings" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateModelAliasMappings() *GroupUpsert {
+	u.SetExcluded(group.FieldModelAliasMappings)
 	return u
 }
 
@@ -2232,6 +2335,20 @@ func (u *GroupUpsertOne) UpdateModelRoutingEnabled() *GroupUpsertOne {
 	})
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (u *GroupUpsertOne) SetIntraGroupBalance(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetIntraGroupBalance(v)
+	})
+}
+
+// UpdateIntraGroupBalance sets the "intra_group_balance" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateIntraGroupBalance() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateIntraGroupBalance()
+	})
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (u *GroupUpsertOne) SetMcpXMLInject(v bool) *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
@@ -2362,6 +2479,34 @@ func (u *GroupUpsertOne) SetModelsListConfig(v domain.GroupModelsListConfig) *Gr
 func (u *GroupUpsertOne) UpdateModelsListConfig() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelsListConfig()
+	})
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (u *GroupUpsertOne) SetEnforceModelsList(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetEnforceModelsList(v)
+	})
+}
+
+// UpdateEnforceModelsList sets the "enforce_models_list" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateEnforceModelsList() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateEnforceModelsList()
+	})
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (u *GroupUpsertOne) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetModelAliasMappings(v)
+	})
+}
+
+// UpdateModelAliasMappings sets the "model_alias_mappings" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateModelAliasMappings() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateModelAliasMappings()
 	})
 }
 
@@ -3087,6 +3232,20 @@ func (u *GroupUpsertBulk) UpdateModelRoutingEnabled() *GroupUpsertBulk {
 	})
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (u *GroupUpsertBulk) SetIntraGroupBalance(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetIntraGroupBalance(v)
+	})
+}
+
+// UpdateIntraGroupBalance sets the "intra_group_balance" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateIntraGroupBalance() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateIntraGroupBalance()
+	})
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (u *GroupUpsertBulk) SetMcpXMLInject(v bool) *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
@@ -3217,6 +3376,34 @@ func (u *GroupUpsertBulk) SetModelsListConfig(v domain.GroupModelsListConfig) *G
 func (u *GroupUpsertBulk) UpdateModelsListConfig() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelsListConfig()
+	})
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (u *GroupUpsertBulk) SetEnforceModelsList(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetEnforceModelsList(v)
+	})
+}
+
+// UpdateEnforceModelsList sets the "enforce_models_list" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateEnforceModelsList() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateEnforceModelsList()
+	})
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (u *GroupUpsertBulk) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetModelAliasMappings(v)
+	})
+}
+
+// UpdateModelAliasMappings sets the "model_alias_mappings" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateModelAliasMappings() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateModelAliasMappings()
 	})
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/deepseek"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -105,6 +106,7 @@ type CreateAccountRequest struct {
 	Concurrency             int            `json:"concurrency"`
 	Priority                int            `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64       `json:"upstream_cost_factor"`
 	LoadFactor              *int           `json:"load_factor"`
 	GroupIDs                []int64        `json:"group_ids"`
 	ExpiresAt               *int64         `json:"expires_at"`
@@ -124,6 +126,7 @@ type UpdateAccountRequest struct {
 	Concurrency             *int           `json:"concurrency"`
 	Priority                *int           `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64       `json:"upstream_cost_factor"`
 	LoadFactor              *int           `json:"load_factor"`
 	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
 	GroupIDs                *[]int64       `json:"group_ids"`
@@ -141,6 +144,7 @@ type BulkUpdateAccountsRequest struct {
 	Concurrency             *int                      `json:"concurrency"`
 	Priority                *int                      `json:"priority"`
 	RateMultiplier          *float64                  `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64                  `json:"upstream_cost_factor"`
 	LoadFactor              *int                      `json:"load_factor"`
 	Status                  string                    `json:"status" binding:"omitempty,oneof=active inactive error"`
 	Schedulable             *bool                     `json:"schedulable"`
@@ -522,6 +526,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -606,6 +611,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -1313,12 +1319,19 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 // POST /api/v1/admin/accounts/batch
 func (h *AccountHandler) BatchCreate(c *gin.Context) {
 	var req struct {
-		Accounts []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
+		Accounts        []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
+		AutoAssignProxy bool                   `json:"auto_assign_proxy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+
+	// Per-proxy per-platform cap for auto-assignment (e.g. 5 kiro accounts/proxy).
+	const proxyPerPlatformCap = 5
+	// Lazily-built planners, one per platform, seeded from live DB state.
+	proxyPlanners := map[string]*service.ProxyAssignmentPlanner{}
+	proxyUnassigned := 0 // accounts that wanted a proxy but none had capacity
 
 	executeAdminIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		success := 0
@@ -1344,6 +1357,47 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 
 			skipCheck := item.ConfirmMixedChannelRisk != nil && *item.ConfirmMixedChannelRisk
 
+			// Auto-assign a proxy (only when requested and the account did not
+			// specify one). Picks the least-loaded active proxy still under the
+			// per-platform cap; if all proxies are full, leaves it unproxied and
+			// records a warning (no over-assignment).
+			assignProxyID := item.ProxyID
+			var pendingProxy bool // pre-stored disabled: wanted a proxy but none free
+			if req.AutoAssignProxy && assignProxyID == nil {
+				planner, ok := proxyPlanners[item.Platform]
+				if !ok {
+					p, perr := h.adminService.NewProxyPlannerForPlatform(ctx, item.Platform, proxyPerPlatformCap)
+					if perr == nil {
+						planner = p
+						proxyPlanners[item.Platform] = p
+					}
+				}
+				if planner != nil {
+					if pid, ok := planner.Next(); ok {
+						// pid == 0 is the server host-IP slot: a valid, enabled
+						// assignment with NO proxy bound (direct egress). pid > 0
+						// binds a real proxy. Either way the account is enabled.
+						if pid > 0 {
+							p := pid
+							assignProxyID = &p
+						}
+					} else {
+						// Every slot (real proxies + host IP, each capped) is full.
+						proxyUnassigned++
+						pendingProxy = true
+					}
+				}
+			}
+
+			// Accounts that wanted a proxy but got none are pre-stored in a
+			// DISABLED (unschedulable) state so they never egress via the bare
+			// host IP. They are enabled later once a proxy is bound (edit page).
+			var schedulable *bool
+			if pendingProxy {
+				f := false
+				schedulable = &f
+			}
+
 			account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 				Name:                  item.Name,
 				Notes:                 item.Notes,
@@ -1351,7 +1405,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				Type:                  item.Type,
 				Credentials:           item.Credentials,
 				Extra:                 item.Extra,
-				ProxyID:               item.ProxyID,
+				ProxyID:               assignProxyID,
 				Concurrency:           item.Concurrency,
 				Priority:              item.Priority,
 				RateMultiplier:        item.RateMultiplier,
@@ -1359,6 +1413,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				ExpiresAt:             item.ExpiresAt,
 				AutoPauseOnExpired:    item.AutoPauseOnExpired,
 				SkipMixedChannelCheck: skipCheck,
+				Schedulable:           schedulable,
 			})
 			if err != nil {
 				failed++
@@ -1381,11 +1436,16 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			// OpenAI APIKey 账号异步探测 /v1/responses 能力。
 			h.scheduleOpenAIResponsesProbe(account)
 			success++
-			results = append(results, gin.H{
+			res := gin.H{
 				"name":    item.Name,
 				"id":      account.ID,
 				"success": true,
-			})
+			}
+			if pendingProxy {
+				res["pending_proxy"] = true
+				res["schedulable"] = false
+			}
+			results = append(results, res)
 		}
 
 		// 异步设置隐私，避免批量创建时阻塞请求
@@ -1419,11 +1479,21 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			}()
 		}
 
-		return gin.H{
+		resp := gin.H{
 			"success": success,
 			"failed":  failed,
 			"results": results,
-		}, nil
+		}
+		if req.AutoAssignProxy {
+			resp["proxy_unassigned"] = proxyUnassigned
+			if proxyUnassigned > 0 {
+				resp["proxy_warning"] = strconv.Itoa(proxyUnassigned) +
+					" account(s) were imported but left DISABLED: every egress slot is full " +
+					"(the server IP plus each proxy each hold up to " + strconv.Itoa(proxyPerPlatformCap) +
+					" accounts per platform). Add more proxies, bind them on the account edit page, then enable."
+			}
+		}
+		return resp, nil
 	})
 }
 
@@ -1528,6 +1598,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	if len(req.AccountIDs) == 0 && req.Filters == nil {
 		response.BadRequest(c, "account_ids or filters is required")
 		return
@@ -1543,6 +1614,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.Concurrency != nil ||
 		req.Priority != nil ||
 		req.RateMultiplier != nil ||
+		req.UpstreamCostFactor != nil ||
 		req.LoadFactor != nil ||
 		req.Status != "" ||
 		req.Schedulable != nil ||
@@ -2063,6 +2135,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	// Handle OpenCode accounts
+	if account.Platform == service.PlatformOpenCode {
+		response.Success(c, deepseek.OpenCodeModels())
+		return
+	}
+
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
@@ -2425,4 +2503,18 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 		v = 10000
 	}
 	extra["base_rpm"] = v
+}
+
+func mergeUpstreamCostFactorIntoExtra(extra *map[string]any, factor *float64) {
+	if factor == nil {
+		return
+	}
+	if *extra == nil {
+		*extra = make(map[string]any)
+	}
+	if *factor > 0 {
+		(*extra)["upstream_cost_factor"] = *factor
+		return
+	}
+	delete(*extra, "upstream_cost_factor")
 }

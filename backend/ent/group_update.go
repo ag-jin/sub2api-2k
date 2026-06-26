@@ -499,6 +499,20 @@ func (_u *GroupUpdate) SetNillableModelRoutingEnabled(v *bool) *GroupUpdate {
 	return _u
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (_u *GroupUpdate) SetIntraGroupBalance(v bool) *GroupUpdate {
+	_u.mutation.SetIntraGroupBalance(v)
+	return _u
+}
+
+// SetNillableIntraGroupBalance sets the "intra_group_balance" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableIntraGroupBalance(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetIntraGroupBalance(*v)
+	}
+	return _u
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (_u *GroupUpdate) SetMcpXMLInject(v bool) *GroupUpdate {
 	_u.mutation.SetMcpXMLInject(v)
@@ -627,6 +641,26 @@ func (_u *GroupUpdate) SetNillableModelsListConfig(v *domain.GroupModelsListConf
 	if v != nil {
 		_u.SetModelsListConfig(*v)
 	}
+	return _u
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (_u *GroupUpdate) SetEnforceModelsList(v bool) *GroupUpdate {
+	_u.mutation.SetEnforceModelsList(v)
+	return _u
+}
+
+// SetNillableEnforceModelsList sets the "enforce_models_list" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableEnforceModelsList(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetEnforceModelsList(*v)
+	}
+	return _u
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (_u *GroupUpdate) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupUpdate {
+	_u.mutation.SetModelAliasMappings(v)
 	return _u
 }
 
@@ -1094,6 +1128,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.IntraGroupBalance(); ok {
+		_spec.SetField(group.FieldIntraGroupBalance, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.McpXMLInject(); ok {
 		_spec.SetField(group.FieldMcpXMLInject, field.TypeBool, value)
 	}
@@ -1128,6 +1165,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.EnforceModelsList(); ok {
+		_spec.SetField(group.FieldEnforceModelsList, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ModelAliasMappings(); ok {
+		_spec.SetField(group.FieldModelAliasMappings, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -1912,6 +1955,20 @@ func (_u *GroupUpdateOne) SetNillableModelRoutingEnabled(v *bool) *GroupUpdateOn
 	return _u
 }
 
+// SetIntraGroupBalance sets the "intra_group_balance" field.
+func (_u *GroupUpdateOne) SetIntraGroupBalance(v bool) *GroupUpdateOne {
+	_u.mutation.SetIntraGroupBalance(v)
+	return _u
+}
+
+// SetNillableIntraGroupBalance sets the "intra_group_balance" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableIntraGroupBalance(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetIntraGroupBalance(*v)
+	}
+	return _u
+}
+
 // SetMcpXMLInject sets the "mcp_xml_inject" field.
 func (_u *GroupUpdateOne) SetMcpXMLInject(v bool) *GroupUpdateOne {
 	_u.mutation.SetMcpXMLInject(v)
@@ -2040,6 +2097,26 @@ func (_u *GroupUpdateOne) SetNillableModelsListConfig(v *domain.GroupModelsListC
 	if v != nil {
 		_u.SetModelsListConfig(*v)
 	}
+	return _u
+}
+
+// SetEnforceModelsList sets the "enforce_models_list" field.
+func (_u *GroupUpdateOne) SetEnforceModelsList(v bool) *GroupUpdateOne {
+	_u.mutation.SetEnforceModelsList(v)
+	return _u
+}
+
+// SetNillableEnforceModelsList sets the "enforce_models_list" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableEnforceModelsList(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetEnforceModelsList(*v)
+	}
+	return _u
+}
+
+// SetModelAliasMappings sets the "model_alias_mappings" field.
+func (_u *GroupUpdateOne) SetModelAliasMappings(v domain.GroupModelAliasMappings) *GroupUpdateOne {
+	_u.mutation.SetModelAliasMappings(v)
 	return _u
 }
 
@@ -2537,6 +2614,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.IntraGroupBalance(); ok {
+		_spec.SetField(group.FieldIntraGroupBalance, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.McpXMLInject(); ok {
 		_spec.SetField(group.FieldMcpXMLInject, field.TypeBool, value)
 	}
@@ -2571,6 +2651,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.EnforceModelsList(); ok {
+		_spec.SetField(group.FieldEnforceModelsList, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ModelAliasMappings(); ok {
+		_spec.SetField(group.FieldModelAliasMappings, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

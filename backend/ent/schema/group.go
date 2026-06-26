@@ -121,6 +121,13 @@ func (Group) Fields() []ent.Field {
 			Default(false).
 			Comment("是否启用模型路由配置"),
 
+		// 组内负载均衡 (added by migration 149)
+		// 企业号组：开启后会话粘到本组而非组内单个账号，每次请求在组内成员间
+		// 负载均衡选号（Kiro 不讲缓存命中，打破组内粘性零代价；遭 429 即时换号）。
+		field.Bool("intra_group_balance").
+			Default(false).
+			Comment("组内负载均衡：会话粘组、组内成员间分发（企业号组）"),
+
 		// MCP XML 协议注入开关 (added by migration 042)
 		field.Bool("mcp_xml_inject").
 			Default(true).
@@ -158,7 +165,14 @@ func (Group) Fields() []ent.Field {
 		field.JSON("models_list_config", domain.GroupModelsListConfig{}).
 			Default(domain.GroupModelsListConfig{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
-			Comment("自定义 /v1/models 展示列表配置；仅影响模型列表响应，不影响调度"),
+			Comment("自定义 /v1/models 展示列表配置；enforce_models_list=true 时同时作为调度白名单"),
+		field.Bool("enforce_models_list").
+			Default(false).
+			Comment("启用后 models_list_config.Models 既过滤 /v1/models 展示、也在请求时拦截越界模型"),
+		field.JSON("model_alias_mappings", domain.GroupModelAliasMappings{}).
+			Default(domain.GroupModelAliasMappings{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("对外统一模型名→池内真实模型名映射；调度匹配账号前归一化"),
 
 		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
 		field.Int("rpm_limit").

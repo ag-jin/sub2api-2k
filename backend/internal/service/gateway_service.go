@@ -29,6 +29,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/deepseek"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -580,6 +582,10 @@ type UpstreamFailoverError struct {
 	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	// PostFirstTokenContinuation marks stream failures after client-visible text
+	// already started. Handler may keep the SSE open and continue text output.
+	PostFirstTokenContinuation bool
+	ContinuationTail           string
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -597,6 +603,12 @@ type sseStreamErrorEventError struct {
 
 func (e *sseStreamErrorEventError) Error() string { return "have error in stream" }
 
+// AccountRepo exposes the account repository so sibling services (e.g.
+// KiroGatewayService) can persist credential refreshes and mark accounts
+// rate-limited / temp-unschedulable using the same backing store.
+func (s *GatewayService) AccountRepo() AccountRepository {
+	return s.accountRepo
+}
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
@@ -787,6 +799,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if combined.Len() == contentStart {
 		appendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
 	}
+	appendMessageTextsFromRaw(&combined, parsed.MessagesRaw())
 	if combined.Len() > 0 {
 		hash := s.hashContent(combined.String())
 		slog.Info("sticky.hash_source",
@@ -1003,7 +1016,6 @@ func appendResponsesContentText(builder *strings.Builder, content gjson.Result) 
 		return true
 	})
 }
-
 func extractCacheableTextFromSystemRaw(raw []byte) string {
 	system := parseRawJSONView(raw)
 	if !system.IsArray() {
@@ -1660,6 +1672,27 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 	}
 
+	// 企业号组（IntraGroupBalance）：会话仍因 groupID 粘在本组，但组内不绑定单个
+	// 成员账号。这里把 stickyAccountID 清零，使下游所有"粘性命中→返回绑定账号"
+	// 的分支（legacy 与 load-aware 两条路径）统一落空，落到负载均衡选号——多个
+	// Kiro 企业凭据在组内分散、遭 429 即时换号。
+	//
+	// 注意：ForcePlatform 模式下 checkClaudeCodeRestriction 返回 nil group，
+	// 因此这里在 group 为空时按 groupID 兜底查一次，确保企业号组开关一定被读到。
+	// 企业号组开关：group 可能来自调度快照/缓存，其 IntraGroupBalance 字段未必
+	// 是最新值，因此这里始终用 groupRepo 直查库读取该开关（GetByID 走 ent 直查，
+	// groupEntityToService 已正确映射 intra_group_balance 列）。
+	intraGroupBalance := false
+	if groupID != nil && s.groupRepo != nil {
+		if g, gerr := s.groupRepo.GetByID(ctx, *groupID); gerr == nil && g != nil {
+			intraGroupBalance = g.IntraGroupBalance
+		}
+	}
+	if intraGroupBalance && stickyAccountID > 0 {
+		stickyAccountID = 0
+		stickySource = "intra_group_balance"
+	}
+
 	// [DEBUG-STICKY] 调度器入口日志
 	slog.Info("sticky.scheduler_entry",
 		"group_id", derefGroupID(groupID),
@@ -1763,9 +1796,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return excluded
 	}
 
-	// 获取模型路由配置（仅 anthropic 平台）
+	// 获取模型路由配置（anthropic/kiro 平台——两者都是 /v1/messages 入口，
+	// 可承载 deepseek 跨平台账号，需要 ModelRouting 把不同模型路由到不同账号）
 	var routingAccountIDs []int64
-	if group != nil && requestedModel != "" && group.Platform == PlatformAnthropic {
+	if group != nil && requestedModel != "" && (group.Platform == PlatformAnthropic || group.Platform == PlatformKiro) {
 		routingAccountIDs = group.GetRoutingAccountIDs(requestedModel)
 		if s.debugModelRoutingEnabled() {
 			logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] context group routing: group_id=%d model=%s enabled=%v rules=%d matched_ids=%v session=%s sticky_account=%d",
@@ -2516,7 +2550,14 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		// Cross-platform add-on: anthropic/kiro groups may also hold deepseek
+		// accounts (one key → Claude + deepseek). Pull them alongside the native
+		// platform; routing + model-support guard keep them deepseek-only.
+		if extra := crossPlatformAddons(platform); len(extra) > 0 {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, append([]string{platform}, extra...))
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		}
 		// 分组内无账号则返回空列表，由上层处理错误，不再回退到全平台查询
 	} else {
 		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
@@ -2560,6 +2601,16 @@ func (s *GatewayService) IsSingleAntigravityAccountGroup(ctx context.Context, gr
 func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform string, useMixed bool) bool {
 	if account == nil {
 		return false
+	}
+	if account.Platform == platform {
+		return true
+	}
+	// DeepSeek/OpenCode are Anthropic-protocol-compatible add-on providers:
+	// they may join anthropic/kiro groups, with model guards preventing Claude
+	// requests from selecting them.
+	if (account.Platform == PlatformDeepseek || account.Platform == PlatformOpenCode) &&
+		(platform == PlatformAnthropic || platform == PlatformKiro) {
+		return true
 	}
 	if useMixed {
 		if account.Platform == platform {
@@ -3392,7 +3443,13 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	// 1. 查询粘性会话
-	if sessionHash != "" && s.cache != nil {
+	//
+	// 企业号组（IntraGroupBalance）例外：会话仍因 groupID 粘在本组上，但组内
+	// 不绑定到单个成员账号——每次请求都跳过"返回上次绑定账号"，落到下面的
+	// 负载均衡主循环重新选号。这样多个 Kiro 企业凭据在组内分散、遭 429 即时换号
+	// （Kiro 不讲缓存命中，打破组内粘性零代价）。
+	intraGroupBalance := schedGroup != nil && schedGroup.IntraGroupBalance
+	if !intraGroupBalance && sessionHash != "" && s.cache != nil {
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
@@ -3969,6 +4026,24 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 
 // isModelSupportedByAccount 根据账户平台检查模型支持（无 context，用于非 Antigravity 平台）
 func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedModel string) bool {
+	// DeepSeek accounts ONLY support deepseek models, regardless of model_mapping.
+	// This is a safety guard: a deepseek account may live in an anthropic/kiro
+	// group (cross-platform), and IsModelSupported defaults to "allow all" when
+	// mapping is empty — without this guard an unmapped deepseek account would be
+	// wrongly picked for a claude request. A deepseek model still requires the
+	// rest of the checks (mapping/scope) to pass downstream.
+	if account.Platform == PlatformDeepseek {
+		if strings.TrimSpace(requestedModel) == "" {
+			return false
+		}
+		return deepseek.IsDeepseekModel(requestedModel)
+	}
+	if account.Platform == PlatformOpenCode {
+		if strings.TrimSpace(requestedModel) == "" {
+			return false
+		}
+		return deepseek.IsOpenCodeModel(requestedModel)
+	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
@@ -9846,6 +9921,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return fmt.Errorf("parse request: empty request")
 	}
 
+	// Kiro / DeepSeek / OpenCode: the upstream has no count_tokens endpoint; estimate
+	// locally (mirrors kiro.rs which computes tokens client-side).
+	if account != nil && (account.Platform == PlatformKiro || account.Platform == PlatformDeepseek || account.Platform == PlatformOpenCode) {
+		input := kiro.CountInputTokens(parsed.Body.Bytes())
+		c.JSON(http.StatusOK, gin.H{"input_tokens": input})
+		return nil
+	}
+
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body.Bytes()
 		if reqModel := parsed.Model; reqModel != "" {
@@ -10311,6 +10394,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
 	}
+	body = sanitizeCountTokensRequestBody(body)
 
 	body = sanitizeCountTokensRequestBody(body)
 
@@ -10472,12 +10556,20 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		return nil
 	}
 
-	// Filter by platform if specified
+	// Filter by platform if specified; include cross-platform add-ons.
 	if platform != "" {
+		addons := crossPlatformAddons(platform)
 		filtered := make([]Account, 0)
 		for _, acc := range accounts {
 			if acc.Platform == platform {
 				filtered = append(filtered, acc)
+				continue
+			}
+			for _, addon := range addons {
+				if acc.Platform == addon {
+					filtered = append(filtered, acc)
+					break
+				}
 			}
 		}
 		accounts = filtered
