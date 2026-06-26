@@ -277,7 +277,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
-	continuationTail := ""
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	resultWithUsage := func() *OpenAIForwardResult {
@@ -337,7 +336,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				if u := extractCCStreamUsage(payload); u != nil {
 					usage = *u
 				}
-				continuationTail = appendOpenAIChatCompletionsContinuationTail(continuationTail, payload)
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
@@ -380,8 +378,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				StatusCode:                 http.StatusBadGateway,
 				ResponseBody:               body,
 				RetryableOnSameAccount:     account != nil && account.IsPoolMode(),
-				PostFirstTokenContinuation: true,
-				ContinuationTail:           strings.TrimSpace(continuationTail),
 			}
 		}
 	} else if !clientDisconnected && !clientOutputStarted {
@@ -429,30 +425,6 @@ func isOpenAIChatUsageOnlyStreamChunk(payload string) bool {
 	}
 	choices := gjson.Get(payload, "choices")
 	return choices.Exists() && choices.IsArray() && len(choices.Array()) == 0
-}
-
-const openAIContinuationTailMaxRunes = 2048
-
-func appendOpenAIChatCompletionsContinuationTail(tail string, payload string) string {
-	if strings.TrimSpace(payload) == "" || !gjson.Valid(payload) {
-		return tail
-	}
-	choices := gjson.Get(payload, "choices")
-	if !choices.IsArray() {
-		return tail
-	}
-	for _, choice := range choices.Array() {
-		delta := choice.Get("delta.content").String()
-		if delta == "" {
-			continue
-		}
-		tail += delta
-	}
-	runes := []rune(tail)
-	if len(runes) <= openAIContinuationTailMaxRunes {
-		return tail
-	}
-	return string(runes[len(runes)-openAIContinuationTailMaxRunes:])
 }
 
 // extractCCStreamUsage 从单个 CC 流式 chunk 的 payload 中提取 usage 字段。

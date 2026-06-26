@@ -31,44 +31,23 @@ const (
 const (
 	// maxSameAccountRetries 同账号重试次数上限（针对 RetryableOnSameAccount 错误）
 	maxSameAccountRetries = 3
-	// postFirstTokenSameAccountRetries 首 token 后文本续写只做更短的同账号恢复。
-	postFirstTokenSameAccountRetries = 2
 	// sameAccountRetryDelay 同账号重试间隔
 	sameAccountRetryDelay = 500 * time.Millisecond
 	// singleAccountBackoffDelay 单账号分组 503 退避重试固定延时。
 	// Service 层在 SingleAccountRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
 	// Handler 层只需短暂间隔后重新进入 Service 层即可。
-	singleAccountBackoffDelay    = 2 * time.Second
-	preFirstTokenRecoveryBudget  = 2 * time.Second
-	postFirstTokenRecoveryBudget = 10 * time.Second
+	singleAccountBackoffDelay = 2 * time.Second
 )
 
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {
-	SwitchCount                     int
-	MaxSwitches                     int
-	FailedAccountIDs                map[int64]struct{}
-	SameAccountRetryCount           map[int64]int
-	LastFailoverErr                 *service.UpstreamFailoverError
-	ForceCacheBilling               bool
-	hasBoundSession                 bool
-	preFirstTokenRecoveryStartedAt  time.Time
-	postFirstTokenRecoveryStartedAt time.Time
-	continuationMetrics             ContinuationMetrics
-}
-
-type ContinuationMetrics struct {
-	PreFirstTokenRecoverTotal             int64
-	PostFirstTokenSameAccountRecoverTotal int64
-	CrossAccountContinuationAttemptTotal  int64
-	CrossAccountContinuationSuccessTotal  int64
-	CrossAccountContinuationFailTotal     int64
-	StrictSafeConservativeFailTotal       int64
-	PreFirstTokenDurationMs               int64
-	ContinuationDurationMs                int64
-	LastEvent                             string
-	LastAccountID                         int64
-	LastStatusCode                        int
+	SwitchCount           int
+	MaxSwitches           int
+	FailedAccountIDs      map[int64]struct{}
+	SameAccountRetryCount map[int64]int
+	LastFailoverErr       *service.UpstreamFailoverError
+	ForceCacheBilling     bool
+	hasBoundSession       bool
 }
 
 // NewFailoverState 创建 failover 状态
@@ -79,185 +58,6 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 		SameAccountRetryCount: make(map[int64]int),
 		hasBoundSession:       hasBoundSession,
 	}
-}
-
-func (s *FailoverState) PreFirstTokenRecoveryBudget() time.Duration {
-	return preFirstTokenRecoveryBudget
-}
-
-func (s *FailoverState) CanRecoverBeforeFirstToken() bool {
-	if s == nil {
-		return false
-	}
-	if s.preFirstTokenRecoveryStartedAt.IsZero() {
-		s.preFirstTokenRecoveryStartedAt = time.Now()
-		s.continuationMetrics.PreFirstTokenRecoverTotal++
-		s.continuationMetrics.LastEvent = "pre_first_token_recover_started"
-		return true
-	}
-	ok := time.Since(s.preFirstTokenRecoveryStartedAt) <= preFirstTokenRecoveryBudget
-	if ok {
-		s.continuationMetrics.PreFirstTokenRecoverTotal++
-		s.continuationMetrics.LastEvent = "pre_first_token_recover"
-	}
-	return ok
-}
-
-func (s *FailoverState) SleepBeforeFirstTokenRetry(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return s.CanRecoverBeforeFirstToken()
-	}
-	if !s.CanRecoverBeforeFirstToken() {
-		return false
-	}
-	deadline := s.preFirstTokenRecoveryStartedAt.Add(preFirstTokenRecoveryBudget)
-	remaining := time.Until(deadline)
-	if remaining <= 0 || d > remaining {
-		return false
-	}
-	return sleepWithContext(ctx, d)
-}
-
-func (s *FailoverState) PostFirstTokenRecoveryBudget() time.Duration {
-	return postFirstTokenRecoveryBudget
-}
-
-func (s *FailoverState) PostFirstTokenSameAccountRetryLimit() int {
-	return postFirstTokenSameAccountRetries
-}
-
-func (s *FailoverState) CanRecoverAfterFirstToken() bool {
-	if s == nil {
-		return false
-	}
-	if s.postFirstTokenRecoveryStartedAt.IsZero() {
-		s.postFirstTokenRecoveryStartedAt = time.Now()
-		return true
-	}
-	return time.Since(s.postFirstTokenRecoveryStartedAt) <= postFirstTokenRecoveryBudget
-}
-
-func (s *FailoverState) SleepAfterFirstTokenRetry(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return s.CanRecoverAfterFirstToken()
-	}
-	if !s.CanRecoverAfterFirstToken() {
-		return false
-	}
-	deadline := s.postFirstTokenRecoveryStartedAt.Add(postFirstTokenRecoveryBudget)
-	remaining := time.Until(deadline)
-	if remaining <= 0 || d > remaining {
-		return false
-	}
-	return sleepWithContext(ctx, d)
-}
-
-// HandlePostFirstTokenFailover handles stream failures after client-visible
-// output has started. Only text_aggressive may cross accounts; strict_safe
-// terminates to avoid corrupting tools/JSON/image contracts.
-func (s *FailoverState) HandlePostFirstTokenFailover(
-	ctx context.Context,
-	mode service.OpenAIStreamContinuationMode,
-	accountID int64,
-	failoverErr *service.UpstreamFailoverError,
-) FailoverAction {
-	if s == nil {
-		return FailoverExhausted
-	}
-	s.LastFailoverErr = failoverErr
-	s.continuationMetrics.LastAccountID = accountID
-	if failoverErr != nil {
-		s.continuationMetrics.LastStatusCode = failoverErr.StatusCode
-	}
-	if mode != service.OpenAIStreamContinuationTextAggressive {
-		s.continuationMetrics.StrictSafeConservativeFailTotal++
-		s.continuationMetrics.LastEvent = "strict_safe_conservative_fail"
-		logger.FromContext(ctx).Warn("gateway.post_token_continuation_strict_safe_fail",
-			zap.Int64("account_id", accountID),
-			zap.String("stream_continuation_mode", string(mode)),
-			zap.Int("upstream_status", s.continuationMetrics.LastStatusCode),
-		)
-		return FailoverExhausted
-	}
-	if !s.CanRecoverAfterFirstToken() {
-		s.continuationMetrics.CrossAccountContinuationFailTotal++
-		s.continuationMetrics.LastEvent = "post_first_token_budget_exhausted"
-		return FailoverExhausted
-	}
-	if failoverErr != nil && failoverErr.RetryableOnSameAccount && s.SameAccountRetryCount[accountID] < postFirstTokenSameAccountRetries {
-		s.SameAccountRetryCount[accountID]++
-		s.continuationMetrics.PostFirstTokenSameAccountRecoverTotal++
-		s.continuationMetrics.LastEvent = "post_first_token_same_account_recover"
-		logger.FromContext(ctx).Warn("gateway.post_token_same_account_retry",
-			zap.Int64("account_id", accountID),
-			zap.Int("upstream_status", failoverErr.StatusCode),
-			zap.Int("same_account_retry_count", s.SameAccountRetryCount[accountID]),
-			zap.Int("same_account_retry_max", postFirstTokenSameAccountRetries),
-			zap.Int64("continuation_duration_ms", s.ContinuationMetricsSnapshot().ContinuationDurationMs),
-		)
-		if !s.SleepAfterFirstTokenRetry(ctx, sameAccountRetryDelay) {
-			s.continuationMetrics.CrossAccountContinuationFailTotal++
-			s.continuationMetrics.LastEvent = "post_first_token_same_account_sleep_canceled"
-			return FailoverExhausted
-		}
-		return FailoverContinue
-	}
-
-	s.FailedAccountIDs[accountID] = struct{}{}
-	if s.SwitchCount >= s.MaxSwitches {
-		s.continuationMetrics.CrossAccountContinuationFailTotal++
-		s.continuationMetrics.LastEvent = "cross_account_continuation_switch_exhausted"
-		return FailoverExhausted
-	}
-	s.SwitchCount++
-	s.continuationMetrics.CrossAccountContinuationAttemptTotal++
-	s.continuationMetrics.LastEvent = "cross_account_continuation_attempt"
-	logger.FromContext(ctx).Warn("gateway.post_token_continuation_switch_account",
-		zap.Int64("account_id", accountID),
-		zap.Int("upstream_status", func() int {
-			if failoverErr == nil {
-				return 0
-			}
-			return failoverErr.StatusCode
-		}()),
-		zap.Int("switch_count", s.SwitchCount),
-		zap.Int("max_switches", s.MaxSwitches),
-		zap.Int64("continuation_duration_ms", s.ContinuationMetricsSnapshot().ContinuationDurationMs),
-	)
-	return FailoverContinue
-}
-
-func (s *FailoverState) RecordCrossAccountContinuationResult(success bool) {
-	if s == nil {
-		return
-	}
-	if success {
-		s.continuationMetrics.CrossAccountContinuationSuccessTotal++
-		s.continuationMetrics.LastEvent = "cross_account_continuation_success"
-		return
-	}
-	s.continuationMetrics.CrossAccountContinuationFailTotal++
-	s.continuationMetrics.LastEvent = "cross_account_continuation_fail"
-}
-
-func (s *FailoverState) ContinuationMetricsSnapshot() ContinuationMetrics {
-	if s == nil {
-		return ContinuationMetrics{}
-	}
-	snapshot := s.continuationMetrics
-	if !s.preFirstTokenRecoveryStartedAt.IsZero() {
-		snapshot.PreFirstTokenDurationMs = time.Since(s.preFirstTokenRecoveryStartedAt).Milliseconds()
-		if snapshot.PreFirstTokenDurationMs < 0 {
-			snapshot.PreFirstTokenDurationMs = 0
-		}
-	}
-	if !s.postFirstTokenRecoveryStartedAt.IsZero() {
-		snapshot.ContinuationDurationMs = time.Since(s.postFirstTokenRecoveryStartedAt).Milliseconds()
-		if snapshot.ContinuationDurationMs < 0 {
-			snapshot.ContinuationDurationMs = 0
-		}
-	}
-	return snapshot
 }
 
 // HandleFailoverError 处理 UpstreamFailoverError，返回下一步动作。
