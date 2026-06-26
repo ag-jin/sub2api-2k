@@ -2233,6 +2233,7 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 		nil,
 		options.defaultSubAssigner,
 		affiliateService,
+		nil,
 	)
 	userSvc := service.NewUserService(userRepo, nil, nil, nil)
 	var totpSvc *service.TotpService
@@ -2911,6 +2912,10 @@ func (r *oauthPendingFlowUserRepo) DisableTotp(ctx context.Context, userID int64
 		ClearTotpSecretEncrypted().
 		ClearTotpEnabledAt().
 		Exec(ctx)
+}
+
+func (r *oauthPendingFlowUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
+	return r.GetByID(ctx, id)
 }
 
 func oauthPendingFlowServiceUser(entity *dbent.User) *service.User {

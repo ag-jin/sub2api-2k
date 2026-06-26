@@ -107,6 +107,13 @@ const deepseekModels = [
   'deepseek-r1-distill-llama-70b', 'deepseek-r1-distill-llama-8b'
 ]
 
+const opencodeModels = [
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5',
+  'deepseek-v4-pro'
+]
+
 // Mistral
 const mistralModels = [
   'mistral-small-latest', 'mistral-medium-latest', 'mistral-large-latest',
@@ -207,6 +214,7 @@ const allModelsList: string[] = [
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...opencodeModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -356,6 +364,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'claude': return claudeModels
     case 'gemini': return geminiModels
     case 'antigravity': return antigravityModels
+    case 'opencode': return opencodeModels
     case 'zhipu': return zhipuModels
     case 'qwen': return qwenModels
     case 'deepseek': return deepseekModels

@@ -304,6 +304,7 @@ export default {
     contactSupport: 'Contact Support',
     add: 'Add',
     invalidEmail: 'Please enter a valid email address',
+    required: 'is required',
     optional: 'optional',
     selectOption: 'Select an option',
     searchPlaceholder: 'Search...',
@@ -634,6 +635,15 @@ export default {
     platformBreakdownEmpty: 'No platform usage yet',
     platformCount: '{count} platforms',
     platformOther: 'Other',
+    platformQuota: {
+      title: 'Quota Usage',
+      daily: 'Daily',
+      weekly: 'Weekly',
+      monthly: 'Monthly (30-day rolling)',
+      resetsAt: 'Resets {time}',
+      noLimit: 'unlimited',
+      disabled: 'Disabled',
+    },
     tokenUsageTrend: 'Token Usage Trend',
     noDataAvailable: 'No data available',
     model: 'Model',
@@ -897,6 +907,9 @@ export default {
     imageBillingSize: 'Billing size',
     imageInputSize: 'Input size',
     imageOutputSize: 'Output size',
+    imageOutputTokens: 'Image Output Tokens',
+    imageOutputTokenPrice: 'Image Output Price',
+    imageOutputCost: 'Image Output Cost',
     imageSizeSource: 'Size source',
     imageSizeBreakdown: 'Size breakdown',
     imageSizeSourceOutput: 'Upstream output',
@@ -924,7 +937,26 @@ export default {
     exportExcelSuccess: 'Usage data exported successfully (Excel format)',
     exportExcelFailed: 'Failed to export usage data',
     imageUnit: ' images',
-    userAgent: 'User-Agent'
+    userAgent: 'User-Agent',
+    tabs: { usage: 'Usage', errors: 'Error Requests' },
+    errors: {
+      time: 'Time', model: 'Model', endpoint: 'Endpoint', status: 'Status',
+      category: 'Category', platform: 'Platform', message: 'Message',
+      keyName: 'Key Name', keyDeleted: 'Deleted', allKeys: 'All keys',
+      modelPlaceholder: 'Search model', allCategories: 'All categories',
+      empty: 'No error requests', failedToLoad: 'Failed to load error requests',
+      categories: {
+        auth: 'Auth failed', rate_limit: 'Rate limited', quota: 'Balance/Subscription',
+        invalid_request: 'Invalid request', service_unavailable: 'Service unavailable',
+        upstream: 'Upstream error', internal: 'Platform error', other: 'Other',
+      },
+      detail: {
+        title: 'Error Request Detail',
+        responseBody: 'Response Body',
+        upstreamStatus: 'Upstream Status',
+        loadFailed: 'Failed to load detail, please try again',
+      },
+    },
   },
 
   // Shared keys for channel monitor (admin + user views)
@@ -1793,6 +1825,7 @@ export default {
         groups: 'Groups',
         subscriptions: 'Subscriptions',
         balance: 'Balance',
+        balancePlatformQuota: 'Balance (Platform Quota)',
         usage: 'Usage',
         usageAnthropic: 'Usage (Claude)',
         usageOpenAI: 'Usage (OpenAI)',
@@ -1985,6 +2018,41 @@ export default {
         failedToReorder: 'Failed to update order',
         keyExists: 'Attribute key already exists',
         dragToReorder: 'Drag to reorder'
+      },
+      platformQuota: {
+        menuItem: 'Platform Quotas',
+        title: 'Platform Quotas',
+        subtitle: 'Configure daily / weekly / monthly USD usage limits for each upstream platform for user {email}',
+        columns: {
+          platform: 'Platform',
+          daily: 'Daily (USD)',
+          weekly: 'Weekly (USD)',
+          monthly: 'Monthly (USD, 30-day rolling)',
+          usage: 'Current Usage',
+        },
+        placeholder: 'unlimited',
+        save: 'Save',
+        saving: 'Saving...',
+        cancel: 'Cancel',
+        clearAll: 'Clear All (remove all limits)',
+        clearAllConfirm: 'Clear daily / weekly / monthly limits for ALL platforms? All platforms will become "unlimited" with no local undo — you must manually re-enter values before saving.',
+        reset: {
+          button: 'Reset window',
+          confirm: 'Reset the {window} usage for {platform} for this user? This is effective immediately.',
+          success: 'Reset {platform} {window} usage',
+          failed: 'Reset failed',
+        },
+        updateSuccess: 'Platform quotas updated',
+        updateFailed: 'Save failed',
+        loadFailed: 'Load failed',
+        hint: 'Empty = no limit for that window.',
+        windowDaily: 'daily',
+        windowWeekly: 'weekly',
+        windowMonthly: 'monthly',
+        cellNotConfigured: 'Not configured',
+        cellColumnTooltip: 'Only platforms with a limit are shown',
+        subscriptionWarning: 'This user has an active subscription. Platform quotas only apply to balance (standard) mode requests; subscription mode requests are not subject to these limits.',
+        invalidNumber: 'The following fields contain invalid numbers. Please fix them before saving: {fields}',
       }
     },
 
@@ -2104,6 +2172,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -2134,6 +2203,20 @@ export default {
         finalPricePreview: 'Final per-image price preview',
         notConfigured: 'Not configured'
       },
+      modelsList: {
+        title: 'Custom /v1/models Model List',
+        hint: 'Only changes the /v1/models response. Whitelist model calls and account routing are unchanged.',
+        loading: 'Loading model list...',
+        empty: 'No displayable models'
+      },
+      enforceModelsList: {
+        title: 'Enforce Model List (Whitelist)',
+        hint: 'When on, the model list above also acts as a call whitelist: requests for models not in the list are rejected (400). When off, the list only affects the /v1/models display.'
+      },
+      modelAlias: {
+        title: 'Model Alias Mappings',
+        hint: 'External unified model name → pool-internal real model name, one per line as "external=real". Currently config-only; runtime rewrite activates with the cross-pool feature.'
+      },
       claudeCode: {
         title: 'Claude Code Client Restriction',
         tooltip: 'When enabled, this group only allows official Claude Code clients. Non-Claude Code requests will be rejected or fallback to the specified group.',
@@ -2142,6 +2225,12 @@ export default {
         fallbackGroup: 'Fallback Group',
         fallbackHint: 'Non-Claude Code requests will use this group. Leave empty to reject directly.',
         noFallback: 'No Fallback (Reject)'
+      },
+      intraGroupBalance: {
+        title: 'Enterprise Group (Intra-group Load Balancing)',
+        enabled: 'Enabled: distribute scheduling across accounts in the group',
+        disabled: 'Disabled: keep session stickiness',
+        hint: 'When enabled, a session is no longer pinned to a single account. Instead, requests are load-balanced across multiple accounts in the group and switched immediately on rate limit. Designed for Kiro enterprise account grouping.'
       },
       openaiMessages: {
         title: 'OpenAI Messages Dispatch',
@@ -2548,14 +2637,37 @@ export default {
       modelFilterIncludeSummary: 'Applies to {count} models',
       modelFilterExcludeSummary: 'Excludes {count} models',
       emptyLogs: 'No audit records',
+      preBlockSyncStatus: 'Pre-Block Sync Status',
+      preBlockSyncHint: 'Live counters for the synchronous moderation path, excluding async record tasks.',
+      preBlockActive: 'Sync Processing',
+      preBlockActiveHint: 'Currently checking',
+      preBlockChecked: 'Checked',
+      preBlockCheckedHint: 'Entered pre-block path',
+      preBlockAllowed: 'Allowed',
+      preBlockAllowedHint: 'No block triggered',
+      preBlockBlocked: 'Blocked',
+      preBlockBlockedHint: 'Rejected after hit',
+      preBlockErrors: 'Audit Errors',
+      preBlockErrorsHint: 'Failed or no usable key',
+      preBlockAvgLatency: 'Avg Latency',
+      preBlockAvgLatencyHint: 'Synchronous path average',
+      preBlockAPIKeyLoad: 'Audit Key Load',
+      preBlockAPIKeyLoadHint: 'Synchronous pre-block checks round-robin usable audit keys directly.',
+      preBlockAPIKeyLoadSummary: 'Sync active {active} / usable keys {available}, {total} total, worker: {workerActive} / {workerTotal}',
+      preBlockAPIKeyTotals: 'Total {total}, success {success}, errors {errors}',
+      preBlockAPIKeyLoadEmpty: 'No audit key load data yet',
+      preBlockKeyActiveShort: 'Active',
+      preBlockKeyTotalShort: 'Total',
+      preBlockKeyAvgShort: 'Avg',
+      preBlockKeyLastShort: 'Last',
       workerStatus: 'Worker Runtime',
-      workerStatusHint: 'Queue and worker pool status for asynchronous observation tasks.',
+      workerStatusHint: 'Queue and worker pool status for async audit tasks and pre-block record tasks, excluding synchronous pre-block checks.',
       workerPool: 'Worker Pool',
       workerPoolMeta: '{active} processing, {idle} idle and ready, {total} total',
       queueUsage: 'Queue Usage',
       activeWorkers: 'Processing',
       idleWorkers: 'Idle Ready',
-      workerActive: 'Processing an asynchronous audit task',
+      workerActive: 'Processing an async audit or record task',
       workerIdle: 'Started, idle and ready',
       workerDisabled: 'Risk control or content audit is disabled',
       processed: 'Processed',
@@ -2564,11 +2676,17 @@ export default {
       lastCleanup: 'Last cleanup: {time}',
       cleanupStats: 'Last cleanup deleted {hit} hits and {nonHit} non-hits',
       riskSwitchOff: 'System switch off',
+      riskThresholds: 'Risk Thresholds',
+      riskThresholdsHint: 'Adjust hit thresholds by OpenAI Moderations category. Scores greater than or equal to the threshold count as hits.',
+      riskThresholdDefault: 'Default {value}',
+      riskThresholdReset: 'Restore defaults',
+      riskThresholdPercent: 'Threshold percentage',
       tabs: {
         basic: 'Basic',
         scope: 'Scope',
         runtime: 'Runtime',
         response: 'Hit Notice',
+        riskThresholds: 'Risk Thresholds',
         keywords: 'Keyword Block',
         retention: 'Retention',
       },
@@ -2874,6 +2992,13 @@ export default {
     accounts: {
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
+      enterpriseGroups: {
+        title: 'Enterprise Groups',
+        memberCount: '{count} accounts',
+        statusActive: 'Active',
+        statusRateLimited: 'Rate Limited',
+        empty: 'No member accounts on this page'
+      },
       createAccount: 'Create Account',
       autoRefresh: 'Auto Refresh',
       enableAutoRefresh: 'Enable auto refresh',
@@ -3013,6 +3138,7 @@ export default {
         notes: 'Notes',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
+        upstreamCostFactor: 'Scheduling Cost',
         weight: 'Weight',
         status: 'Status',
         schedulable: 'Schedulable',
@@ -3021,9 +3147,11 @@ export default {
         usageWindows: 'Usage Windows',
         proxy: 'Proxy',
         lastUsed: 'Last Used',
+        createdAt: 'Created',
         expiresAt: 'Expires At',
         actions: 'Actions'
       },
+      usageWindowsHint: '"5h / 7d" are the upstream account\'s official rolling usage windows (e.g. OpenAI ChatGPT, Claude). They are imposed by the upstream provider on the account itself — not configured by sub2api, and unrelated to the models you map. Usage resets automatically once each window rolls over, and the limit cannot be lifted from within sub2api.',
       allPrivacyModes: 'All Privacy States',
       privacyUnset: 'Unset',
       privacyTrainingOff: 'Training data sharing disabled',
@@ -3268,10 +3396,21 @@ export default {
           'Automatic passthrough is currently enabled: it only affects HTTP passthrough and does not disable WS mode.',
         responsesMode: 'Responses API support',
         responsesModeDesc:
-          'Only applies to OpenAI API Key accounts. Auto follows probe results; force modes override probing.',
+          'Only applies to the OpenAI API Key text forwarding path. Auto follows probe results; force modes override probing.',
         responsesModeAuto: 'Auto',
         responsesModeForceResponses: 'Force Responses',
         responsesModeForceChatCompletions: 'Force Chat Completions',
+        responsesModeTextDisabledHint:
+          'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
+        endpointCapabilities: 'Endpoint capabilities',
+        endpointCapabilitiesDesc:
+          'Used by account routing. The text endpoint follows the Responses API support setting above and is shown as Responses, Chat Completions, or auto mode; Embeddings independently controls /v1/embeddings.',
+        capabilityResponses: 'Responses',
+        capabilityTextAuto: 'Responses / Chat Completions (Auto)',
+        capabilityResponsesAuto: 'Responses (auto probe)',
+        capabilityChatCompletions: 'Chat Completions',
+        capabilityChatCompletionsAuto: 'Chat Completions (auto probe)',
+        capabilityEmbeddings: 'Embeddings',
         responsesStatusAutoSupported: 'Auto probe: Responses',
         responsesStatusAutoUnsupported: 'Auto probe: Chat Completions',
         responsesStatusAutoUnknown: 'Auto probe: unknown',
@@ -3280,6 +3419,9 @@ export default {
         codexCLIOnly: 'Codex official clients only',
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
+        codexCLIOnlyAllowClaudeCode: "Also allow Claude Code's Codex plugin",
+        codexCLIOnlyAllowClaudeCodeDesc:
+          'Only takes effect when the switch above is on. Additionally allows requests from the Claude Code Codex plugin (exact match on originator=Claude Code) without weakening blocking of other non-official clients.',
         codexImageGenerationBridge: 'Codex image-generation bridge',
         codexImageGenerationBridgeDesc:
           'Account policy takes precedence over channel and global settings. Only controls whether Codex requests through the /responses text endpoint receive the image_generation tool; standalone image-generation endpoints are unaffected.',
@@ -3356,9 +3498,6 @@ export default {
       poolModeHint: 'Enable when upstream is an account pool; errors won\'t mark local account status',
       poolModeInfo:
         'When enabled, upstream 429/403/401 errors will auto-retry without marking the account as rate-limited or errored. Suitable for upstream pointing to another sub2api instance.',
-      poolModeRetryCount: 'Same-Account Retries',
-      poolModeRetryCountHint:
-        'Only applies in pool mode. Use 0 to disable in-place retry. Default {default}, maximum {max}.',
       customErrorCodes: 'Custom Error Codes',
       customErrorCodesHint: 'Only stop scheduling for selected error codes',
       customErrorCodesWarning:
@@ -3377,6 +3516,12 @@ export default {
         'When enabled, warmup requests like title generation will return mock responses without consuming upstream tokens',
       autoPauseOnExpired: 'Auto Pause On Expired',
       autoPauseOnExpiredDesc: 'When enabled, the account will auto pause scheduling after it expires',
+	  autoPause5hThreshold: '5h Usage Threshold (%)',
+	  autoPause7dThreshold: '7d Usage Threshold (%)',
+	  autoPauseThresholdHint: 'Leave empty or set 0 to use the global default threshold (configured in Ops settings); set a value to override the global default. Reaching the threshold only skips the account during scheduling and does not modify schedulable.',
+	  autoPause5hDisabled: 'Disable 5h auto-pause',
+	  autoPause7dDisabled: 'Disable 7d auto-pause',
+	  autoPauseDisabledHint: 'When enabled, this account is never auto-paused (even if a global default threshold is configured).',
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: 'Quota Control',
@@ -3472,6 +3617,9 @@ export default {
       priorityHint: 'Lower value accounts are used first',
       billingRateMultiplier: 'Billing Rate Multiplier',
       billingRateMultiplierHint: '0 = free, affects account billing only',
+      upstreamCostFactor: 'Upstream Cost Factor',
+      upstreamCostFactorHint: 'Affects pool scheduling priority only, not user billing',
+      schedulingOnly: 'Scheduling cost',
       expiresAt: 'Expires At',
       expiresAtHint: 'Leave empty for no expiration',
       higherPriorityFirst: 'Lower value means higher priority',
@@ -3492,6 +3640,52 @@ export default {
       pleaseSelectStatus: 'Please select a valid account status',
       mixedChannelWarningTitle: 'Mixed Channel Warning',
       mixedChannelWarning: 'Warning: Group "{groupName}" contains both {currentPlatform} and {otherPlatform} accounts. Mixing different channels may cause thinking block signature validation issues, which will fallback to non-thinking mode. Are you sure you want to continue?',
+      kiro: {
+        authMethod: 'Auth Method',
+        refreshToken: 'Refresh Token',
+        refreshTokenPlaceholder: 'Paste the Kiro refreshToken',
+        refreshTokenRequired: 'Please enter the Refresh Token',
+        idcFieldsRequired: 'IdC auth requires Client ID and Client Secret',
+        region: 'Region',
+        machineId: 'Machine ID',
+        proxyUrl: 'Proxy URL',
+        optional: 'Optional',
+        clientId: 'Client ID',
+        clientSecret: 'Client Secret',
+        editHint: 'Kiro account credentials. Leave a secret field blank to keep its current stored value. Bind a proxy below before enabling this account.',
+        keepCurrent: 'Leave blank to keep current',
+        machineIdPlaceholder: 'Optional; derived from refreshToken if empty',
+        machineIdHint: 'Optional device fingerprint. Leave empty to derive a stable per-account id.',
+        creditsLabel: 'Credits',
+        quotaLine: 'Quota',
+        overage: 'Overage',
+        overageOn: 'On',
+        overageOff: 'Off',
+        overageIncapable: 'Not supported',
+        overageCap: 'Cap',
+        overageRate: 'Rate'
+      },
+      deepseek: {
+        upstreamOfficial: 'DeepSeek Official',
+        upstreamOfficialDesc: 'api.deepseek.com — Pay-as-you-go',
+        upstreamOpenCode: 'OpenCode Go',
+        upstreamOpenCodeDesc: 'opencode.ai — Subscription',
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: 'Please enter DeepSeek API Key',
+        baseUrl: 'Base URL',
+        baseUrlPlaceholder: 'Auto-filled by upstream selection',
+        baseUrlHint: 'Auto-filled. Override only if you have a custom endpoint.',
+        proxyUrl: 'Proxy URL (Optional)',
+      },
+      opencode: {
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'sk-...',
+        apiKeyRequired: 'Please enter OpenCode API Key',
+        baseUrl: 'Base URL',
+        baseUrlHint: 'Defaults to https://opencode.ai/zen/go/v1. Override only if you have a custom endpoint.',
+        proxyUrl: 'Proxy URL (Optional)',
+      },
       pleaseEnterAccountName: 'Please enter account name',
       pleaseEnterApiKey: 'Please enter API Key',
       bedrockAccessKeyId: 'AWS Access Key ID',
@@ -3516,6 +3710,8 @@ export default {
       bedrockApiKeyLeaveEmpty: 'Leave empty to keep current key',
       apiKeyIsRequired: 'API Key is required',
       leaveEmptyToKeep: 'Leave empty to keep current key',
+      proxyUrl: 'Proxy URL (credentials-level)',
+      proxyUrlHint: 'SOCKS5 / HTTP proxy for the upstream API connection. Leave empty if not needed.',
       // Upstream type
       upstream: {
         baseUrl: 'Upstream Base URL',
@@ -4000,8 +4196,21 @@ export default {
       title: 'Proxy Management',
       description: 'Manage proxy servers for accounts',
       createProxy: 'Create Proxy',
+      deploySSH: 'Deploy SOCKS5 via SSH',
+      deploySSHTitle: 'Auto-deploy SOCKS5 via SSH',
+      sshHost: 'SSH Host',
+      sshPort: 'SSH Port',
+      sshUser: 'SSH User',
+      sshPassword: 'SSH Password',
+      deploying: 'Deploying...',
+      deploySuccess: 'SOCKS5 deployed and added to proxy pool',
+      deploySSHHint: 'Will SSH into the target server and auto-install a SOCKS5 proxy (random port + random auth). SSH password is used only for this deployment and not stored. Takes ~1 minute.',
+      nameAutoGen: 'Leave empty to auto-generate',
       editProxy: 'Edit Proxy',
       deleteProxy: 'Delete Proxy',
+      ad: {
+        inline: 'Need proxy IP?'
+      },
       dataImport: 'Import',
       dataExportSelected: 'Export Selected',
       dataImportTitle: 'Import Proxies',
@@ -4417,6 +4626,7 @@ export default {
       ipAddress: 'IP',
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
+      userDeletedBadge: 'Deleted',
       cleanup: {
         button: 'Cleanup',
         title: 'Cleanup Usage Records',
@@ -4648,6 +4858,8 @@ export default {
         group: 'Group',
         user: 'User',
         userId: 'User ID',
+        apiKey: 'API Key',
+        keyDeletedBadge: 'Key Deleted',
         account: 'Account',
         accountId: 'Account ID',
         status: 'Status',
@@ -4774,7 +4986,11 @@ export default {
         suggestRequest: 'Client request error: ask customer to fix request parameters',
         suggestAuth: 'Auth failed: verify API key/credentials',
         suggestPlatform: 'Platform error: prioritize investigation and fix',
-        suggestGeneric: 'See details for more context'
+        suggestGeneric: 'See details for more context',
+        apiKeyPrefix: 'Key Prefix',
+        attemptedKeyPrefix: 'Attempted Key Prefix',
+        deletedKeyOwner: 'Deleted Key Owner',
+        keyDeletedBadge: 'Key Deleted'
       },
       requestDetails: {
         title: 'Request Details',
@@ -5089,6 +5305,11 @@ export default {
         aggregation: 'Pre-aggregation Tasks',
         enableAggregation: 'Enable Pre-aggregation',
         aggregationHint: 'Pre-aggregation improves query performance for long time windows',
+        openaiQuotaAutoPause: 'OpenAI Account Quota Auto-pause',
+        openaiQuotaAutoPauseHint: 'When an OpenAI account reaches its 5h / 7d usage threshold, the scheduler skips it automatically and resumes once the window rolls over. Per-account thresholds take precedence over this global default.',
+        openaiQuotaAutoPauseDefault5h: 'Default 5h usage threshold (%)',
+        openaiQuotaAutoPauseDefault7d: 'Default 7d usage threshold (%)',
+        openaiQuotaAutoPauseThresholdHint: 'Value 0-100; leave blank or 0 to disable the global default threshold.',
         errorFiltering: 'Error Filtering',
         ignoreCountTokensErrors: 'Ignore count_tokens errors',
         ignoreCountTokensErrorsHint: 'When enabled, errors from count_tokens requests will not be written to the error log.',
@@ -5119,7 +5340,8 @@ export default {
           slaMinPercentRange: 'SLA minimum percentage must be between 0 and 100',
           ttftP99MaxRange: 'TTFT P99 maximum must be a number ≥ 0',
           requestErrorRateMaxRange: 'Request error rate maximum must be between 0 and 100',
-          upstreamErrorRateMaxRange: 'Upstream error rate maximum must be between 0 and 100'
+          upstreamErrorRateMaxRange: 'Upstream error rate maximum must be between 0 and 100',
+          openaiQuotaAutoPauseRange: 'OpenAI quota auto-pause threshold must be between 0 and 100'
         }
       },
       concurrency: {
@@ -5298,7 +5520,7 @@ export default {
         emailSuffixWhitelist: 'Email Domain Whitelist',
         emailSuffixWhitelistHint:
           "Only email addresses from the specified domains can register (for example, {'@'}qq.com, {'@'}gmail.com, *.edu.cn)",
-        emailSuffixWhitelistPlaceholder: '@example.com, *.edu.cn',
+        emailSuffixWhitelistPlaceholder: "{'@'}example.com, *.edu.cn",
         emailSuffixWhitelistInputHint: 'Leave empty for no restriction. Use *.edu.cn to match edu.cn and its subdomains.',
         promoCode: 'Promo Code',
         promoCodeHint: 'Allow users to use promo codes during registration',
@@ -5464,7 +5686,17 @@ export default {
         defaultSubscriptionsDuplicate:
           'Duplicate subscription group: {groupId}. Each group can only appear once.',
         subscriptionGroup: 'Subscription Group',
-        subscriptionValidityDays: 'Validity (days)'
+        subscriptionValidityDays: 'Validity (days)',
+        defaultPlatformQuotas: 'Default Platform Quotas (on signup)',
+        defaultPlatformQuotasHint: 'Automatically assigned to new users on signup; existing users are not affected. Leave blank = unlimited.',
+        platformQuotaNotice: 'Monthly quota uses a 30-day rolling window, not a calendar month.',
+      },
+      platformQuota: {
+        platform:    'Platform',
+        daily:       'Daily (USD)',
+        weekly:      'Weekly (USD)',
+        monthly:     'Monthly (USD, 30d rolling)',
+        placeholder: 'Unlimited',
       },
       claudeCode: {
         title: 'Claude Code Settings',
@@ -5503,6 +5735,9 @@ export default {
         openaiCodexUserAgent: 'OpenAI Codex UA',
         openaiCodexUserAgentPlaceholder: 'codex-tui/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.125.0)',
         openaiCodexUserAgentHint: 'Used to bypass Cloudflare browser-UA challenges on the OpenAI upstream. Only applies when the client User-Agent is detected as a browser (Mozilla/...). Leave empty to use the built-in default.',
+        openaiAllowClaudeCodeCodexPlugin: "Allow using the Codex plugin in Claude Code",
+        openaiAllowClaudeCodeCodexPluginDesc:
+          "Global switch; only affects OpenAI OAuth accounts that have 'Codex official clients only' enabled. When on, all such accounts additionally allow requests from the Claude Code Codex plugin (exact match on originator=Claude Code) without per-account config; upstream requests remain pass-through.",
       },
       webSearchEmulation: {
         title: 'Web Search Emulation',
@@ -6050,6 +6285,14 @@ export default {
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
       },
+      streamContinuation: {
+        title: 'OpenAI Text Stream Continuation',
+        description: 'Minimal controls for recovering interrupted text streams without exposing internal continuation parameters.',
+        enabled: 'Continue interrupted text streams',
+        enabledHint: 'Affects text stream recovery scheduling only; it does not change user billing or account billing multipliers.',
+        budgetSeconds: 'Stream recovery budget',
+        budgetSecondsHint: 'Total post-first-token text stream recovery budget. Defaults to 10 seconds; after expiry the stream ends by protocol.'
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',
@@ -6185,7 +6428,9 @@ export default {
         grantOnFirstBindHint: 'Grant default entitlements when an existing user first binds this source.',
         defaultSubscriptionsLabel: 'Default subscriptions',
         defaultSubscriptionsHint: 'Applies only to this auth source. Leave empty to skip source-specific subscriptions.',
-        noSourceSubscriptions: 'No source-specific default subscriptions configured.'
+        noSourceSubscriptions: 'No source-specific default subscriptions configured.',
+        platformQuotasOverride: 'Platform Quota Overrides',
+        platformQuotasOverrideHint: 'Blank fields inherit the system default. Set to 0 to fully block that window for this auth source.',
       },
       paymentVisibleMethods: {
         methodLabel: '{title} visible method',
@@ -6197,6 +6442,14 @@ export default {
       openaiExperimentalScheduler: {
         title: 'OpenAI experimental scheduler policy',
         description: "Disabled by default. When enabled, this only changes the gateway's experimental account-selection policy for OpenAI traffic; it does not indicate an upstream OpenAI capability."
+      },
+      usageRecords: {
+        title: 'Usage Records',
+        description: 'Settings for usage and failed-request records visible to end users.',
+      },
+      user_error_view: {
+        label: 'Allow users to view their own error requests',
+        description: 'When enabled, users can see a redacted view of their failed requests on the usage page (no internal/upstream details). Requires ops monitoring enabled to have data.',
       },
       saveSettings: 'Save Settings',
       saving: 'Saving...',

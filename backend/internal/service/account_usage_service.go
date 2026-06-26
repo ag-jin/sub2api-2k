@@ -14,6 +14,7 @@ import (
 	"time"
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	kiropkg "github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -197,6 +198,15 @@ type UsageInfo struct {
 	SubscriptionTier    string `json:"subscription_tier,omitempty"`     // 归一化订阅等级: FREE/PRO/ULTRA/UNKNOWN
 	SubscriptionTierRaw string `json:"subscription_tier_raw,omitempty"` // 上游原始订阅等级名称
 
+	// Kiro overage (credit overage) — read-only, surfaced for display.
+	KiroOverageCapable bool    `json:"kiro_overage_capable,omitempty"` // 订阅是否支持超额
+	KiroOverageEnabled bool    `json:"kiro_overage_enabled,omitempty"` // 超额开关是否开启
+	KiroOverageCap     int64   `json:"kiro_overage_cap,omitempty"`     // 超额封顶
+	KiroOverageUsed    int64   `json:"kiro_overage_used,omitempty"`    // 已用超额
+	KiroOverageRate    float64 `json:"kiro_overage_rate,omitempty"`    // 超额单价(USD/单位)
+	KiroOverageCharges float64 `json:"kiro_overage_charges,omitempty"` // 超额费用
+	KiroUsageUnit      string  `json:"kiro_usage_unit,omitempty"`      // 单位(INVOCATIONS/CREDIT)
+
 	// Antigravity 模型详细能力信息（与 antigravity_quota 同 key）
 	AntigravityQuotaDetails map[string]*AntigravityModelDetail `json:"antigravity_quota_details,omitempty"`
 
@@ -322,6 +332,15 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
 	if account.Platform == PlatformAntigravity {
 		usage, err := s.getAntigravityUsage(ctx, account)
+		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
+	// Kiro 平台：调用 getUsageLimits 获取订阅/额度
+	if account.Platform == PlatformKiro {
+		usage, err := s.getKiroUsage(ctx, account)
 		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
@@ -528,14 +547,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		return usage, nil
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
 		if usage.FiveHour == nil {
 			usage.FiveHour = &UsageProgress{Utilization: 0}
 		}
 		usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
 		if usage.SevenDay == nil {
 			usage.SevenDay = &UsageProgress{Utilization: 0}
 		}
@@ -1120,6 +1139,13 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	return progress
 }
 
+func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration, now time.Time) time.Time {
+	if progress != nil && progress.ResetsAt != nil && now.Before(*progress.ResetsAt) {
+		return progress.ResetsAt.Add(-fallbackWindow)
+	}
+	return now.Add(-fallbackWindow)
+}
+
 func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {
 	stats, err := s.usageLogRepo.GetAccountUsageStats(ctx, accountID, startTime, endTime)
 	if err != nil {
@@ -1339,4 +1365,103 @@ func buildGeminiUsageProgress(used, limit int64, resetAt time.Time, tokens int64
 // 用于账号列表页面显示当前窗口费用
 func (s *AccountUsageService) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
 	return s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
+}
+
+
+// getKiroUsage fetches subscription/usage limits for a Kiro account and maps
+// them into the generic UsageInfo (FiveHour window shows credit utilization).
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	cred, err := credentialFromAccount(account)
+	if err != nil {
+		return nil, fmt.Errorf("kiro credential: %w", err)
+	}
+	cfg := kiropkg.DefaultKiroConfig()
+
+	// Ensure a fresh access token.
+	if cred.AccessToken == "" || cred.IsExpired() {
+		res, rerr := kiropkg.RefreshToken(ctx, cred, cfg)
+		if rerr != nil {
+			return nil, fmt.Errorf("kiro token refresh: %w", rerr)
+		}
+		kiropkg.ApplyTokenResult(cred, res)
+	}
+
+	// Ensure profileArn — getUsageLimits requires it. Mirror the Kiro IDE
+	// FixedProfileArns behavior: BuilderId/Github/Google use a fixed ARN (the IDE
+	// never calls ListAvailableProfiles for them, and BuilderId is 403 there);
+	// Enterprise/IdC fetches it once. Without this, IdC accounts that never made a
+	// chat request (which is where the gateway populated profileArn) return
+	// "Invalid profileArn" and show no usage.
+	if cred.ProfileArn == "" {
+		if fixed := cred.FixedProfileArn(); fixed != "" {
+			cred.ProfileArn = fixed
+		} else if cred.AccessToken != "" {
+			if arn, perr := kiropkg.FetchProfileArn(ctx, cred, cfg); perr == nil {
+				cred.ProfileArn = arn
+			}
+		}
+	}
+
+	limits, err := kiropkg.FetchUsageLimits(ctx, cred, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kiro usage limits: %w", err)
+	}
+
+	now := time.Now()
+	info := &UsageInfo{
+		Source:    "active",
+		UpdatedAt: &now,
+	}
+	if title := limits.SubscriptionTitle(); title != "" {
+		info.SubscriptionTierRaw = title
+	}
+
+	if p := limits.Primary(); p != nil {
+		used := p.CurrentUsageWithPrecision
+		if used == 0 {
+			used = float64(p.CurrentUsage)
+		}
+		// Total quota = base subscription limit + overage cap when overage is
+		// enabled (Kiro's two-tier credit model), else just the base limit. See
+		// UsageLimitsResponse.EffectiveTotalLimit. This avoids the misleading
+		// >100% utilization (e.g. 8235/1000 = 823%) shown when usage runs into the
+		// opt-in overage pool; the real ceiling is base+cap (e.g. 11000).
+		limit := limits.EffectiveTotalLimit()
+		util := 0.0
+		if limit > 0 {
+			util = used / limit * 100.0
+		}
+		prog := &UsageProgress{
+			Utilization:   util,
+			UsedRequests:  int64(used),
+			LimitRequests: int64(limit),
+		}
+		reset := p.NextDateReset
+		if reset == 0 {
+			reset = limits.NextDateReset
+		}
+		if reset > 0 {
+			t := time.Unix(int64(reset), 0)
+			prog.ResetsAt = &t
+			rem := int(time.Until(t).Seconds())
+			if rem < 0 {
+				rem = 0
+			}
+			prog.RemainingSeconds = rem
+		}
+		info.FiveHour = prog
+
+		// Overage (read-only display)
+		info.KiroOverageCap = p.OverageCap
+		info.KiroOverageUsed = p.CurrentOverages
+		info.KiroOverageRate = p.OverageRate
+		info.KiroOverageCharges = p.OverageCharges
+		if p.Unit != "" {
+			info.KiroUsageUnit = p.Unit
+		}
+	}
+	info.KiroOverageCapable = limits.OverageCapable()
+	info.KiroOverageEnabled = limits.OverageEnabled()
+
+	return info, nil
 }

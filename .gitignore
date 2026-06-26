@@ -136,3 +136,9 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# Kiro IDE 解包资料(逆向参考用,体积大,绝不入库)
+.kiro-decompile/
+
+# CodeGraph 索引(机器本地,体积大,绝不入库)
+**/.codegraph/

@@ -591,6 +591,64 @@
             </div>
           </div>
 
+          <!-- OpenAI Text Stream Continuation Settings -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.streamContinuation.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.streamContinuation.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">
+                    {{ t("admin.settings.streamContinuation.enabled") }}
+                  </label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.streamContinuation.enabledHint") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_stream_continuation_enabled" />
+              </div>
+
+              <div
+                v-if="form.openai_stream_continuation_enabled"
+                class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{
+                      t(
+                        "admin.settings.streamContinuation.budgetSeconds",
+                      )
+                    }}
+                  </label>
+                  <input
+                    v-model.number="form.openai_stream_continuation_budget_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="input w-32"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.streamContinuation.budgetSecondsHint",
+                      )
+                    }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Request Rectifier Settings -->
           <div class="card">
             <div
@@ -6835,6 +6893,8 @@ type SettingsForm = Omit<
   google_oauth_client_secret: string;
   force_email_on_third_party_signup: boolean;
   openai_advanced_scheduler_enabled: boolean;
+  openai_stream_continuation_enabled: boolean;
+  openai_stream_continuation_budget_seconds: number;
 };
 
 const form = reactive<SettingsForm>({
@@ -7021,6 +7081,8 @@ const form = reactive<SettingsForm>({
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
   openai_advanced_scheduler_enabled: false,
+  openai_stream_continuation_enabled: false,
+  openai_stream_continuation_budget_seconds: 10,
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -8162,6 +8224,10 @@ async function saveSettings() {
         form.payment_cancel_rate_limit_window_mode,
       payment_alipay_force_qrcode: form.payment_alipay_force_qrcode,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
+      openai_stream_continuation_enabled:
+        form.openai_stream_continuation_enabled,
+      openai_stream_continuation_budget_seconds:
+        Number(form.openai_stream_continuation_budget_seconds) || 10,
       // 余额、订阅到期与账号限额通知
       balance_low_notify_enabled: form.balance_low_notify_enabled,
       balance_low_notify_threshold:

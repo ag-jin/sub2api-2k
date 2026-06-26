@@ -65,3 +65,14 @@ func TestAccountFromServiceShallow_NilCredentialsOmitsStatus(t *testing.T) {
 	require.Nil(t, got.Credentials)
 	require.Nil(t, got.CredentialsStatus)
 }
+
+func TestAccountFromServiceShallow_ExposesStableUpstreamCostFactor(t *testing.T) {
+	src := &service.Account{ID: 1, Name: "n", Platform: "openai", Type: "apikey"}
+	require.Equal(t, 1.0, AccountFromServiceShallow(src).UpstreamCostFactor)
+
+	src.Extra = map[string]any{"upstream_cost_factor": 0.8}
+	require.Equal(t, 0.8, AccountFromServiceShallow(src).UpstreamCostFactor)
+
+	src.Extra = map[string]any{"upstream_cost_factor": -1}
+	require.Equal(t, 1.0, AccountFromServiceShallow(src).UpstreamCostFactor)
+}

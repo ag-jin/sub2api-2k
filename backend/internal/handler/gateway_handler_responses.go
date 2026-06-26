@@ -75,14 +75,22 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
-	reqStream := gjson.GetBytes(body, "stream").Bool()
+	reqStream, ok := parseOpenAICompatibleStream(body)
+	if !ok {
+		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
+		return
+	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
+	requestCtx := c.Request.Context()
+	if service.IsImageGenerationIntent("/v1/responses", reqModel, body) {
+		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+	}
 
 	// 解析渠道级模型映射
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
 
 	// Claude Code only restriction:
 	// /v1/responses is never a Claude Code endpoint.
@@ -145,7 +153,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// 2. Re-check billing
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(requestCtx, apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(requestCtx, apiKey)); err != nil {
 		reqLog.Info("gateway.responses.billing_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -156,9 +164,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Parse request for session hash
-	parsedReq, _ := service.ParseGatewayRequest(body, "responses")
+	bodyRef := service.NewRequestBodyRef(body)
+	parsedReq, _ := service.ParseGatewayRequest(bodyRef, "responses")
 	if parsedReq == nil {
-		parsedReq = &service.ParsedRequest{Model: reqModel, Stream: reqStream, Body: body}
+		parsedReq = &service.ParsedRequest{Model: reqModel, Stream: reqStream, Body: bodyRef}
 	}
 	parsedReq.SessionContext = &service.SessionContext{
 		ClientIP:  ip.GetClientIP(c),
@@ -171,14 +180,14 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	fs := NewFailoverState(h.maxAccountSwitches, false)
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(requestCtx, apiKey.GroupID, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				h.responsesErrorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error())
 				return
 			}
-			action := fs.HandleSelectionExhausted(c.Request.Context())
+			action := handleResponsesPreFirstTokenSelectionExhausted(requestCtx, fs)
 			switch action {
 			case FailoverContinue:
 				continue
@@ -226,7 +235,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsResponses(c.Request.Context(), c, account, forwardBody, parsedReq)
+		result, err := h.gatewayService.ForwardAsResponses(requestCtx, c, account, forwardBody, parsedReq)
 
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -240,7 +249,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 					h.handleResponsesFailoverExhausted(c, failoverErr, true)
 					return
 				}
-				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				action := handleResponsesPreFirstTokenFailover(requestCtx, fs, h.gatewayService, account.ID, account.Platform, failoverErr)
 				switch action {
 				case FailoverContinue:
 					continue
@@ -266,9 +275,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 
-		h.submitUsageRecordTask(func(ctx context.Context) {
+		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
+				QuotaPlatform:      quotaPlatform,
 				APIKey:             apiKey,
 				User:               apiKey.User,
 				Account:            account,
@@ -289,6 +300,70 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		})
 		return
 	}
+}
+
+func handleResponsesPreFirstTokenFailover(
+	ctx context.Context,
+	fs *FailoverState,
+	gatewayService TempUnscheduler,
+	accountID int64,
+	platform string,
+	failoverErr *service.UpstreamFailoverError,
+) FailoverAction {
+	if fs == nil {
+		return FailoverExhausted
+	}
+	fs.LastFailoverErr = failoverErr
+	if !fs.CanRecoverBeforeFirstToken() {
+		return FailoverExhausted
+	}
+
+	if needForceCacheBilling(fs.hasBoundSession, failoverErr) {
+		fs.ForceCacheBilling = true
+	}
+
+	if failoverErr != nil && failoverErr.RetryableOnSameAccount && fs.SameAccountRetryCount[accountID] < maxSameAccountRetries {
+		fs.SameAccountRetryCount[accountID]++
+		if !fs.SleepBeforeFirstTokenRetry(ctx, sameAccountRetryDelay) {
+			return FailoverExhausted
+		}
+		return FailoverContinue
+	}
+
+	if failoverErr != nil && failoverErr.RetryableOnSameAccount && gatewayService != nil {
+		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
+	}
+
+	fs.FailedAccountIDs[accountID] = struct{}{}
+	if fs.SwitchCount >= fs.MaxSwitches {
+		return FailoverExhausted
+	}
+
+	fs.SwitchCount++
+	if platform == service.PlatformAntigravity {
+		delay := time.Duration(fs.SwitchCount-1) * time.Second
+		if !fs.SleepBeforeFirstTokenRetry(ctx, delay) {
+			return FailoverExhausted
+		}
+	}
+
+	return FailoverContinue
+}
+
+func handleResponsesPreFirstTokenSelectionExhausted(ctx context.Context, fs *FailoverState) FailoverAction {
+	if fs == nil {
+		return FailoverExhausted
+	}
+	if fs.LastFailoverErr != nil &&
+		fs.LastFailoverErr.StatusCode == http.StatusServiceUnavailable &&
+		fs.SwitchCount <= fs.MaxSwitches {
+		if !fs.SleepBeforeFirstTokenRetry(ctx, singleAccountBackoffDelay) {
+			return FailoverExhausted
+		}
+		fs.FailedAccountIDs = make(map[int64]struct{})
+		return FailoverContinue
+	}
+	return FailoverExhausted
 }
 
 // responsesErrorResponse writes an error in OpenAI Responses API format.

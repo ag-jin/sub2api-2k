@@ -147,6 +147,156 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="sparkles" size="sm" />
+            Kiro
+          </button>
+          <button type="button" @click="form.platform = 'deepseek'" :class="['flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all', form.platform === 'deepseek' ? 'bg-white text-indigo-600 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200']">
+            <PlatformIcon platform="deepseek" size="sm" />
+            DeepSeek
+          </button>
+          <button type="button" @click="form.platform = 'opencode'" :class="['flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all', form.platform === 'opencode' ? 'bg-white text-violet-600 shadow-sm dark:bg-dark-600 dark:text-violet-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200']">
+            <PlatformIcon platform="opencode" size="sm" />
+            OpenCode
+          </button>
+        </div>
+      </div>
+
+      <!-- Kiro credential fields -->
+      <div v-if="form.platform === 'kiro'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.authMethod') }}</label>
+          <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click="kiroAuthMethod = 'idc'"
+              :class="[
+                'flex flex-1 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'idc'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400'
+              ]"
+            >
+              IdC / Builder ID
+            </button>
+            <button
+              type="button"
+              @click="kiroAuthMethod = 'social'"
+              :class="[
+                'flex flex-1 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'social'
+                  ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400'
+              ]"
+            >
+              Social
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }} <span class="text-red-500">*</span></label>
+          <textarea
+            v-model="kiroRefreshToken"
+            rows="3"
+            class="input mt-1 font-mono text-xs"
+            :placeholder="t('admin.accounts.kiro.refreshTokenPlaceholder')"
+          ></textarea>
+        </div>
+
+        <div v-if="kiroAuthMethod === 'idc'" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">Client ID <span class="text-red-500">*</span></label>
+            <input v-model="kiroClientId" type="text" class="input mt-1" placeholder="clientId" />
+          </div>
+          <div>
+            <label class="input-label">Client Secret <span class="text-red-500">*</span></label>
+            <input v-model="kiroClientSecret" type="password" class="input mt-1" placeholder="clientSecret" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+            <input v-model="kiroRegion" type="text" class="input mt-1" placeholder="us-east-1" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.machineId') }}</label>
+            <input v-model="kiroMachineId" type="text" class="input mt-1" :placeholder="t('admin.accounts.kiro.optional')" />
+          </div>
+        </div>
+
+        <div>
+          <label class="input-label">Profile ARN</label>
+          <input v-model="kiroProfileArn" type="text" class="input mt-1" :placeholder="t('admin.accounts.kiro.optional')" />
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.proxyUrl') }}</label>
+          <input v-model="kiroProxyUrl" type="text" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <div class="mt-2">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+          </div>
+        </div>
+      </div>
+
+      <!-- DeepSeek credential fields -->
+      <div v-if="form.platform === 'deepseek'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.upstream') }}</label>
+          <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button type="button" @click="deepseekUpstream = 'official'" :class="['flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-all', deepseekUpstream === 'official' ? 'bg-white text-indigo-700 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200']">{{ t('admin.accounts.deepseek.upstreamOfficial') }}</button>
+            <button type="button" @click="deepseekUpstream = 'opencode'" :class="['flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-all', deepseekUpstream === 'opencode' ? 'bg-white text-indigo-700 shadow-sm dark:bg-dark-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200']">{{ t('admin.accounts.deepseek.upstreamOpenCode') }}</button>
+          </div>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.apiKey') }} <span class="text-red-500">*</span></label>
+          <input v-model="deepseekApiKey" type="password" class="input mt-1" :placeholder="t('admin.accounts.deepseek.apiKeyPlaceholder')" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.baseUrl') }}</label>
+          <input v-model="deepseekBaseUrl" type="url" class="input mt-1" :placeholder="deepseekDefaultBaseUrl" />
+          <p class="input-hint text-[11px] text-gray-400">{{ deepseekDefaultBaseUrl }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.deepseek.proxyUrl') }}</label>
+          <input v-model="deepseekProxyUrl" type="url" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+      </div>
+
+      <!-- OpenCode credential fields -->
+      <div v-if="form.platform === 'opencode'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.apiKey') }} <span class="text-red-500">*</span></label>
+          <input v-model="opencodeApiKey" type="password" class="input mt-1" :placeholder="t('admin.accounts.opencode.apiKeyPlaceholder')" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.baseUrl') }}</label>
+          <input v-model="opencodeBaseUrl" type="url" class="input mt-1" :placeholder="OPENCODE_DEFAULT_BASE_URL" />
+          <p class="input-hint text-[11px] text-gray-400">{{ t('admin.accounts.opencode.baseUrlHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.opencode.proxyUrl') }}</label>
+          <input v-model="opencodeProxyUrl" type="url" class="input mt-1" placeholder="socks5://user:pass@host:port" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <div class="mt-2">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+          </div>
         </div>
       </div>
 
@@ -1124,7 +1274,7 @@
 
             <!-- Whitelist Mode -->
             <div v-if="modelRestrictionMode === 'whitelist'">
-              <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+              <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" :sync-credentials="syncPreviewCredentials" />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
                 <span v-if="allowedModels.length === 0">{{
@@ -1269,25 +1419,6 @@
             <p class="text-xs text-blue-700 dark:text-blue-400">
               <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
               {{ t('admin.accounts.poolModeInfo') }}
-            </p>
-          </div>
-          <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
-            <input
-              v-model.number="poolModeRetryCount"
-              type="number"
-              min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
-              step="1"
-              class="input"
-            />
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{
-                t('admin.accounts.poolModeRetryCountHint', {
-                  default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
-                })
-              }}
             </p>
           </div>
         </div>
@@ -1550,7 +1681,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" platform="anthropic" />
+            <ModelWhitelistSelector v-model="allowedModels" platform="anthropic" :sync-credentials="syncPreviewCredentials" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
@@ -1614,25 +1745,6 @@
             <p class="text-xs text-blue-700 dark:text-blue-400">
               <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
               {{ t('admin.accounts.poolModeInfo') }}
-            </p>
-          </div>
-          <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
-            <input
-              v-model.number="poolModeRetryCount"
-              type="number"
-              min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
-              step="1"
-              class="input"
-            />
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{
-                t('admin.accounts.poolModeRetryCountHint', {
-                  default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
-                })
-              }}
             </p>
           </div>
         </div>
@@ -1789,7 +1901,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" :sync-credentials="syncPreviewCredentials" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0">{{
@@ -2443,7 +2555,7 @@
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
@@ -2471,6 +2583,11 @@
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstreamCostFactor') }}</label>
+          <input v-model.number="form.upstream_cost_factor" type="number" min="0.001" step="0.001" class="input" />
+          <p class="input-hint">{{ t('admin.accounts.upstreamCostFactorHint') }}</p>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -2608,6 +2725,32 @@
             />
           </button>
         </div>
+        <div
+          v-if="codexCLIOnlyEnabled"
+          class="mt-4 flex items-center justify-between border-l-2 border-gray-200 pl-4 dark:border-dark-600"
+        >
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexCLIOnlyAllowClaudeCode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexCLIOnlyAllowClaudeCodeDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="codexCLIOnlyAllowClaudeCodeEnabled = !codexCLIOnlyAllowClaudeCodeEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              codexCLIOnlyAllowClaudeCodeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                codexCLIOnlyAllowClaudeCodeEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
       </div>
 
       <!-- OpenAI Compact 能力配置 -->
@@ -2652,7 +2795,7 @@
       <!-- OpenAI APIKey Responses API support mode -->
       <div
         v-if="form.platform === 'openai' && accountCategory === 'apikey'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
           <div>
@@ -2665,9 +2808,37 @@
             <Select
               v-model="openAIResponsesMode"
               :options="openAIResponsesModeOptions"
+              :disabled="!openAITextGenerationCapabilityEnabled"
               data-testid="openai-responses-mode-select"
             />
           </div>
+        </div>
+        <p
+          v-if="!openAITextGenerationCapabilityEnabled"
+          class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+          data-testid="openai-responses-mode-not-applicable"
+        >
+          {{ t('admin.accounts.openai.responsesModeTextDisabledHint') }}
+        </p>
+        <div>
+          <label class="input-label mb-2 block">{{ t('admin.accounts.openai.endpointCapabilities') }}</label>
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label
+              v-for="option in openAIEndpointCapabilityOptions"
+              :key="option.value"
+              class="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
+            >
+              <input
+                type="checkbox"
+                class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+                :data-testid="`openai-endpoint-capability-${option.value}`"
+                :checked="openAIEndpointCapabilities.includes(option.value)"
+                @change="toggleOpenAIEndpointCapability(option.value, $event)"
+              />
+              <span class="text-gray-700 dark:text-gray-200">{{ option.label }}</span>
+            </label>
+          </div>
+          <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
         </div>
       </div>
 
@@ -3145,7 +3316,8 @@ import type {
   CreateAccountRequest,
   CodexSessionImportMessage,
   OpenAICompactMode,
-  OpenAIResponsesMode
+  OpenAIResponsesMode,
+  OpenAIEndpointCapability
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -3278,6 +3450,17 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+
+const syncPreviewCredentials = computed(() => {
+  if (!apiKeyValue.value) return undefined
+  return {
+    platform: form.platform,
+    type: form.type,
+    base_url: apiKeyBaseUrl.value || undefined,
+    api_key: apiKeyValue.value
+  }
+})
+
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
 const editQuotaWeeklyLimit = ref<number | null>(null)
@@ -3291,10 +3474,7 @@ const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
-const DEFAULT_POOL_MODE_RETRY_COUNT = 3
-const MAX_POOL_MODE_RETRY_COUNT = 10
 const poolModeEnabled = ref(false)
-const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const customErrorCodesEnabled = ref(false)
 const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
@@ -3303,9 +3483,11 @@ const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
+const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const webSearchEmulationMode = ref('default')
 const webSearchGlobalEnabled = ref(false)
@@ -3365,6 +3547,58 @@ const openAIResponsesModeOptions = computed(() => [
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
 ])
+const openAITextEndpointCapabilityLabel = computed(() => {
+  if (openAIResponsesMode.value === 'force_responses') {
+    return t('admin.accounts.openai.capabilityResponses')
+  }
+  if (openAIResponsesMode.value === 'force_chat_completions') {
+    return t('admin.accounts.openai.capabilityChatCompletions')
+  }
+  return t('admin.accounts.openai.capabilityTextAuto')
+})
+const openAIEndpointCapabilityOptions = computed<{ value: OpenAIEndpointCapability; label: string }[]>(() => [
+  { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
+  { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') }
+])
+const openAITextGenerationCapabilityEnabled = computed(() =>
+  openAIEndpointCapabilities.value.includes('chat_completions')
+)
+
+const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
+  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings']
+  const selected = allowed.filter((value) => values.includes(value))
+  return selected.length > 0 ? selected : allowed
+}
+
+const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, event?: Event) => {
+  if (openAIEndpointCapabilities.value.includes(capability)) {
+    if (openAIEndpointCapabilities.value.length <= 1) {
+      const input = event?.target as HTMLInputElement | null
+      if (input) input.checked = true
+      return
+    }
+    openAIEndpointCapabilities.value = openAIEndpointCapabilities.value.filter(
+      (value) => value !== capability
+    )
+    if (!openAITextGenerationCapabilityEnabled.value) {
+      openAIResponsesMode.value = 'auto'
+    }
+    return
+  }
+  openAIEndpointCapabilities.value = normalizeOpenAIEndpointCapabilities([
+    ...openAIEndpointCapabilities.value,
+    capability
+  ])
+}
+
+const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
+  const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
+  if (capabilities.length === 2) {
+    delete credentials.openai_capabilities
+    return
+  }
+  credentials.openai_capabilities = capabilities
+}
 
 function buildAntigravityExtra(): Record<string, unknown> | undefined {
   const extra: Record<string, unknown> = {}
@@ -3525,12 +3759,48 @@ const form = reactive({
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
+  upstream_cost_factor: 1,
   group_ids: [] as number[],
   expires_at: null as number | null
 })
 
+// ── Kiro credential inputs ──────────────────────────────────────────
+const kiroRefreshToken = ref('')
+const kiroAuthMethod = ref<'idc' | 'social'>('idc')
+const kiroClientId = ref('')
+const kiroClientSecret = ref('')
+const kiroRegion = ref('us-east-1')
+const kiroMachineId = ref('')
+const kiroProfileArn = ref('')
+const kiroProxyUrl = ref('')
+
+// ── DeepSeek credential inputs ─────────────────────────────────────
+const OPENCODE_DEFAULT_BASE_URL = 'https://opencode.ai/zen/go/v1'
+const deepseekUpstream = ref<'official' | 'opencode'>('official')
+const deepseekApiKey = ref('')
+const deepseekBaseUrl = ref('')
+const deepseekProxyUrl = ref('')
+const deepseekDefaultBaseUrl = computed(() =>
+  deepseekUpstream.value === 'opencode'
+    ? OPENCODE_DEFAULT_BASE_URL
+    : 'https://api.deepseek.com'
+)
+const opencodeApiKey = ref('')
+const opencodeBaseUrl = ref(OPENCODE_DEFAULT_BASE_URL)
+const opencodeProxyUrl = ref('')
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
+  // Kiro 不使用 OAuth 流程，直接填凭证创建
+  if (form.platform === 'kiro') {
+    return false
+  }
+  if (form.platform === 'deepseek') {
+    return false
+  }
+  if (form.platform === 'opencode') {
+    return false
+  }
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
@@ -3631,10 +3901,15 @@ watch(
         ? 'https://api.openai.com'
         : newPlatform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
+          : newPlatform === 'opencode'
+            ? OPENCODE_DEFAULT_BASE_URL
           : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
+    if (newPlatform === 'opencode') {
+      opencodeBaseUrl.value = OPENCODE_DEFAULT_BASE_URL
+    }
     // Antigravity: 默认使用映射模式并填充默认映射
     if (newPlatform === 'antigravity') {
       antigravityModelRestrictionMode.value = 'mapping'
@@ -3674,9 +3949,11 @@ watch(
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
+      openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
+      codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
     if (newPlatform !== 'anthropic') {
       anthropicPassthroughEnabled.value = false
@@ -3697,6 +3974,7 @@ watch(
   ([category, platform]) => {
     if (platform === 'openai' && category !== 'oauth-based') {
       codexCLIOnlyEnabled.value = false
+      codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
     if (platform !== 'anthropic' || category !== 'apikey') {
       anthropicPassthroughEnabled.value = false
@@ -4037,6 +4315,7 @@ const resetForm = () => {
   form.load_factor = null
   form.priority = 1
   form.rate_multiplier = 1
+  form.upstream_cost_factor = 1
   form.group_ids = []
   form.expires_at = null
   accountCategory.value = 'oauth-based'
@@ -4056,6 +4335,13 @@ const resetForm = () => {
   openAICompactModelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
   allowedModels.value = [...claudeModels] // Default fill related models
+  deepseekUpstream.value = 'official'
+  deepseekApiKey.value = ''
+  deepseekBaseUrl.value = ''
+  deepseekProxyUrl.value = ''
+  opencodeApiKey.value = ''
+  opencodeBaseUrl.value = OPENCODE_DEFAULT_BASE_URL
+  opencodeProxyUrl.value = ''
 
   antigravityModelRestrictionMode.value = 'mapping'
   antigravityWhitelistModels.value = []
@@ -4063,7 +4349,6 @@ const resetForm = () => {
     antigravityModelMappings.value = [...mappings]
   })
   poolModeEnabled.value = false
-  poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   customErrorCodesEnabled.value = false
   selectedErrorCodes.value = []
   customErrorCodeInput.value = null
@@ -4072,9 +4357,11 @@ const resetForm = () => {
   openaiPassthroughEnabled.value = false
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
+  openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
+  codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false
   webSearchEmulationMode.value = 'default'
   // Reset quota control state
@@ -4153,13 +4440,26 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only
   }
+  if (
+    accountCategory.value === 'oauth-based' &&
+    codexCLIOnlyEnabled.value &&
+    codexCLIOnlyAllowClaudeCodeEnabled.value
+  ) {
+    extra.codex_cli_only_allowed_clients = ['claude_code']
+  } else {
+    delete extra.codex_cli_only_allowed_clients
+  }
   if (openAICompactMode.value !== 'auto') {
     extra.openai_compact_mode = openAICompactMode.value
   } else {
     delete extra.openai_compact_mode
   }
 
-  if (accountCategory.value === 'apikey' && openAIResponsesMode.value !== 'auto') {
+  if (
+    accountCategory.value === 'apikey' &&
+    openAITextGenerationCapabilityEnabled.value &&
+    openAIResponsesMode.value !== 'auto'
+  ) {
     extra.openai_responses_mode = openAIResponsesMode.value
   } else {
     delete extra.openai_responses_mode
@@ -4219,20 +4519,6 @@ const handleMixedChannelCancel = () => {
   clearMixedChannelDialog()
 }
 
-const normalizePoolModeRetryCount = (value: number) => {
-  if (!Number.isFinite(value)) {
-    return DEFAULT_POOL_MODE_RETRY_COUNT
-  }
-  const normalized = Math.trunc(value)
-  if (normalized < 0) {
-    return 0
-  }
-  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
-    return MAX_POOL_MODE_RETRY_COUNT
-  }
-  return normalized
-}
-
 const applyVertexServiceAccountJson = (value: string) => {
   const raw = value.trim()
   if (!raw) {
@@ -4280,6 +4566,69 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'opencode') {
+    if (!form.name.trim()) { appStore.showError(t('admin.accounts.pleaseEnterAccountName')); return }
+    if (!opencodeApiKey.value.trim()) { appStore.showError(t('admin.accounts.opencode.apiKeyRequired')); return }
+    const credentials: Record<string, unknown> = {
+      api_key: opencodeApiKey.value.trim(),
+      base_url: opencodeBaseUrl.value.trim() || OPENCODE_DEFAULT_BASE_URL
+    }
+    if (opencodeProxyUrl.value.trim()) credentials.proxy_url = opencodeProxyUrl.value.trim()
+    const modelMapping = buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+    await createAccountAndFinish('opencode', 'apikey' as AccountType, credentials)
+    return
+  }
+
+  // DeepSeek: direct create with API Key + Base URL
+  if (form.platform === 'deepseek') {
+    if (!form.name.trim()) { appStore.showError(t('admin.accounts.pleaseEnterAccountName')); return }
+    if (!deepseekApiKey.value.trim()) { appStore.showError(t('admin.accounts.deepseek.apiKeyRequired')); return }
+    const credentials: Record<string, unknown> = { api_key: deepseekApiKey.value.trim() }
+    if (deepseekBaseUrl.value.trim()) credentials.base_url = deepseekBaseUrl.value.trim()
+    if (deepseekProxyUrl.value.trim()) credentials.proxy_url = deepseekProxyUrl.value.trim()
+    await createAccountAndFinish('deepseek', 'apikey' as AccountType, credentials)
+    return
+  }
+
+  // Kiro: direct create with refresh-token credentials
+  if (form.platform === 'kiro') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!kiroRefreshToken.value.trim()) {
+      appStore.showError(t('admin.accounts.kiro.refreshTokenRequired'))
+      return
+    }
+    if (kiroAuthMethod.value === 'idc' && (!kiroClientId.value.trim() || !kiroClientSecret.value.trim())) {
+      appStore.showError(t('admin.accounts.kiro.idcFieldsRequired'))
+      return
+    }
+    const credentials: Record<string, unknown> = {
+      refreshToken: kiroRefreshToken.value.trim(),
+      authMethod: kiroAuthMethod.value,
+      region: kiroRegion.value.trim() || 'us-east-1'
+    }
+    if (kiroAuthMethod.value === 'idc') {
+      credentials.clientId = kiroClientId.value.trim()
+      credentials.clientSecret = kiroClientSecret.value.trim()
+    }
+    if (kiroMachineId.value.trim()) credentials.machineId = kiroMachineId.value.trim()
+    if (kiroProfileArn.value.trim()) credentials.profileArn = kiroProfileArn.value.trim()
+    if (kiroProxyUrl.value.trim()) credentials.proxyUrl = kiroProxyUrl.value.trim()
+    const modelMapping = buildModelMappingObject(
+      modelRestrictionMode.value, allowedModels.value, modelMappings.value
+    )
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+    await createAccountAndFinish('kiro', 'oauth' as AccountType, credentials)
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!form.name.trim()) {
@@ -4345,7 +4694,6 @@ const handleSubmit = async () => {
     // Pool mode
     if (poolModeEnabled.value) {
       credentials.pool_mode = true
-      credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
     }
 
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
@@ -4446,6 +4794,7 @@ const handleSubmit = async () => {
     }
   }
   if (form.platform === 'openai') {
+    applyOpenAIEndpointCapabilities(credentials)
     const compactModelMapping = buildOpenAICompactModelMapping()
     if (compactModelMapping) {
       credentials.compact_model_mapping = compactModelMapping
@@ -4455,7 +4804,6 @@ const handleSubmit = async () => {
   // Add pool mode if enabled
   if (poolModeEnabled.value) {
     credentials.pool_mode = true
-    credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
   }
 
   // Add custom error codes if enabled
@@ -4564,6 +4912,9 @@ const createAccountAndFinish = async (
     }
   }
   if (platform === 'openai') {
+    if (type === 'apikey') {
+      applyOpenAIEndpointCapabilities(credentials)
+    }
     const compactModelMapping = buildOpenAICompactModelMapping()
     if (compactModelMapping) {
       credentials.compact_model_mapping = compactModelMapping
@@ -4583,6 +4934,7 @@ const createAccountAndFinish = async (
     load_factor: form.load_factor ?? undefined,
     priority: form.priority,
     rate_multiplier: form.rate_multiplier,
+    upstream_cost_factor: form.upstream_cost_factor,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
     auto_pause_on_expired: autoPauseOnExpired.value
@@ -4650,6 +5002,7 @@ const handleOpenAIExchange = async (authCode: string) => {
         load_factor: form.load_factor ?? undefined,
         priority: form.priority,
         rate_multiplier: form.rate_multiplier,
+        upstream_cost_factor: form.upstream_cost_factor,
         group_ids: form.group_ids,
         expires_at: form.expires_at,
         auto_pause_on_expired: autoPauseOnExpired.value
@@ -4727,6 +5080,7 @@ const handleOpenAIImportCodexSession = async (content: string) => {
       load_factor: form.load_factor ?? undefined,
       priority: form.priority,
       rate_multiplier: form.rate_multiplier,
+      upstream_cost_factor: form.upstream_cost_factor,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value,
@@ -4854,6 +5208,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
             load_factor: form.load_factor ?? undefined,
             priority: form.priority,
             rate_multiplier: form.rate_multiplier,
+            upstream_cost_factor: form.upstream_cost_factor,
             group_ids: form.group_ids,
             expires_at: form.expires_at,
             auto_pause_on_expired: autoPauseOnExpired.value
@@ -4952,6 +5307,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+          upstream_cost_factor: form.upstream_cost_factor,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
@@ -5293,6 +5649,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+          upstream_cost_factor: form.upstream_cost_factor,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value

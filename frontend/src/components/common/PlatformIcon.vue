@@ -19,6 +19,17 @@
   <svg v-else-if="platform === 'antigravity'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
   </svg>
+  <svg v-else-if="platform === 'kiro'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M4 3h3v7.5L13 3h3.8l-6.4 7.4L17 21h-3.7l-4.2-7.2L7 16.1V21H4V3z" />
+  </svg>
+  <!-- DeepSeek logo (whale-ish mark) -->
+  <svg v-else-if="platform === 'deepseek'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M21 6c-1.6 1.9-3.4 2.6-5.6 2.6-2 0-3.6-1-5.7-1C6.6 7.6 4 10.2 3 14c-.4 1.5-.5 3-1 4 2.2-.3 3.6-1.5 5.2-2.8 1.9-1.5 3.3-2.7 5.8-2.7 1.4 0 2.6.5 4 .5 2.4 0 4-1.6 4-4 0-1.3-.4-2.4-.9-3zM8.5 11.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z" />
+  </svg>
+  <!-- OpenCode logo -->
+  <svg v-else-if="platform === 'opencode'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2 4 6.5v9L12 22l8-6.5v-9L12 2Zm0 2.7 5.2 2.93-5.2 3.04-5.2-3.04L12 4.7Zm-5.75 5.05 4.55 2.65v5.45l-4.55-3.7v-4.4Zm11.5 0v4.4l-4.55 3.7V12.4l4.55-2.65Z" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

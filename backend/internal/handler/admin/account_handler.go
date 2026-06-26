@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/deepseek"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -105,6 +106,7 @@ type CreateAccountRequest struct {
 	Concurrency             int            `json:"concurrency"`
 	Priority                int            `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64       `json:"upstream_cost_factor"`
 	LoadFactor              *int           `json:"load_factor"`
 	GroupIDs                []int64        `json:"group_ids"`
 	ExpiresAt               *int64         `json:"expires_at"`
@@ -124,6 +126,7 @@ type UpdateAccountRequest struct {
 	Concurrency             *int           `json:"concurrency"`
 	Priority                *int           `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64       `json:"upstream_cost_factor"`
 	LoadFactor              *int           `json:"load_factor"`
 	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
 	GroupIDs                *[]int64       `json:"group_ids"`
@@ -141,6 +144,7 @@ type BulkUpdateAccountsRequest struct {
 	Concurrency             *int                      `json:"concurrency"`
 	Priority                *int                      `json:"priority"`
 	RateMultiplier          *float64                  `json:"rate_multiplier"`
+	UpstreamCostFactor      *float64                  `json:"upstream_cost_factor"`
 	LoadFactor              *int                      `json:"load_factor"`
 	Status                  string                    `json:"status" binding:"omitempty,oneof=active inactive error"`
 	Schedulable             *bool                     `json:"schedulable"`
@@ -522,6 +526,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -606,6 +611,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -981,6 +987,100 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), updatedAccount))
 }
 
+// ApplyOAuthCredentialsRequest is the payload for persisting re-authorized OAuth credentials.
+type ApplyOAuthCredentialsRequest struct {
+	Type        string         `json:"type" binding:"required,oneof=oauth setup-token"`
+	Credentials map[string]any `json:"credentials" binding:"required"`
+	Extra       map[string]any `json:"extra"`
+}
+
+// ApplyOAuthCredentials 将"重新授权"得到的新凭据原子落库。
+// POST /api/v1/admin/accounts/:id/apply-oauth-credentials
+//
+// 与通用 PUT /:id (Update) 接口的关键区别：
+//   - 仅接收 type / credentials / extra 三个字段（不接受 concurrency / rpm / quota_* 等可能误传的字段）
+//   - Extra 走 UpdateAccountExtra(JSONB key 级合并)，**绝不**全量覆盖；
+//     避免 base_rpm / window_cost_limit / max_sessions / quota_* / privacy_mode
+//     等持久化配置在重新授权后丢失
+//   - 内置 ClearError + InvalidateToken，避免前端额外两次调用，
+//     并修复旧路径未失效 token 缓存导致重新授权后立即 401 的隐性 bug
+//
+// 与 /refresh 的区别：/refresh 用现有 refresh_token 换 access_token（无用户交互），
+// 本接口承接前端完成完整 OAuth 流程后的落库步骤。
+func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req ApplyOAuthCredentialsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 预检查账号存在 + OAuth 类型（与 Refresh handler 语义一致，提供更友好的错误信息）。
+	existing, err := h.adminService.GetAccount(ctx, accountID)
+	if err != nil {
+		response.NotFound(c, "Account not found")
+		return
+	}
+	if !existing.IsOAuth() {
+		response.ErrorFrom(c, infraerrors.BadRequest("NOT_OAUTH", "cannot apply oauth credentials to non-OAuth account"))
+		return
+	}
+
+	updatedAccount, err := h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
+		Type:        req.Type,
+		Credentials: req.Credentials,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	// 增量合并 Extra（JSONB key 级 merge，绝不覆盖 base_rpm / window_cost_limit /
+	// max_sessions / quota_* / privacy_mode 等持久化键）。
+	// best-effort：失败仅记日志；下方 ClearAccountError 会从 DB 重新读取最新 account，
+	// 因此响应里的 extra 始终以 DB 为准——这里不需要手动维护内存快照。
+	if len(req.Extra) > 0 {
+		if extraErr := h.adminService.UpdateAccountExtra(ctx, accountID, req.Extra); extraErr != nil {
+			extraKeys := make([]string, 0, len(req.Extra))
+			for k := range req.Extra {
+				extraKeys = append(extraKeys, k)
+			}
+			slog.Error("apply_oauth_credentials.update_extra_failed",
+				"account_id", accountID,
+				"extra_keys", extraKeys,
+				"err", extraErr,
+			)
+		}
+	}
+
+	if cleared, clearErr := h.adminService.ClearAccountError(ctx, accountID); clearErr != nil {
+		slog.Warn("apply_oauth_credentials.clear_error_failed",
+			"account_id", accountID,
+			"err", clearErr,
+		)
+	} else if cleared != nil {
+		updatedAccount = cleared
+	}
+
+	if h.tokenCacheInvalidator != nil && updatedAccount.IsOAuth() {
+		if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(ctx, updatedAccount); invalidateErr != nil {
+			slog.Warn("apply_oauth_credentials.invalidate_token_failed",
+				"account_id", accountID,
+				"err", invalidateErr,
+			)
+		}
+	}
+
+	response.Success(c, h.buildAccountResponseWithRuntime(ctx, updatedAccount))
+}
+
 // GetStats handles getting account statistics
 // GET /api/v1/admin/accounts/:id/stats
 func (h *AccountHandler) GetStats(c *gin.Context) {
@@ -1204,12 +1304,19 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 // POST /api/v1/admin/accounts/batch
 func (h *AccountHandler) BatchCreate(c *gin.Context) {
 	var req struct {
-		Accounts []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
+		Accounts        []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
+		AutoAssignProxy bool                   `json:"auto_assign_proxy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+
+	// Per-proxy per-platform cap for auto-assignment (e.g. 5 kiro accounts/proxy).
+	const proxyPerPlatformCap = 5
+	// Lazily-built planners, one per platform, seeded from live DB state.
+	proxyPlanners := map[string]*service.ProxyAssignmentPlanner{}
+	proxyUnassigned := 0 // accounts that wanted a proxy but none had capacity
 
 	executeAdminIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		success := 0
@@ -1235,6 +1342,47 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 
 			skipCheck := item.ConfirmMixedChannelRisk != nil && *item.ConfirmMixedChannelRisk
 
+			// Auto-assign a proxy (only when requested and the account did not
+			// specify one). Picks the least-loaded active proxy still under the
+			// per-platform cap; if all proxies are full, leaves it unproxied and
+			// records a warning (no over-assignment).
+			assignProxyID := item.ProxyID
+			var pendingProxy bool // pre-stored disabled: wanted a proxy but none free
+			if req.AutoAssignProxy && assignProxyID == nil {
+				planner, ok := proxyPlanners[item.Platform]
+				if !ok {
+					p, perr := h.adminService.NewProxyPlannerForPlatform(ctx, item.Platform, proxyPerPlatformCap)
+					if perr == nil {
+						planner = p
+						proxyPlanners[item.Platform] = p
+					}
+				}
+				if planner != nil {
+					if pid, ok := planner.Next(); ok {
+						// pid == 0 is the server host-IP slot: a valid, enabled
+						// assignment with NO proxy bound (direct egress). pid > 0
+						// binds a real proxy. Either way the account is enabled.
+						if pid > 0 {
+							p := pid
+							assignProxyID = &p
+						}
+					} else {
+						// Every slot (real proxies + host IP, each capped) is full.
+						proxyUnassigned++
+						pendingProxy = true
+					}
+				}
+			}
+
+			// Accounts that wanted a proxy but got none are pre-stored in a
+			// DISABLED (unschedulable) state so they never egress via the bare
+			// host IP. They are enabled later once a proxy is bound (edit page).
+			var schedulable *bool
+			if pendingProxy {
+				f := false
+				schedulable = &f
+			}
+
 			account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 				Name:                  item.Name,
 				Notes:                 item.Notes,
@@ -1242,7 +1390,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				Type:                  item.Type,
 				Credentials:           item.Credentials,
 				Extra:                 item.Extra,
-				ProxyID:               item.ProxyID,
+				ProxyID:               assignProxyID,
 				Concurrency:           item.Concurrency,
 				Priority:              item.Priority,
 				RateMultiplier:        item.RateMultiplier,
@@ -1250,6 +1398,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				ExpiresAt:             item.ExpiresAt,
 				AutoPauseOnExpired:    item.AutoPauseOnExpired,
 				SkipMixedChannelCheck: skipCheck,
+				Schedulable:           schedulable,
 			})
 			if err != nil {
 				failed++
@@ -1272,11 +1421,16 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			// OpenAI APIKey 账号异步探测 /v1/responses 能力。
 			h.scheduleOpenAIResponsesProbe(account)
 			success++
-			results = append(results, gin.H{
+			res := gin.H{
 				"name":    item.Name,
 				"id":      account.ID,
 				"success": true,
-			})
+			}
+			if pendingProxy {
+				res["pending_proxy"] = true
+				res["schedulable"] = false
+			}
+			results = append(results, res)
 		}
 
 		// 异步设置隐私，避免批量创建时阻塞请求
@@ -1310,11 +1464,21 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			}()
 		}
 
-		return gin.H{
+		resp := gin.H{
 			"success": success,
 			"failed":  failed,
 			"results": results,
-		}, nil
+		}
+		if req.AutoAssignProxy {
+			resp["proxy_unassigned"] = proxyUnassigned
+			if proxyUnassigned > 0 {
+				resp["proxy_warning"] = strconv.Itoa(proxyUnassigned) +
+					" account(s) were imported but left DISABLED: every egress slot is full " +
+					"(the server IP plus each proxy each hold up to " + strconv.Itoa(proxyPerPlatformCap) +
+					" accounts per platform). Add more proxies, bind them on the account edit page, then enable."
+			}
+		}
+		return resp, nil
 	})
 }
 
@@ -1419,6 +1583,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	mergeUpstreamCostFactorIntoExtra(&req.Extra, req.UpstreamCostFactor)
 	if len(req.AccountIDs) == 0 && req.Filters == nil {
 		response.BadRequest(c, "account_ids or filters is required")
 		return
@@ -1434,6 +1599,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.Concurrency != nil ||
 		req.Priority != nil ||
 		req.RateMultiplier != nil ||
+		req.UpstreamCostFactor != nil ||
 		req.LoadFactor != nil ||
 		req.Status != "" ||
 		req.Schedulable != nil ||
@@ -1954,6 +2120,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	// Handle OpenCode accounts
+	if account.Platform == service.PlatformOpenCode {
+		response.Success(c, deepseek.OpenCodeModels())
+		return
+	}
+
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
@@ -2030,6 +2202,56 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 		}
 
 		slog.Warn("sync_upstream_models_failed", "account_id", accountID)
+		response.Error(c, http.StatusBadGateway, "Failed to sync upstream models from upstream")
+		return
+	}
+
+	response.Success(c, gin.H{"models": models})
+}
+
+// SyncUpstreamModelsPreview handles syncing live supported models using provided credentials (no account ID needed).
+// POST /api/v1/admin/accounts/models/sync-upstream-preview
+func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
+	var req struct {
+		Platform string `json:"platform" binding:"required"`
+		Type     string `json:"type" binding:"required"`
+		BaseURL  string `json:"base_url"`
+		APIKey   string `json:"api_key" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	tempAccount := &service.Account{
+		Platform: req.Platform,
+		Type:     req.Type,
+		Credentials: map[string]any{
+			"api_key":  req.APIKey,
+			"base_url": req.BaseURL,
+		},
+	}
+
+	if h.accountTestService == nil {
+		response.InternalError(c, "Account test service is not configured")
+		return
+	}
+
+	models, err := h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), tempAccount)
+	if err != nil {
+		var syncErr *service.UpstreamModelSyncError
+		if errors.As(err, &syncErr) {
+			switch syncErr.Kind {
+			case service.UpstreamModelSyncErrorConfiguration, service.UpstreamModelSyncErrorUnsupported:
+				response.BadRequest(c, syncErr.SafeMessage())
+			default:
+				slog.Warn("sync_upstream_models_preview_failed", "platform", req.Platform, "kind", syncErr.Kind)
+				response.Error(c, http.StatusBadGateway, syncErr.SafeMessage())
+			}
+			return
+		}
+
+		slog.Warn("sync_upstream_models_preview_failed", "platform", req.Platform)
 		response.Error(c, http.StatusBadGateway, "Failed to sync upstream models from upstream")
 		return
 	}
@@ -2266,4 +2488,18 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 		v = 10000
 	}
 	extra["base_rpm"] = v
+}
+
+func mergeUpstreamCostFactorIntoExtra(extra *map[string]any, factor *float64) {
+	if factor == nil {
+		return
+	}
+	if *extra == nil {
+		*extra = make(map[string]any)
+	}
+	if *factor > 0 {
+		(*extra)["upstream_cost_factor"] = *factor
+		return
+	}
+	delete(*extra, "upstream_cost_factor")
 }

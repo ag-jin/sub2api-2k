@@ -2,15 +2,15 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apikeygen"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -55,6 +55,8 @@ type APIKeyRepository interface {
 	GetByKeyForAuth(ctx context.Context, key string) (*APIKey, error)
 	Update(ctx context.Context, key *APIKey) error
 	Delete(ctx context.Context, id int64) error
+	// DeleteWithAudit 在同一事务内先写 deleted_api_key_audits 审计、再软删除该 key。
+	DeleteWithAudit(ctx context.Context, id int64) error
 
 	ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error)
 	VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error)
@@ -245,22 +247,10 @@ func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
 	apiKey.CompiledIPBlacklist = ip.CompileIPRules(apiKey.IPBlacklist)
 }
 
-// GenerateKey 生成随机API Key
+// GenerateKey 生成随机API Key(新版格式,见 internal/pkg/apikeygen)。
+// 旧版 key 仍可正常认证(整串明文查库),无需迁移。
 func (s *APIKeyService) GenerateKey() (string, error) {
-	// 生成32字节随机数据
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate random bytes: %w", err)
-	}
-
-	// 转换为十六进制字符串并添加前缀
-	prefix := s.cfg.Default.APIKeyPrefix
-	if prefix == "" {
-		prefix = "sk-"
-	}
-
-	key := prefix + hex.EncodeToString(bytes)
-	return key, nil
+	return apikeygen.Generate(s.cfg.Default.APIKeyPrefix)
 }
 
 // ValidateCustomKey 验证自定义API Key格式
@@ -399,7 +389,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 	apiKey := &APIKey{
 		UserID:      userID,
 		Key:         key,
-		Name:        req.Name,
+		Name:        html.EscapeString(req.Name),
 		GroupID:     req.GroupID,
 		Status:      StatusActive,
 		IPWhitelist: req.IPWhitelist,
@@ -538,7 +528,7 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 
 	// 更新字段
 	if req.Name != nil {
-		apiKey.Name = *req.Name
+		apiKey.Name = html.EscapeString(*req.Name)
 	}
 
 	if req.GroupID != nil {
@@ -648,15 +638,16 @@ func (s *APIKeyService) Delete(ctx context.Context, id int64, userID int64) erro
 		return ErrInsufficientPerms
 	}
 
-	// 清除Redis缓存（使用 userID 而非 apiKey.UserID）
+	// 事务内:写审计 + 软删除(tombstone)。
+	if err := s.apiKeyRepo.DeleteWithAudit(ctx, id); err != nil {
+		return fmt.Errorf("delete api key: %w", err)
+	}
+
+	// 删除成功后再清理缓存,避免"缓存已清但删除失败"的竞态。
 	if s.cache != nil {
 		_ = s.cache.DeleteCreateAttemptCount(ctx, userID)
 	}
 	s.InvalidateAuthCacheByKey(ctx, key)
-
-	if err := s.apiKeyRepo.Delete(ctx, id); err != nil {
-		return fmt.Errorf("delete api key: %w", err)
-	}
 	s.lastUsedTouchL1.Delete(id)
 
 	return nil
