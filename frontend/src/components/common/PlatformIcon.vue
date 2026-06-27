@@ -30,6 +30,12 @@
   <svg v-else-if="platform === 'opencode'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M12 2 4 6.5v9L12 22l8-6.5v-9L12 2Zm0 2.7 5.2 2.93-5.2 3.04-5.2-3.04L12 4.7Zm-5.75 5.05 4.55 2.65v5.45l-4.55-3.7v-4.4Zm11.5 0v4.4l-4.55 3.7V12.4l4.55-2.65Z" />
   </svg>
+  <!-- Grok/xAI logo mark -->
+  <svg v-else-if="platform === 'grok'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M4 18 18 4" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M8 5h11v11" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5 6l13 13" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

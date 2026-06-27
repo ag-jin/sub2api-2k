@@ -27,6 +27,7 @@ type stubAdminService struct {
 	getUserErr           error
 	createAccountErr     error
 	updateAccountErr     error
+	updatedAccounts      []*service.UpdateAccountInput
 	bulkUpdateAccountErr error
 	checkMixedErr        error
 	lastMixedCheck       struct {
@@ -357,6 +358,9 @@ func (s *stubAdminService) CreateAccount(ctx context.Context, input *service.Cre
 }
 
 func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
+	s.mu.Lock()
+	s.updatedAccounts = append(s.updatedAccounts, input)
+	s.mu.Unlock()
 	if s.updateAccountErr != nil {
 		return nil, s.updateAccountErr
 	}
@@ -634,6 +638,10 @@ func (s *stubAdminService) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 
 func (s *stubAdminService) RevertAccountProxyFallback(ctx context.Context, id int64) error {
 	return nil
+}
+
+func (s *stubAdminService) NewProxyPlannerForPlatform(ctx context.Context, platform string, perProxyCap int) (*service.ProxyAssignmentPlanner, error) {
+	return nil, nil
 }
 
 // Ensure stub implements interface.
