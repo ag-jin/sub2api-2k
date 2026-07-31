@@ -678,6 +678,9 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 
 	if useMixed {
 		platforms := []string{bucket.Platform, PlatformAntigravity}
+		if extra := crossPlatformAddons(bucket.Platform); len(extra) > 0 {
+			platforms = append(platforms, extra...)
+		}
 		var accounts []Account
 		var err error
 		if groupID > 0 {

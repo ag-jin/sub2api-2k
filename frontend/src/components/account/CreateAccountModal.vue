@@ -292,6 +292,27 @@
 
       <!-- OpenCode credential fields -->
       <div v-if="form.platform === 'opencode'" class="space-y-4">
+        <!-- Optional social login (identity only) -->
+        <div class="rounded-md border border-gray-200 p-3 dark:border-dark-600">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.opencode.loginTitle') }}</label>
+              <p class="input-hint text-[11px] text-gray-400">{{ t('admin.accounts.opencode.loginHint') }}</p>
+            </div>
+          </div>
+          <div class="mt-2 flex gap-2">
+            <button type="button" class="btn btn-secondary btn-sm flex-1" :disabled="opencodeOAuthLoading" @click="startOpencodeLogin('github')">GitHub</button>
+            <button type="button" class="btn btn-secondary btn-sm flex-1" :disabled="opencodeOAuthLoading" @click="startOpencodeLogin('google')">Google</button>
+          </div>
+          <div v-if="opencodeOAuthSessionId" class="mt-2 space-y-1">
+            <label class="input-label text-[11px]">{{ t('admin.accounts.opencode.codePaste') }}</label>
+            <div class="flex gap-2">
+              <input v-model="opencodeOAuthCode" type="text" class="input flex-1" :placeholder="t('admin.accounts.opencode.codePastePlaceholder')" />
+              <button type="button" class="btn btn-primary btn-sm" :disabled="opencodeOAuthLoading || !opencodeOAuthCode" @click="confirmOpencodeLogin">{{ t('common.confirm') }}</button>
+            </div>
+          </div>
+          <p v-if="opencodeOAuthEmail" class="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400">✓ {{ opencodeOAuthEmail }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.opencode.apiKey') }} <span class="text-red-500">*</span></label>
           <input v-model="opencodeApiKey" type="password" class="input mt-1" :placeholder="t('admin.accounts.opencode.apiKeyPlaceholder')" />
@@ -3968,7 +3989,65 @@ const opencodeApiKey = ref('')
 const opencodeBaseUrl = ref(OPENCODE_DEFAULT_BASE_URL)
 const opencodeProxyUrl = ref('')
 
-// Helper to check if current type needs OAuth flow
+// OpenCode half-automatic OAuth (identity only). Captures email; sk- key stays manual.
+const opencodeOAuthLoading = ref(false)
+const opencodeOAuthSessionId = ref('')
+const opencodeOAuthState = ref('')
+const opencodeOAuthCode = ref('')
+const opencodeOAuthEmail = ref('')
+const OPENCODE_OAUTH_REDIRECT = 'http://localhost:1456/auth/callback'
+
+async function startOpencodeLogin(provider: 'github' | 'google') {
+  opencodeOAuthLoading.value = true
+  try {
+    const res = await adminAPI.opencode.generateAuthUrl({ provider, redirect_uri: OPENCODE_OAUTH_REDIRECT })
+    opencodeOAuthSessionId.value = res.session_id
+    // Extract state from the auth URL so we can echo it back on exchange.
+    try {
+      opencodeOAuthState.value = new URL(res.auth_url).searchParams.get('state') || ''
+    } catch {
+      opencodeOAuthState.value = ''
+    }
+    window.open(res.auth_url, '_blank', 'noopener')
+  } catch (e: any) {
+    appStore.showError(e?.response?.data?.message || String(e))
+  } finally {
+    opencodeOAuthLoading.value = false
+  }
+}
+
+async function confirmOpencodeLogin() {
+  const raw = opencodeOAuthCode.value.trim()
+  if (!raw) return
+  // Accept either a bare code or a full callback URL pasted by the admin.
+  let code = raw
+  let state = opencodeOAuthState.value
+  try {
+    if (raw.startsWith('http')) {
+      const u = new URL(raw)
+      code = u.searchParams.get('code') || raw
+      state = u.searchParams.get('state') || state
+    }
+  } catch {
+    // keep raw as code
+  }
+  opencodeOAuthLoading.value = true
+  try {
+    const info = await adminAPI.opencode.exchangeCode({
+      session_id: opencodeOAuthSessionId.value,
+      code,
+      state,
+      redirect_uri: OPENCODE_OAUTH_REDIRECT,
+    })
+    opencodeOAuthEmail.value = info.email || '(logged in)'
+  } catch (e: any) {
+    appStore.showError(e?.response?.data?.message || String(e))
+  } finally {
+    opencodeOAuthLoading.value = false
+  }
+}
+
+
 const isOAuthFlow = computed(() => {
   // Kiro 不使用 OAuth 流程，直接填凭证创建
   if (form.platform === 'kiro') {

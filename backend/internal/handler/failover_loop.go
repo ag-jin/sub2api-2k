@@ -48,15 +48,31 @@ type FailoverState struct {
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
 	hasBoundSession       bool
+
+	// sticky 清理:账号 failover 失败后,若 sticky session 绑定在该账号上,
+	// 下次请求仍会选中它(一直打同一个账号的根因)。这里在失败时主动清绑定。
+	sessionKey    string
+	groupID       *int64
+	stickyClearer func(ctx context.Context, groupID int64, sessionKey string)
+	StickyCleared bool
 }
 
-// NewFailoverState 创建 failover 状态
+// NewFailoverState 创建 failover 状态。
 func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
+	return NewFailoverStateWithStickyCleanup(maxSwitches, hasBoundSession, "", nil, nil)
+}
+
+// NewFailoverStateWithStickyCleanup 创建带粘性会话清理能力的 failover 状态。
+// sessionKey/groupID/stickyClearer 传零值时不清理粘性会话。
+func NewFailoverStateWithStickyCleanup(maxSwitches int, hasBoundSession bool, sessionKey string, groupID *int64, stickyClearer func(ctx context.Context, groupID int64, sessionKey string)) *FailoverState {
 	return &FailoverState{
 		MaxSwitches:           maxSwitches,
 		FailedAccountIDs:      make(map[int64]struct{}),
 		SameAccountRetryCount: make(map[int64]int),
 		hasBoundSession:       hasBoundSession,
+		sessionKey:            sessionKey,
+		groupID:               groupID,
+		stickyClearer:         stickyClearer,
 	}
 }
 
@@ -98,6 +114,13 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 加入失败列表
 	s.FailedAccountIDs[accountID] = struct{}{}
+
+	// 清理 sticky session 绑定:账号失败后若 sticky 还指向它,下次请求会继续选中。
+	// 主动清掉,让下次选号走负载均衡切到别的账号。
+	if !s.StickyCleared && s.stickyClearer != nil && s.sessionKey != "" && s.groupID != nil {
+		s.stickyClearer(ctx, *s.groupID, s.sessionKey)
+		s.StickyCleared = true
+	}
 
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {

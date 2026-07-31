@@ -41,6 +41,9 @@ func RegisterAdminRoutes(
 		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
 
+		// OpenCode GO OAuth (half-automatic login)
+		registerOpenCodeOAuthRoutes(admin, h)
+
 		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
 
@@ -368,6 +371,18 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/create-from-codex-pat", h.Admin.OpenAIOAuth.CreateAccountFromCodexPAT)
 		openai.GET("/accounts/:id/quota", h.Admin.OpenAIOAuth.QueryQuota)
 		openai.POST("/accounts/:id/reset-quota", h.Admin.OpenAIOAuth.ResetQuota)
+	}
+}
+
+// registerOpenCodeOAuthRoutes registers OpenCode GO OAuth endpoints. These live
+// on AccountHandler (self-contained, no wire provider) since OpenCode login is
+// identity-only and does not need the full OAuth service stack.
+func registerOpenCodeOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	oc := admin.Group("/opencode")
+	{
+		oc.POST("/generate-auth-url", h.Admin.Account.OpenCodeGenerateAuthURL)
+		oc.POST("/exchange-code", h.Admin.Account.OpenCodeExchangeCode)
+		oc.POST("/create-from-oauth", h.Admin.Account.OpenCodeCreateFromOAuth)
 	}
 }
 

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -44,6 +45,7 @@ type GatewayHandler struct {
 	antigravityGatewayService *service.AntigravityGatewayService
 	kiroGatewayService        *service.KiroGatewayService
 	deepseekGatewayService    *service.DeepseekGatewayService
+	opencodeGatewayService    *service.OpenCodeGatewayService
 	userService               *service.UserService
 	billingCacheService       *service.BillingCacheService
 	usageService              *service.UsageService
@@ -101,6 +103,7 @@ func NewGatewayHandler(
 		antigravityGatewayService: antigravityGatewayService,
 		kiroGatewayService:        service.NewKiroGatewayService(gatewayService.AccountRepo()),
 		deepseekGatewayService:    service.NewDeepseekGatewayService(gatewayService.AccountRepo()),
+		opencodeGatewayService:    service.NewOpenCodeGatewayService(gatewayService.AccountRepo(), settingService.SettingRepo(), cfg.Server.Address()),
 		userService:               userService,
 		billingCacheService:       billingCacheService,
 		usageService:              usageService,
@@ -186,6 +189,25 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
 	if !h.checkClaudeCodeVersion(c) {
 		return
+	}
+
+	// Cross-platform routing: any model that an OpenCode account in the
+	// group can map (e.g. claude-opus-4-6-G → glm-5.2) is routed through
+	// the OpenCode gateway directly, bypassing the normal scheduler.
+	if accountRepo := h.gatewayService.AccountRepo(); apiKey.GroupID != nil && accountRepo != nil && h.opencodeGatewayService != nil {
+		addonAccounts, _ := accountRepo.ListSchedulableByGroupIDAndPlatform(c.Request.Context(), *apiKey.GroupID, service.PlatformOpenCode)
+		for i := range addonAccounts {
+			if mapped := addonAccounts[i].GetMappedModel(reqModel); mapped != "" && mapped != reqModel {
+				result, err := h.opencodeGatewayService.Forward(c.Request.Context(), c, &addonAccounts[i], body)
+				if err != nil {
+					reqLog.Warn("opencode.cross_platform_error", zap.Error(err))
+					h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+					return
+				}
+				_ = result
+				return
+			}
+		}
 	}
 
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
@@ -459,6 +481,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						return
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					// sticky 绑定已清理(账号失败),本地也置 0 让下次选号走负载均衡,
+					// 不再命中 Layer 1.5 的 sticky 路径选回失败账号。
+					if fs.StickyCleared {
+						sessionBoundAccountID = 0
+					}
 					switch action {
 					case FailoverContinue:
 						continue
@@ -577,7 +604,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	for {
-		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		fs := NewFailoverStateWithStickyCleanup(h.maxAccountSwitches, hasBoundSession, sessionKey, currentAPIKey.GroupID, func(ctx context.Context, groupID int64, sk string) {
+			// 账号 failover 失败后清 sticky 绑定,避免下次请求继续选失败账号。
+			_ = h.gatewayService.DeleteSessionAccountID(ctx, groupID, sk)
+		})
 		retryWithFallback := false
 
 		for {
@@ -800,15 +830,56 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
+			// OpenCode cross-platform routing: route claude-opus-4-6-G through
+			// opencode gateway even when selected by kiro scheduler.
+			if accountRepo := h.gatewayService.AccountRepo(); reqModel == "claude-opus-4-6-G" && account.Platform != service.PlatformOpenCode && currentAPIKey.GroupID != nil && accountRepo != nil && h.opencodeGatewayService != nil {
+				addonAccounts, _ := accountRepo.ListSchedulableByGroupIDAndPlatform(requestCtx, *currentAPIKey.GroupID, service.PlatformOpenCode)
+				for i := range addonAccounts {
+					if addonAccounts[i].GetMappedModel(reqModel) != reqModel {
+						result, err = h.opencodeGatewayService.Forward(requestCtx, c, &addonAccounts[i], attemptBody)
+						goto forwardDone
+					}
+				}
+			}
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
 			} else if account.Platform == service.PlatformKiro {
 				result, err = h.kiroGatewayService.Forward(requestCtx, c, account, attemptBody)
-			} else if account.Platform == service.PlatformDeepseek || account.Platform == service.PlatformOpenCode {
+			} else if account.Platform == service.PlatformOpenCode {
+				result, err = h.opencodeGatewayService.Forward(requestCtx, c, account, attemptBody)
+			} else if account.Platform == service.PlatformDeepseek {
 				result, err = h.deepseekGatewayService.Forward(requestCtx, c, account, attemptBody)
+			} else if account.Platform == service.PlatformAnthropic &&
+				account.Credentials != nil &&
+				account.Credentials["gateway_protocol"] == "chat_completions" {
+				// 上游暴露标准 OpenAI /v1/chat/completions 但 Anthropic /v1/messages 流式
+				// SSE 不规范的账号(如 astraflow):走 opencode gateway 的 CC 转换链
+				// (Anthropic→ChatCompletions→Anthropic),复用已验证的 apicompat 转换。
+				// 注意 credentials 是 map[string]any,JSON unmarshal 字符串值类型为 string,
+				// 直接与字符串字面量比较等价于先断言再比。
+				result, err = h.opencodeGatewayService.Forward(requestCtx, c, account, attemptBody)
 			} else {
+				// Vision assist: GLM 等纯文本模型收到 image content block 时,
+				// 先用视觉模型把图片转成文字描述再透传,避免上游 400
+				// "Model only support text input"。开关由 opencode_vision_assist_enabled 控制。
+				// 注意 isGLMTextOnlyModel 判定的是映射后的上游模型名(如 glm-5.2),
+				// 而非请求模型(claude-opus-4-6-G),所以这里传 account.GetMappedModel 的结果。
+				if h.opencodeGatewayService != nil {
+					mappedModel := account.GetMappedModel(reqModel)
+					patched, verr := h.opencodeGatewayService.MaybeProcessVisionAssistPublic(
+						requestCtx, attemptBody, mappedModel, true, reqLog)
+					if verr != nil {
+						reqLog.Warn("gateway.vision_assist_error", zap.Error(verr))
+					} else if !bytes.Equal(patched, attemptBody) {
+						if rerr := attemptParsedReq.ReplaceBody(patched); rerr != nil {
+							reqLog.Warn("gateway.vision_assist_replace_failed", zap.Error(rerr))
+						}
+					}
+				}
 				result, err = h.gatewayService.Forward(requestCtx, c, account, attemptParsedReq)
 			}
+
+		forwardDone:
 
 			// 兜底释放串行锁（正常情况已通过回调提前释放）
 			if queueRelease != nil {
@@ -883,6 +954,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						return
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					// sticky 绑定已清理(账号失败),本地也置 0 让下次选号走负载均衡,
+					// 不再命中 Layer 1.5 的 sticky 路径选回失败账号。
+					if fs.StickyCleared {
+						sessionBoundAccountID = 0
+					}
 					switch action {
 					case FailoverContinue:
 						continue

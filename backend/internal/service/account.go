@@ -640,6 +640,11 @@ func normalizeRequestedModelForLookup(platform, requestedModel string) string {
 	if trimmed == "" {
 		return ""
 	}
+	if platform == PlatformOpenAI {
+		if normalizedFast, ok := normalizeOpenAIFastModelAlias(trimmed); ok {
+			return normalizedFast
+		}
+	}
 	if platform != PlatformGemini && platform != PlatformAntigravity {
 		return trimmed
 	}

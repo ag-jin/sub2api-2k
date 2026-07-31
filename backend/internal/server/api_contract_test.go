@@ -859,6 +859,8 @@ func TestAPIContracts(t *testing.T) {
 					"openai_fast_policy_settings": {
 						"rules": []
 					},
+					"opencode_vision_assist_enabled": false,
+					"opencode_vision_model": "",
 					"custom_menu_items": [],
 					"custom_endpoints": [],
 					"payment_enabled": false,
@@ -1107,6 +1109,8 @@ func TestAPIContracts(t *testing.T) {
 					"openai_fast_policy_settings": {
 						"rules": []
 					},
+					"opencode_vision_assist_enabled": false,
+					"opencode_vision_model": "",
 					"payment_enabled": false,
 					"payment_min_amount": 0,
 					"payment_max_amount": 0,

@@ -6193,6 +6193,31 @@
           </div>
         </div>
 
+
+        <!-- OpenCode Vision Assist -->
+        <div class="card">
+          <div class="border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+            <h2 class="text-lg font-semibold">OpenCode Vision Assist</h2>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">When enabled, image content in requests to GLM text-only models (glm-5.2/5.1/5) will be described by an internal OpenAI call before forwarding.</p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium">Enable Vision Assist</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">Turn on image-to-text conversion for GLM text-only models.</p>
+              </div>
+              <Toggle v-model="form.opencode_vision_assist_enabled" />
+            </div>
+            <div v-if="form.opencode_vision_assist_enabled" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium mb-1">Vision Model</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">The OpenAI model used for image-to-text description.</p>
+                <input v-model="form.opencode_vision_model" type="text" class="input" placeholder="gpt-5.4" />
+              </div>
+            </div>
+          </div>
+        </div>
+
         </div><!-- /Tab: Features -->
 
         <!-- Tab: Email -->
@@ -7880,6 +7905,8 @@ type SettingsForm = Omit<
   openai_advanced_scheduler_enabled: boolean;
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
+  opencode_vision_assist_enabled: boolean;
+  opencode_vision_model: string;
 };
 
 const form = reactive<SettingsForm>({
@@ -8103,6 +8130,9 @@ const form = reactive<SettingsForm>({
   affiliate_enabled: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
+  // OpenCode Vision Assist
+  opencode_vision_assist_enabled: false,
+  opencode_vision_model: "",
 });
 
 const authSourceDefaults = reactive<AuthSourceDefaultsState>(
@@ -9366,6 +9396,8 @@ async function saveSettings() {
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
+      opencode_vision_assist_enabled: form.opencode_vision_assist_enabled,
+      opencode_vision_model: form.opencode_vision_model,
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，

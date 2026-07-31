@@ -90,6 +90,22 @@ func normalizeKnownOpenAICodexModel(model string) string {
 	}
 }
 
+func normalizeOpenAIFastModelAlias(model string) (string, bool) {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	if normalized == "" || !strings.HasSuffix(normalized, "-fast") {
+		return "", false
+	}
+	base := strings.TrimSuffix(normalized, "-fast")
+	if base == "" {
+		return "", false
+	}
+	resolved := normalizeKnownOpenAICodexModel(base)
+	if resolved == "" {
+		return "", false
+	}
+	return resolved, true
+}
+
 func appendUsageBillingModelCandidate(candidates []string, seen map[string]struct{}, model string) []string {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {

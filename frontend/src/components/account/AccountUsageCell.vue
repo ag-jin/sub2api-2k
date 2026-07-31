@@ -507,6 +507,32 @@
     </template>
 
     <!-- Other accounts: no usage window -->
+    <template v-else-if="account.platform === 'opencode'">
+      <div v-if="loading" class="text-xs text-gray-400">...</div>
+      <div v-else-if="error" class="text-xs text-red-500">{{ error }}</div>
+      <div v-else-if="usageInfo" class="space-y-1">
+        <UsageProgressBar
+          v-if="usageInfo.five_hour"
+          label="5h"
+          :utilization="usageInfo.five_hour.utilization"
+          :resets-at="usageInfo.five_hour.resets_at"
+          :window-stats="usageInfo.five_hour.window_stats"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="usageInfo.seven_day"
+          label="30d"
+          :utilization="usageInfo.seven_day.utilization"
+          :resets-at="usageInfo.seven_day.resets_at"
+          :window-stats="usageInfo.seven_day.window_stats"
+          color="purple"
+        />
+        <div class="text-[9px] text-gray-400">{{ t('usage.localEstimate') }}</div>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
+    <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
     </template>
@@ -637,6 +663,9 @@ let visibilityObserver: IntersectionObserver | null = null
 const showUsageWindows = computed(() => {
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   if (props.account.platform === 'gemini') return true
+  // OpenCode GO: upstream exposes no usage API, but we surface local cost windows
+  // (5h $12 / month $60) computed from usage_logs.
+  if (props.account.platform === 'opencode') return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
@@ -655,6 +684,9 @@ const shouldFetchUsage = computed(() => {
   }
   if (props.account.platform === 'openai') {
     return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'opencode') {
+    return true
   }
   return false
 })

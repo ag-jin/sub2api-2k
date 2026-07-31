@@ -236,6 +236,10 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool
+
+	// OpenCode 视觉辅助：GLM 纯文本模型图片转文字
+	OpenCodeVisionAssistEnabled bool   // opencode_vision_assist_enabled
+	OpenCodeVisionModel         string // opencode_vision_model
 }
 
 type DefaultSubscriptionSetting struct {

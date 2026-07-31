@@ -1272,6 +1272,38 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	requireCompact bool,
 	platform string,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	selection, decision, err := s.selectAccountWithSchedulerInGroup(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform)
+	if !shouldFallbackOpenAIGroupSelection(err) {
+		return selection, decision, err
+	}
+
+	fallbackIDs, resolveErr := s.openAIFallbackGroupIDs(ctx, groupID, platform)
+	if resolveErr != nil {
+		return nil, decision, resolveErr
+	}
+	for _, fallbackID := range fallbackIDs {
+		selection, decision, err = s.selectAccountWithSchedulerInGroup(ctx, &fallbackID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform)
+		if !shouldFallbackOpenAIGroupSelection(err) {
+			return selection, decision, err
+		}
+	}
+
+	return nil, decision, err
+}
+
+func (s *OpenAIGatewayService) selectAccountWithSchedulerInGroup(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+	requireCompact bool,
+	platform string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}

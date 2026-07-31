@@ -1321,7 +1321,21 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "")
+	return s.selectAccountForModelWithFallback(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "")
+}
+
+// openAIUnavailableSelectionError keeps the established client-facing message while
+// allowing callers to distinguish an exhausted group from other scheduling failures.
+type openAIUnavailableSelectionError struct {
+	message string
+}
+
+func (e *openAIUnavailableSelectionError) Error() string {
+	return e.message
+}
+
+func (e *openAIUnavailableSelectionError) Unwrap() error {
+	return ErrNoAvailableAccounts
 }
 
 // noAvailableOpenAISelectionError builds the standard "no account available" error
@@ -1338,9 +1352,69 @@ func noAvailableOpenAISelectionError(requestedModel string, compactBlocked bool)
 		return ErrNoAvailableCompactAccounts
 	}
 	if requestedModel != "" {
-		return fmt.Errorf("no available OpenAI accounts supporting model: %s", requestedModel)
+		return &openAIUnavailableSelectionError{message: fmt.Sprintf("no available OpenAI accounts supporting model: %s", requestedModel)}
 	}
-	return errors.New("no available OpenAI accounts")
+	return &openAIUnavailableSelectionError{message: "no available OpenAI accounts"}
+}
+
+func shouldFallbackOpenAIGroupSelection(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoAvailableCompactAccounts) {
+		return true
+	}
+	return errors.Is(err, ErrNoAvailableAccounts) && !strings.Contains(err.Error(), "channel pricing restriction")
+}
+
+// openAIFallbackGroupIDs resolves the configured fallback chain only after the
+// current group cannot schedule an OpenAI account. Fallback groups share the
+// request's billing/auth context; only account selection moves to the fallback.
+func (s *OpenAIGatewayService) openAIFallbackGroupIDs(ctx context.Context, groupID *int64, platform string) ([]int64, error) {
+	if groupID == nil || normalizeOpenAICompatiblePlatform(platform) != PlatformOpenAI || s == nil || s.schedulerSnapshot == nil {
+		return nil, nil
+	}
+
+	currentID := *groupID
+	visited := map[int64]struct{}{currentID: {}}
+	var fallbackIDs []int64
+	for {
+		group, err := s.schedulerSnapshot.GetGroupByID(ctx, currentID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenAI fallback group %d: %w", currentID, err)
+		}
+		if group == nil || group.FallbackGroupID == nil || *group.FallbackGroupID <= 0 {
+			return fallbackIDs, nil
+		}
+
+		nextID := *group.FallbackGroupID
+		if _, seen := visited[nextID]; seen {
+			return nil, errors.New("fallback group cycle detected")
+		}
+		visited[nextID] = struct{}{}
+		fallbackIDs = append(fallbackIDs, nextID)
+		currentID = nextID
+	}
+}
+
+func (s *OpenAIGatewayService) selectAccountForModelWithFallback(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability) (*Account, error) {
+	account, err := s.selectAccountForModelWithExclusions(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability)
+	if !shouldFallbackOpenAIGroupSelection(err) {
+		return account, err
+	}
+
+	fallbackIDs, resolveErr := s.openAIFallbackGroupIDs(ctx, groupID, platform)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	for _, fallbackID := range fallbackIDs {
+		account, err = s.selectAccountForModelWithExclusions(ctx, &fallbackID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, 0, requiredCapability)
+		if !shouldFallbackOpenAIGroupSelection(err) {
+			return account, err
+		}
+	}
+
+	return nil, err
 }
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.
@@ -1937,7 +2011,27 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
-	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "")
+	return s.selectAccountWithLoadAwarenessWithFallback(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "")
+}
+
+func (s *OpenAIGatewayService) selectAccountWithLoadAwarenessWithFallback(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*AccountSelectionResult, error) {
+	selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability)
+	if !shouldFallbackOpenAIGroupSelection(err) {
+		return selection, err
+	}
+
+	fallbackIDs, resolveErr := s.openAIFallbackGroupIDs(ctx, groupID, platform)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	for _, fallbackID := range fallbackIDs {
+		selection, err = s.selectAccountWithLoadAwareness(ctx, &fallbackID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability)
+		if !shouldFallbackOpenAIGroupSelection(err) {
+			return selection, err
+		}
+	}
+
+	return nil, err
 }
 
 func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*AccountSelectionResult, error) {
@@ -2519,6 +2613,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+	if patchedBody, changed, patchErr := normalizeOpenAIFastAliasBody(body); patchErr != nil {
+		return nil, patchErr
+	} else if changed {
+		body = patchedBody
+		originalBody = patchedBody
+		requestView = newOpenAIRequestView(body)
+		reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+		originalModel = reqModel
+	}
 
 	if account.Platform == PlatformGrok {
 		_ = promptCacheKey
@@ -6781,6 +6884,28 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 		ServiceTier:        strings.TrimSpace(gjson.GetBytes(body, "service_tier").String()),
 		ReasoningEffort:    strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()),
 	}
+}
+
+func normalizeOpenAIFastAliasBody(body []byte) ([]byte, bool, error) {
+	if len(body) == 0 {
+		return body, false, nil
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	normalizedModel, ok := normalizeOpenAIFastModelAlias(model)
+	if !ok {
+		return body, false, nil
+	}
+	updated, err := sjson.SetBytes(body, "model", normalizedModel)
+	if err != nil {
+		return body, false, fmt.Errorf("normalize openai fast alias model: %w", err)
+	}
+	if !gjson.GetBytes(updated, "service_tier").Exists() {
+		updated, err = sjson.SetBytes(updated, "service_tier", OpenAIFastTierPriority)
+		if err != nil {
+			return body, false, fmt.Errorf("inject openai fast alias service_tier: %w", err)
+		}
+	}
+	return updated, true, nil
 }
 
 // Decode 保留阶段一既有 full-map 行为；后续阶段会把调用点下沉到复杂分支。

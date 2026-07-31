@@ -56,6 +56,9 @@ var AllowedQuotaPlatforms = []string{
 	PlatformGemini,
 	PlatformAntigravity,
 	PlatformGrok,
+	PlatformKiro,
+	PlatformDeepseek,
+	PlatformOpenCode,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。
@@ -497,3 +500,27 @@ const AdminAPIKeyPrefix = "admin-"
 // SettingKeyAllowUserViewErrorRequests controls whether end users can view
 // their own failed requests on the usage page. Default false (opt-in).
 const SettingKeyAllowUserViewErrorRequests = "allow_user_view_error_requests"
+
+// =========================
+// OpenCode Vision Assist
+// =========================
+
+// SettingKeyOpenCodeVisionAssistEnabled controls whether GLM text-only models
+// (glm-5.2/5.1/5) use an internal OpenAI gateway call to describe images before
+// forwarding the request. Default false (off).
+const SettingKeyOpenCodeVisionAssistEnabled = "opencode_vision_assist_enabled"
+
+// for the vision-description step. Default 0 (none).
+
+// SettingKeyOpenCodeVisionModel is the OpenAI model used for image-to-text
+// description. Default "gpt-5.4".
+const SettingKeyOpenCodeVisionModel = "opencode_vision_model"
+
+// SettingKeyOpenCodeVisionAPIKey is the sub2api API key used to call the
+// internal /v1/chat/completions endpoint for vision description. The key
+// must have access to an OpenAI group.
+const SettingKeyOpenCodeVisionAPIKey = "opencode_vision_api_key"
+
+// SettingKeyOpenCodeVisionAPIBaseURL is the base URL of the sub2api instance
+// to call for vision description. Defaults to the server's own listen address.
+const SettingKeyOpenCodeVisionAPIBaseURL = "opencode_vision_api_base_url"

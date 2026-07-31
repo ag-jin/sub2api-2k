@@ -433,8 +433,11 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformKiro:
 		// Kiro 凭证测试在网关首次调用时通过 token 刷新隐式验证
 		return nil
-	case PlatformDeepseek, PlatformOpenCode:
-		// DeepSeek/OpenCode 用静态 api_key,首次网关调用时隐式验证
+	case PlatformDeepseek:
+		// DeepSeek 用静态 api_key,首次网关调用时隐式验证
+		return nil
+	case PlatformOpenCode:
+		// OpenCode Go 用静态 api_key,首次网关调用时隐式验证
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)

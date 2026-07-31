@@ -1006,6 +1006,55 @@ func TestOpenAISelectAccountWithLoadAwareness_NoCandidates(t *testing.T) {
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_FollowsFallbackGroupChain(t *testing.T) {
+	primaryGroupID := int64(61001)
+	firstFallbackGroupID := int64(61002)
+	secondFallbackGroupID := int64(61003)
+	groupRepo := &mockGroupRepoForGateway{
+		groups: map[int64]*Group{
+			primaryGroupID: {
+				ID:              primaryGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &firstFallbackGroupID,
+			},
+			firstFallbackGroupID: {
+				ID:              firstFallbackGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &secondFallbackGroupID,
+			},
+			secondFallbackGroupID: {
+				ID:       secondFallbackGroupID,
+				Platform: PlatformOpenAI,
+			},
+		},
+	}
+	accountRepo := groupAwareStubOpenAIAccountRepo{stubOpenAIAccountRepo{accounts: []Account{
+		{
+			ID:          61011,
+			Platform:    PlatformOpenAI,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			GroupIDs:    []int64{secondFallbackGroupID},
+		},
+	}}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        accountRepo,
+		cache:              &stubGatewayCache{},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		schedulerSnapshot:  NewSchedulerSnapshotService(nil, nil, accountRepo, groupRepo, nil),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &primaryGroupID, "fallback-chain", "gpt-5.1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(61011), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_AllFullWaitPlan(t *testing.T) {
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{

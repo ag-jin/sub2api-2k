@@ -229,9 +229,6 @@ func (s *DeepseekGatewayService) TestConnection(c *gin.Context, account *Account
 	}
 	if modelID == "" {
 		modelID = "deepseek-v4-pro"
-		if account != nil && account.Platform == PlatformOpenCode {
-			modelID = "glm-5"
-		}
 	}
 	modelID = deepseek.MapModel(modelID)
 

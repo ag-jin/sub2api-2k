@@ -112,9 +112,9 @@ func TestUpdateUserPlatformQuotas_Success(t *testing.T) {
 	if repo.upsertCalls[0].userID != 42 || len(repo.upsertCalls[0].records) != 2 {
 		t.Errorf("unexpected upsert call: %+v", repo.upsertCalls[0])
 	}
-	// 缓存失效：请求中 2 个 platform + 软删除的 3 个 platform（gemini, antigravity, grok）= 5 次
-	if len(cache.deleteCalls) != 5 {
-		t.Errorf("expected 5 cache delete calls, got %d: %+v", len(cache.deleteCalls), cache.deleteCalls)
+	// 缓存失效覆盖全部允许的 platform，确保软删除的配额不会继续命中旧缓存。
+	if len(cache.deleteCalls) != len(service.AllowedQuotaPlatforms) {
+		t.Errorf("expected %d cache delete calls, got %d: %+v", len(service.AllowedQuotaPlatforms), len(cache.deleteCalls), cache.deleteCalls)
 	}
 }
 

@@ -77,6 +77,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Platform == PlatformGrok {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
+	if patchedBody, changed, patchErr := normalizeOpenAIFastAliasBody(body); patchErr != nil {
+		return nil, patchErr
+	} else if changed {
+		body = patchedBody
+	}
 
 	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。
 	// 自动模式下标记缺失（未探测）按"现状即证据"原则继续走下方原 Responses 转换路径。

@@ -146,25 +146,68 @@ func containsAnthropicToolUseBlock(blocks []AnthropicContentBlock) bool {
 }
 
 func sanitizeAnthropicToolUseInput(name string, raw string) json.RawMessage {
-	if name != "Read" || raw == "" {
-		return json.RawMessage(raw)
+	if raw == "" {
+		return json.RawMessage("{}")
 	}
 
+	// Some upstream providers (e.g. astraflow GLM-5.2) return malformed
+	// arguments like `{}{"city":"Beijing"}` — multiple JSON objects
+	// concatenated. json.Unmarshal rejects this ("invalid character '{'
+	// after top-level value"), so extract the last valid JSON object.
 	var input map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &input); err != nil {
-		return json.RawMessage(raw)
+		if fixed := extractLastJSONObject(raw); fixed != nil {
+			if err2 := json.Unmarshal(fixed, &input); err2 == nil {
+				raw = string(fixed)
+			} else {
+				return json.RawMessage("{}")
+			}
+		} else {
+			return json.RawMessage("{}")
+		}
+	}
+
+	if name != "Read" {
+		// Re-marshal to ensure valid single JSON value
+		out, err := json.Marshal(input)
+		if err != nil {
+			return json.RawMessage("{}")
+		}
+		return out
 	}
 
 	if pages, ok := input["pages"]; !ok || string(pages) != `""` {
-		return json.RawMessage(raw)
+		out, err := json.Marshal(input)
+		if err != nil {
+			return json.RawMessage("{}")
+		}
+		return out
 	}
 
 	delete(input, "pages")
 	sanitized, err := json.Marshal(input)
 	if err != nil {
-		return json.RawMessage(raw)
+		return json.RawMessage("{}")
 	}
 	return sanitized
+}
+
+// extractLastJSONObject finds the last valid JSON object in a string that may
+// contain multiple concatenated JSON objects (e.g. `{}{"city":"Beijing"}`).
+// Returns nil if no valid object is found.
+func extractLastJSONObject(s string) []byte {
+	// Find the last '{' that starts a valid JSON object
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] != '{' {
+			continue
+		}
+		candidate := s[i:]
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(candidate), &m); err == nil {
+			return []byte(candidate)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +370,20 @@ func resToAnthHandleOutputItemAdded(evt *ResponsesStreamEvent, state *ResponsesE
 	// 同样映射为 Anthropic 的 tool_use 块。
 	case "function_call", "custom_tool_call":
 		var events []AnthropicStreamEvent
-		events = append(events, closeCurrentBlock(state)...)
+		// 多 tool 场景：如果当前 block 是 tool_use 且还没收到流式 delta
+		// (CurrentToolHadDelta==false)，说明它的 arguments 会在 finalize 的
+		// arguments.done 里一次性给出。此时不关它——只标记 close，让
+		// arguments.done 来负责发 content_block_stop。
+		if state.ContentBlockOpen && state.CurrentBlockType == "tool_use" && !state.CurrentToolHadDelta {
+			// 不发 content_block_stop（留给 arguments.done），只更新 state
+			state.ContentBlockOpen = false
+			state.ContentBlockIndex++
+			state.CurrentToolName = ""
+			state.CurrentToolArgs = ""
+			state.CurrentToolHadDelta = false
+		} else {
+			events = append(events, closeCurrentBlock(state)...)
+		}
 
 		idx := state.ContentBlockIndex
 		state.OutputIndexToBlockIdx[evt.OutputIndex] = idx
@@ -441,8 +497,43 @@ func resToAnthHandleFuncArgsDelta(evt *ResponsesStreamEvent, state *ResponsesEve
 }
 
 func resToAnthHandleFuncArgsDone(evt *ResponsesStreamEvent, state *ResponsesEventToAnthropicState) []AnthropicStreamEvent {
+	// 查找这个事件对应的已注册 block index
+	blockIdx, hasRegistered := state.OutputIndexToBlockIdx[evt.OutputIndex]
+
+	// 如果这个 tool 的 block 已经关了（blockIdx < ContentBlockIndex 说明
+	// 之前 closeCurrentBlock 已经发了 stop 并递增了 index），跳过。
+	// 这发生在 finalize 的 closeChatToolItems 对已在上游循环中流式处理完的
+	// tool 重复发 arguments.done。
+	if hasRegistered && blockIdx < state.ContentBlockIndex {
+		// 已关的 block，重复的 arguments.done，跳过
+		return nil
+	}
+
+	// 如果当前 block 不是 tool_use（已被后续事件清空），
+	// 且这个 arguments.done 有 arguments + 已注册的 block index，
+	// 说明是 finalize 路径的新 tool（block 已开但还没发 delta）。
+	// 发 delta + close。
 	if state.CurrentBlockType != "tool_use" {
-		return resToAnthHandleBlockDone(state)
+		if evt.Arguments != "" && hasRegistered {
+			sanitized := sanitizeAnthropicToolUseInput(evt.Name, evt.Arguments)
+			if len(sanitized) == 0 {
+				sanitized = []byte("{}")
+			}
+			events := []AnthropicStreamEvent{{
+				Type:  "content_block_delta",
+				Index: &blockIdx,
+				Delta: &AnthropicDelta{
+					Type:        "input_json_delta",
+					PartialJSON: string(sanitized),
+				},
+			}}
+			events = append(events, AnthropicStreamEvent{
+				Type:  "content_block_stop",
+				Index: &blockIdx,
+			})
+			return events
+		}
+		return nil
 	}
 
 	raw := evt.Arguments
@@ -450,26 +541,36 @@ func resToAnthHandleFuncArgsDone(evt *ResponsesStreamEvent, state *ResponsesEven
 		raw = state.CurrentToolArgs
 	}
 	if raw == "" || state.CurrentToolHadDelta {
+		// 只关自己的 block
+		if hasRegistered && blockIdx != state.ContentBlockIndex {
+			return nil
+		}
 		return closeCurrentBlock(state)
 	}
-	if state.CurrentToolName == "Read" {
-		sanitized := sanitizeAnthropicToolUseInput(state.CurrentToolName, raw)
-		if len(sanitized) == 0 {
-			return closeCurrentBlock(state)
+	sanitized := sanitizeAnthropicToolUseInput(state.CurrentToolName, raw)
+	if len(sanitized) == 0 {
+		if hasRegistered && blockIdx != state.ContentBlockIndex {
+			return nil
 		}
-		raw = string(sanitized)
+		return closeCurrentBlock(state)
 	}
+	raw = string(sanitized)
 
-	idx := state.ContentBlockIndex
+	useIdx := state.ContentBlockIndex
+	if hasRegistered {
+		useIdx = blockIdx
+	}
 	events := []AnthropicStreamEvent{{
 		Type:  "content_block_delta",
-		Index: &idx,
+		Index: &useIdx,
 		Delta: &AnthropicDelta{
 			Type:        "input_json_delta",
 			PartialJSON: raw,
 		},
 	}}
-	events = append(events, closeCurrentBlock(state)...)
+	if !hasRegistered || blockIdx == state.ContentBlockIndex {
+		events = append(events, closeCurrentBlock(state)...)
+	}
 	return events
 }
 
@@ -508,6 +609,13 @@ func resToAnthHandleOutputItemDone(evt *ResponsesStreamEvent, state *ResponsesEv
 	// Handle web_search_call → synthesize server_tool_use + web_search_tool_result blocks.
 	if evt.Item.Type == "web_search_call" && evt.Item.Status == "completed" {
 		return resToAnthHandleWebSearchDone(evt, state)
+	}
+
+	// function_call 的 block 由 arguments.done 负责关闭,不在这里关。
+	// 否则多 tool 场景下 output_item.done 会在 arguments.done 之前到达,
+	// 提前关 block 导致 arguments delta 的 index 错位 → Content block not found。
+	if evt.Item.Type == "function_call" || evt.Item.Type == "custom_tool_call" {
+		return nil
 	}
 
 	if state.ContentBlockOpen {
@@ -577,6 +685,20 @@ func resToAnthHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	}
 
 	var events []AnthropicStreamEvent
+	// 如果当前 block 是 tool_use 且没发过 delta，发一个空 input delta 再关。
+	// Claude Code 要求每个 tool_use block 至少有一个 input_json_delta，
+	// 否则报 "Content block not found"。
+	if state.ContentBlockOpen && state.CurrentBlockType == "tool_use" && !state.CurrentToolHadDelta {
+		idx := state.ContentBlockIndex
+		events = append(events, AnthropicStreamEvent{
+			Type:  "content_block_delta",
+			Index: &idx,
+			Delta: &AnthropicDelta{
+				Type:        "input_json_delta",
+				PartialJSON: "{}",
+			},
+		})
+	}
 	events = append(events, closeCurrentBlock(state)...)
 
 	stopReason := "end_turn"

@@ -370,6 +370,13 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 		return usage, err
 	}
 
+	// OpenCode GO 平台：上游不暴露用量 API（issue anomalyco/opencode#8911 仍 open），
+	// 只能基于本地 usage_logs 累计 cost 近似展示。GO 订阅限额按美元等价：
+	// $12/5h、$60/月。用本地窗口 cost 对比这些上限给出使用率。
+	if account.Platform == PlatformOpenCode {
+		return s.getOpenCodeUsage(ctx, account)
+	}
+
 	// 只有oauth类型账号可以通过API获取usage（有profile scope）
 	if account.CanGetUsage() {
 		var apiResp *ClaudeUsageResponse
@@ -903,7 +910,67 @@ func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account
 	return usage, nil
 }
 
-// recalcAntigravityRemainingSeconds 重新计算 Antigravity UsageInfo 中各窗口的 RemainingSeconds
+// getOpenCodeUsage 基于本地 usage_logs 聚合，展示 OpenCode GO 订阅的本地累计用量。
+// OpenCode 上游没有用量/额度查询接口（anomalyco/opencode#8911 仍 open），且其 cost
+// 恒为 0，无法用 cost 对比美元限额（$12/5h、$60/月）——量纲不一致，永远显示不满。
+// 因此这里只展示本地累计的请求数/token 数/cost（前端 UsageProgressBar 已渲染
+// windowStats.requests/tokens），不再算 utilization。
+//
+// 当账号被上游 429 限额冷却时（account.RateLimitResetAt 指向未来），把 5h 进度条
+// 置满并显示真实重置倒计时，让用户看到"5h 限额已满，X 分钟后重置"。
+// 返回的 Source="passive" 表示数据来自本地观测而非上游权威值。
+func (s *AccountUsageService) getOpenCodeUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	now := time.Now()
+	usage := &UsageInfo{Source: "passive", UpdatedAt: &now}
+	if s.usageLogRepo == nil || account == nil {
+		return usage, nil
+	}
+
+	// 本地窗口累计（5h + 30d），utilization 留 0：cost 量纲与订阅限额不一致，
+	// 算百分比会误导，只展示 requests/tokens/cost 绝对值。
+	buildProgress := func(start time.Time, windowLen time.Duration) *UsageProgress {
+		stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, start)
+		if err != nil || stats == nil {
+			return nil
+		}
+		// Rolling window: there is no single hard reset. Approximate the reset as
+		// one window length from now (display-only).
+		resetsAt := now.Add(windowLen)
+		return &UsageProgress{
+			Utilization:      0,
+			ResetsAt:         &resetsAt,
+			RemainingSeconds: int(windowLen.Seconds()),
+			WindowStats:      windowStatsFromAccountStats(stats),
+		}
+	}
+
+	usage.FiveHour = buildProgress(now.Add(-5*time.Hour), 5*time.Hour)
+	// 月度近似：30d 滚动窗口（复用 SevenDay 字段承载，前端按 opencode 平台改标签）
+	usage.SevenDay = buildProgress(now.Add(-30*24*time.Hour), 30*24*time.Hour)
+
+	// 账号被上游 429 限额冷却时，5h 进度条置满 + 真实重置倒计时（覆盖上面的估算）。
+	if account.IsRateLimited() {
+		resetsAt := *account.RateLimitResetAt
+		remaining := int(time.Until(resetsAt).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		var ws *WindowStats
+		if usage.FiveHour != nil {
+			ws = usage.FiveHour.WindowStats
+		}
+		usage.FiveHour = &UsageProgress{
+			Utilization:      100,
+			ResetsAt:         &resetsAt,
+			RemainingSeconds: remaining,
+			WindowStats:      ws,
+		}
+	}
+
+	enrichUsageWithAccountError(usage, account)
+	return usage, nil
+}
+
 // 用于从缓存取出时更新倒计时，避免返回过时的剩余秒数
 func recalcAntigravityRemainingSeconds(info *UsageInfo) {
 	if info == nil {
@@ -1428,7 +1495,6 @@ func buildGeminiUsageProgress(used, limit int64, resetAt time.Time, tokens int64
 func (s *AccountUsageService) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
 	return s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
 }
-
 
 // getKiroUsage fetches subscription/usage limits for a Kiro account and maps
 // them into the generic UsageInfo (FiveHour window shows credit utilization).

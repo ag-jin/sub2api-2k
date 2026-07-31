@@ -196,7 +196,10 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return NewKiroGatewayService(nil).TestConnection(c, account, modelID)
 	}
 
-	if account.Platform == PlatformDeepseek || account.Platform == PlatformOpenCode {
+	if account.Platform == PlatformOpenCode {
+		return NewOpenCodeGatewayService(nil, nil, "").TestConnection(c, account, modelID)
+	}
+	if account.Platform == PlatformDeepseek {
 		return NewDeepseekGatewayService(nil).TestConnection(c, account, modelID)
 	}
 

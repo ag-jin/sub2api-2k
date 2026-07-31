@@ -359,6 +359,18 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			expectedMatch:  true,
 		},
 		{
+			name:     "openai fast alias resolves through normalized base mapping",
+			platform: PlatformOpenAI,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.5": "gpt-5.5",
+				},
+			},
+			requestedModel: "gpt-5.5-fast",
+			expectedModel:  "gpt-5.5",
+			expectedMatch:  true,
+		},
+		{
 			name:     "gemini customtools alias reports normalized match",
 			platform: PlatformGemini,
 			credentials: map[string]any{

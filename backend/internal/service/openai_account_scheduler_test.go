@@ -2315,6 +2315,114 @@ func TestCalcLoadSkewByMoments_Branches(t *testing.T) {
 	require.GreaterOrEqual(t, calcLoadSkewByMoments(6, 20, 3), 0.0)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_FollowsFallbackGroupChain(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	primaryGroupID := int64(51001)
+	firstFallbackGroupID := int64(51002)
+	secondFallbackGroupID := int64(51003)
+	groupRepo := &mockGroupRepoForGateway{
+		groups: map[int64]*Group{
+			primaryGroupID: {
+				ID:              primaryGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &firstFallbackGroupID,
+			},
+			firstFallbackGroupID: {
+				ID:              firstFallbackGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &secondFallbackGroupID,
+			},
+			secondFallbackGroupID: {
+				ID:       secondFallbackGroupID,
+				Platform: PlatformOpenAI,
+			},
+		},
+	}
+	accountRepo := schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: []Account{
+		{
+			ID:          51011,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			GroupIDs:    []int64{secondFallbackGroupID},
+		},
+	}}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        accountRepo,
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		schedulerSnapshot:  NewSchedulerSnapshotService(nil, nil, accountRepo, groupRepo, nil),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(),
+		&primaryGroupID,
+		"",
+		"fallback-chain",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(51011), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_RejectsFallbackGroupCycle(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	primaryGroupID := int64(52001)
+	fallbackGroupID := int64(52002)
+	groupRepo := &mockGroupRepoForGateway{
+		groups: map[int64]*Group{
+			primaryGroupID: {
+				ID:              primaryGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &fallbackGroupID,
+			},
+			fallbackGroupID: {
+				ID:              fallbackGroupID,
+				Platform:        PlatformOpenAI,
+				FallbackGroupID: &primaryGroupID,
+			},
+		},
+	}
+	accountRepo := schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        accountRepo,
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		schedulerSnapshot:  NewSchedulerSnapshotService(nil, nil, accountRepo, groupRepo, nil),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		context.Background(),
+		&primaryGroupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.Nil(t, selection)
+	require.ErrorContains(t, err, "fallback group cycle detected")
+}
+
 func TestDefaultOpenAIAccountScheduler_ReportSwitchAndSnapshot(t *testing.T) {
 	schedulerAny := newDefaultOpenAIAccountScheduler(&OpenAIGatewayService{}, nil)
 	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)

@@ -28,10 +28,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/deepseek"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/opencode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -605,6 +606,7 @@ func (e *sseStreamErrorEventError) Error() string { return "have error in stream
 func (s *GatewayService) AccountRepo() AccountRepository {
 	return s.accountRepo
 }
+
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
@@ -828,6 +830,14 @@ func (s *GatewayService) GetCachedSessionAccountID(ctx context.Context, groupID 
 		return 0, err
 	}
 	return accountID, nil
+}
+
+// DeleteSessionAccountID removes a sticky session binding after its account fails.
+func (s *GatewayService) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
+	if s == nil || s.cache == nil || sessionHash == "" {
+		return nil
+	}
+	return s.cache.DeleteSessionAccountID(ctx, groupID, sessionHash)
 }
 
 // FindGeminiSession 查找 Gemini 会话（基于内容摘要链的 Fallback 匹配）
@@ -1609,6 +1619,13 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
 		account, err := s.selectAccountWithMixedScheduling(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
 		if err != nil {
+			// Fallback: try cross-platform addon accounts (opencode, deepseek).
+			for _, addonPlatform := range crossPlatformAddons(platform) {
+				fallbackAccount, ferr := s.selectAccountForModelWithPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, addonPlatform)
+				if ferr == nil {
+					return s.hydrateSelectedAccount(ctx, fallbackAccount)
+				}
+			}
 			return nil, err
 		}
 		return s.hydrateSelectedAccount(ctx, account)
@@ -3354,6 +3371,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 		accountsLoaded = true
 
+		// Also load cross-platform addon accounts (opencode, deepseek).
+		s.appendCrossPlatformAddonAccounts(ctx, groupID, platform, &accounts, &accountsLoaded)
+
 		// 提前预取窗口费用+RPM 计数，确保 routing 段内的调度检查调用能命中缓存
 		ctx = s.withWindowCostPrefetch(ctx, accounts)
 		ctx = s.withRPMPrefetch(ctx, accounts)
@@ -3362,6 +3382,18 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		for _, id := range routingAccountIDs {
 			if id > 0 {
 				routingSet[id] = struct{}{}
+			}
+		}
+		// Also allow cross-platform addon accounts (opencode, deepseek) to
+		// be selected in the routing path when model_mapping requires them.
+		for i := range accounts {
+			if _, ok := routingSet[accounts[i].ID]; !ok {
+				for _, addon := range crossPlatformAddons(platform) {
+					if accounts[i].Platform == addon {
+						routingSet[accounts[i].ID] = struct{}{}
+						break
+					}
+				}
 			}
 		}
 
@@ -3564,6 +3596,29 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 // selectAccountWithMixedScheduling 选择账户（支持混合调度）
 // 查询原生平台账户 + 启用 mixed_scheduling 的 antigravity 账户
+// appendCrossPlatformAddonAccounts loads accounts from cross-platform addon
+// platforms (opencode, deepseek) that share the same group, and appends them
+// to the accounts slice. This enables model_mapping routing like
+// claude-opus-4-6-G -> glm-5.2 through OpenCode accounts in an Anthropic group.
+func (s *GatewayService) appendCrossPlatformAddonAccounts(ctx context.Context, groupID *int64, nativePlatform string, accounts *[]Account, accountsLoaded *bool) {
+	logger.LegacyPrintf("service.gateway", "[DEBUG] appendAddon: groupID=%v platform=%s", derefGroupID(groupID), nativePlatform)
+	if s == nil || s.accountRepo == nil || groupID == nil {
+		return
+	}
+	extras := crossPlatformAddons(nativePlatform)
+	if len(extras) == 0 {
+		return
+	}
+	for _, addonPlatform := range extras {
+		addonAccounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, addonPlatform)
+		if err != nil || len(addonAccounts) == 0 {
+			continue
+		}
+		logger.LegacyPrintf("service.gateway", "[SelectAccount] loaded %d cross-platform addon accounts (platform=%s) for group=%d", len(addonAccounts), addonPlatform, *groupID)
+		*accounts = append(*accounts, addonAccounts...)
+	}
+}
+
 func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string) (*Account, error) {
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
@@ -3596,7 +3651,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
 						if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
-							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+							if account.Platform == nativePlatform || account.Platform == PlatformOpenCode || account.Platform == PlatformDeepseek || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 								}
@@ -3616,6 +3671,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 		accountsLoaded = true
 
+		// Also load cross-platform addon accounts (opencode, deepseek).
+		s.appendCrossPlatformAddonAccounts(ctx, groupID, nativePlatform, &accounts, &accountsLoaded)
+
 		// 提前预取窗口费用+RPM 计数，确保 routing 段内的调度检查调用能命中缓存
 		ctx = s.withWindowCostPrefetch(ctx, accounts)
 		ctx = s.withRPMPrefetch(ctx, accounts)
@@ -3624,6 +3682,18 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		for _, id := range routingAccountIDs {
 			if id > 0 {
 				routingSet[id] = struct{}{}
+			}
+		}
+		// Also allow cross-platform addon accounts (opencode, deepseek) to
+		// be selected in the routing path when model_mapping requires them.
+		for i := range accounts {
+			if _, ok := routingSet[accounts[i].ID]; !ok {
+				for _, addon := range crossPlatformAddons(nativePlatform) {
+					if accounts[i].Platform == addon {
+						routingSet[accounts[i].ID] = struct{}{}
+						break
+					}
+				}
 			}
 		}
 
@@ -3717,7 +3787,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
 					if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
-						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+						if account.Platform == nativePlatform || account.Platform == PlatformOpenCode || account.Platform == PlatformDeepseek || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							return account, nil
 						}
 					}
@@ -3726,13 +3796,14 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 	}
 
-	// 2. 获取可调度账号列表
+	// 2. 获取可调度账号列表（含跨平台 addon：opencode/deepseek）
 	if !accountsLoaded {
 		var err error
 		accounts, _, err = s.listSchedulableAccounts(ctx, groupID, nativePlatform, false)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
+		s.appendCrossPlatformAddonAccounts(ctx, groupID, nativePlatform, &accounts, &accountsLoaded)
 	}
 
 	// 批量预取窗口费用+RPM 计数，避免逐个账号查询（N+1）
@@ -4038,7 +4109,7 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		if strings.TrimSpace(requestedModel) == "" {
 			return false
 		}
-		return deepseek.IsOpenCodeModel(requestedModel)
+		return opencode.IsOpenCodeModel(requestedModel)
 	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {

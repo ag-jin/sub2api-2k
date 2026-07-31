@@ -662,6 +662,10 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 	}
 }
 
+// SettingRepo exposes the underlying SettingRepository for services that only
+// need key-value reads (e.g. OpenCodeGatewayService for vision-assist settings).
+func (s *SettingService) SettingRepo() SettingRepository { return s.settingRepo }
+
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
 func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
 	s.defaultSubGroupReader = reader
@@ -2242,6 +2246,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
+	// OpenCode vision assist
+	updates[SettingKeyOpenCodeVisionAssistEnabled] = strconv.FormatBool(settings.OpenCodeVisionAssistEnabled)
+	updates[SettingKeyOpenCodeVisionModel] = settings.OpenCodeVisionModel
+
 	return updates, nil
 }
 
@@ -3764,6 +3772,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 
 	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true" // default false
+
+	// OpenCode vision assist
+	result.OpenCodeVisionAssistEnabled = settings[SettingKeyOpenCodeVisionAssistEnabled] == "true" // default false
+	result.OpenCodeVisionModel = settings[SettingKeyOpenCodeVisionModel]
 
 	return result
 }

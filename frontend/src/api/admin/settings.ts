@@ -879,6 +879,10 @@ export interface UpdateSettingsRequest {
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
 
   allow_user_view_error_requests?: boolean;
+
+  // OpenCode Vision Assist
+  opencode_vision_assist_enabled?: boolean;
+  opencode_vision_model?: string;
 }
 
 /**

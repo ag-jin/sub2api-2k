@@ -20,10 +20,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/deepseek"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/opencode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -59,6 +59,16 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	opencodeOAuthService    *service.OpenCodeOAuthService
+}
+
+// opencodeOAuth returns the lazily-initialized OpenCode OAuth service. It is
+// self-contained (own in-memory session store) so it needs no wire provider.
+func (h *AccountHandler) opencodeOAuth() *service.OpenCodeOAuthService {
+	if h.opencodeOAuthService == nil {
+		h.opencodeOAuthService = service.NewOpenCodeOAuthService()
+	}
+	return h.opencodeOAuthService
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -2138,7 +2148,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle OpenCode accounts
 	if account.Platform == service.PlatformOpenCode {
-		response.Success(c, deepseek.OpenCodeModels())
+		response.Success(c, opencode.SupportedModels())
 		return
 	}
 
@@ -2518,4 +2528,127 @@ func mergeUpstreamCostFactorIntoExtra(extra *map[string]any, factor *float64) {
 		return
 	}
 	delete(*extra, "upstream_cost_factor")
+}
+
+// ===== OpenCode GO OAuth (half-automatic login) =====
+// These mirror the OpenAI OAuth endpoints but for the OpenCode OpenAuth server.
+// The login only captures identity/email; the sk- API key is still entered
+// manually because OpenAuth tokens cannot read usage or substitute the key.
+
+// OpenCodeGenerateAuthURL generates an OpenCode OAuth authorization URL.
+// POST /api/v1/admin/opencode/generate-auth-url  body: {provider, redirect_uri}
+func (h *AccountHandler) OpenCodeGenerateAuthURL(c *gin.Context) {
+	var req struct {
+		Provider    string `json:"provider"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	result, err := h.opencodeOAuth().GenerateAuthURL(c.Request.Context(), req.Provider, req.RedirectURI)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+// OpenCodeExchangeCode exchanges an OpenCode authorization code for tokens.
+// POST /api/v1/admin/opencode/exchange-code
+func (h *AccountHandler) OpenCodeExchangeCode(c *gin.Context) {
+	var req struct {
+		SessionID   string `json:"session_id" binding:"required"`
+		Code        string `json:"code" binding:"required"`
+		State       string `json:"state" binding:"required"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	info, err := h.opencodeOAuth().ExchangeCode(c.Request.Context(), &service.OpenCodeExchangeCodeInput{
+		SessionID:   req.SessionID,
+		Code:        req.Code,
+		State:       req.State,
+		RedirectURI: req.RedirectURI,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, info)
+}
+
+// OpenCodeCreateFromOAuth verifies the OAuth code (capturing email) and creates
+// an OpenCode apikey account. The api_key (sk-...) is supplied by the admin
+// since OpenAuth tokens are not usable as the GO API key.
+// POST /api/v1/admin/opencode/create-from-oauth
+func (h *AccountHandler) OpenCodeCreateFromOAuth(c *gin.Context) {
+	var req struct {
+		SessionID   string  `json:"session_id" binding:"required"`
+		Code        string  `json:"code" binding:"required"`
+		State       string  `json:"state" binding:"required"`
+		RedirectURI string  `json:"redirect_uri"`
+		APIKey      string  `json:"api_key" binding:"required"`
+		BaseURL     string  `json:"base_url"`
+		ProxyURL    string  `json:"proxy_url"`
+		Name        string  `json:"name"`
+		ProxyID     *int64  `json:"proxy_id"`
+		Concurrency int     `json:"concurrency"`
+		Priority    int     `json:"priority"`
+		GroupIDs    []int64 `json:"group_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	info, err := h.opencodeOAuth().ExchangeCode(c.Request.Context(), &service.OpenCodeExchangeCodeInput{
+		SessionID:   req.SessionID,
+		Code:        req.Code,
+		State:       req.State,
+		RedirectURI: req.RedirectURI,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if baseURL == "" {
+		baseURL = opencode.DefaultBaseURL
+	}
+	credentials := map[string]any{
+		"api_key":  strings.TrimSpace(req.APIKey),
+		"base_url": baseURL,
+	}
+	if pu := strings.TrimSpace(req.ProxyURL); pu != "" {
+		credentials["proxy_url"] = pu
+	}
+	if info.Email != "" {
+		credentials["opencode_account_email"] = info.Email
+		credentials["_login_provider"] = "oauth"
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = info.Email
+	}
+	if name == "" {
+		name = "OpenCode GO Account"
+	}
+
+	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+		Name:        name,
+		Platform:    service.PlatformOpenCode,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: credentials,
+		ProxyID:     req.ProxyID,
+		Concurrency: req.Concurrency,
+		Priority:    req.Priority,
+		GroupIDs:    req.GroupIDs,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.AccountFromService(account))
 }
