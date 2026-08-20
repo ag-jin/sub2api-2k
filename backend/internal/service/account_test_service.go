@@ -293,6 +293,13 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
 
+	if account.IsOpenCode() {
+		if !account.IsOpenCodeAPIKey() {
+			return s.sendErrorAndEnd(c, "OpenCode accounts require an API key")
+		}
+		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
+	}
+
 	if account.IsGemini() {
 		return s.testGeminiAccountConnection(c, account, modelID, prompt)
 	}
@@ -696,7 +703,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		if account.IsOpenCode() || !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
 		}
 		apiURL = buildOpenAIResponsesURL(normalizedBaseURL)

@@ -160,6 +160,19 @@
             <PlatformIcon platform="grok" size="sm" />
             Grok
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'opencode'; accountCategory = 'apikey'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'opencode'
+                ? 'bg-white text-indigo-600 shadow-sm dark:bg-dark-600 dark:text-indigo-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="opencode" size="sm" />
+            OpenCode
+          </button>
         </div>
         <!-- CN providers row: Kimi / Zhipu GLM / DeepSeek -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
@@ -3819,6 +3832,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://generativelanguage.googleapis.com'
     case 'grok':
       return 'https://api.x.ai/v1'
+    case 'opencode':
+      return 'https://opencode.ai/zen/go/v1'
     default:
       return 'https://api.anthropic.com'
   }
@@ -3838,6 +3853,8 @@ const apiKeyValuePlaceholder = computed(() => {
       return '<api-key>.<secret>'
     case 'deepseek':
       return 'sk-...'
+    case 'opencode':
+      return 'sk-opencode-...'
     default:
       return 'sk-ant-...'
   }
@@ -4507,6 +4524,8 @@ watch(
             ? 'https://generativelanguage.googleapis.com'
             : newPlatform === 'grok'
               ? 'https://api.x.ai/v1'
+              : newPlatform === 'opencode'
+                ? 'https://opencode.ai/zen/go/v1'
               : 'https://api.anthropic.com'
     }
     // Clear model-related settings
@@ -5400,9 +5419,11 @@ const handleSubmit = async () => {
       ? 'https://api.openai.com'
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'
-        : form.platform === 'grok'
-          ? 'https://api.x.ai/v1'
-          : 'https://api.anthropic.com'
+          : form.platform === 'grok'
+            ? 'https://api.x.ai/v1'
+            : form.platform === 'opencode'
+              ? 'https://opencode.ai/zen/go/v1'
+            : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
   const credentials: Record<string, unknown> = {

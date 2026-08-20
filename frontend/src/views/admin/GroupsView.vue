@@ -152,7 +152,9 @@
                             ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
                             : value === 'deepseek'
                               ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
-                              : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                              : value === 'opencode'
+                                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+                                : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
               ]"
             >
               <PlatformIcon :platform="value" size="xs" />
@@ -4746,6 +4748,7 @@ const platformOptions = computed(() => [
   { value: "kimi", label: "Kimi" },
   { value: "zhipu", label: "Zhipu GLM" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "opencode", label: "OpenCode" },
   { value: "composite", label: "Composite" },
 ]);
 
@@ -4759,6 +4762,7 @@ const platformFilterOptions = computed(() => [
   { value: "kimi", label: "Kimi" },
   { value: "zhipu", label: "Zhipu GLM" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "opencode", label: "OpenCode" },
   { value: "composite", label: "Composite" },
 ]);
 

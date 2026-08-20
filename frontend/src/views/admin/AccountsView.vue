@@ -17,6 +17,26 @@
             @create="showCreate = true"
           >
             <template #after>
+              <!-- View Mode Toggle -->
+              <div class="flex rounded-lg border border-gray-200 dark:border-dark-700">
+                <button
+                  class="flex items-center gap-1 rounded-l-lg px-2.5 py-1.5 text-sm transition-colors"
+                  :class="viewMode === 'table' ? 'bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-700'"
+                  :title="t('admin.accounts.cardFieldsLabel')"
+                  @click="viewMode = 'table'"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+                </button>
+                <button
+                  class="flex items-center gap-1 rounded-r-lg px-2.5 py-1.5 text-sm transition-colors"
+                  :class="viewMode === 'card' ? 'bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-700'"
+                  :title="t('admin.accounts.cardFieldsLabel')"
+                  @click="viewMode = 'card'"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25A2.25 2.25 0 0113.5 8.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" /></svg>
+                </button>
+              </div>
+
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -135,24 +155,49 @@
                       </button>
 
                       <div class="my-2 border-t border-gray-100 dark:border-dark-700"></div>
-                      <div class="px-2 py-2">
-                        <div class="flex items-center justify-between gap-3">
-                          <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                            {{ t('admin.accounts.viewColumns') }}
-                          </span>
-                          <Icon name="grid" size="sm" class="text-gray-400" />
+                      <!-- Table column visibility (table mode only) -->
+                      <div v-if="viewMode === 'table'">
+                        <div class="px-2 py-2">
+                          <div class="flex items-center justify-between gap-3">
+                            <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                              {{ t('admin.accounts.viewColumns') }}
+                            </span>
+                            <Icon name="grid" size="sm" class="text-gray-400" />
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-1 gap-1">
+                          <button
+                            v-for="col in toggleableColumns"
+                            :key="col.key"
+                            @click="toggleColumn(col.key)"
+                            class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
+                          >
+                            <span class="truncate">{{ col.label }}</span>
+                            <Icon v-if="isColumnVisible(col.key)" name="check" size="sm" class="text-primary-500" />
+                          </button>
                         </div>
                       </div>
-                      <div class="grid grid-cols-1 gap-1">
-                        <button
-                          v-for="col in toggleableColumns"
-                          :key="col.key"
-                          @click="toggleColumn(col.key)"
-                          class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
-                        >
-                          <span class="truncate">{{ col.label }}</span>
-                          <Icon v-if="isColumnVisible(col.key)" name="check" size="sm" class="text-primary-500" />
-                        </button>
+                      <!-- Card fields (card mode only) -->
+                      <div v-else>
+                        <div class="px-2 py-2">
+                          <div class="flex items-center justify-between gap-3">
+                            <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                              {{ t('admin.accounts.cardFieldsLabel') }}
+                            </span>
+                            <Icon name="grid" size="sm" class="text-gray-400" />
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-1 gap-1">
+                          <button
+                            v-for="field in allCardOptionalFields"
+                            :key="field.key"
+                            @click="toggleCardField(field.key)"
+                            class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
+                          >
+                            <span class="truncate">{{ field.label() }}</span>
+                            <Icon v-if="cardFields.has(field.key)" name="check" size="sm" class="text-primary-500" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -193,6 +238,7 @@
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
+          v-if="viewMode === 'table'"
           ref="dataTableRef"
           :columns="cols"
           :data="accounts"
@@ -446,6 +492,26 @@
             </div>
           </template>
         </DataTable>
+        <AccountCardGrid
+          v-else
+          :accounts="accounts"
+          :selected-ids="selectedSet"
+          :card-fields="cardFields"
+          :loading="loading"
+          :today-stats-by-account-id="todayStatsByAccountId"
+          :today-stats-loading="todayStatsLoading"
+          :manual-refresh-token="usageManualRefreshToken"
+          :usage-batch-by-account-id="usageBatchByAccountId"
+          :usage-batch-error-by-account-id="usageBatchErrorByAccountId"
+          :usage-batch-loading-by-account-id="usageBatchLoadingByAccountId"
+          :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
+          @toggle-select="toggleSel"
+          @edit="handleEdit"
+          @toggle-schedulable="handleToggleSchedulable"
+          @show-actions="openMenu"
+          @account-updated="handleAccountUpdated"
+          @usage-loaded="handleAccountUsageLoaded"
+        />
         </div>
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
@@ -520,6 +586,7 @@ import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vu
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
+import AccountCardGrid from '@/components/account/AccountCardGrid.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
@@ -640,6 +707,42 @@ const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
 const HIDDEN_COLUMNS_VERSION_KEY = 'account-hidden-columns-version'
 const HIDDEN_COLUMNS_CURRENT_VERSION = 'scheduler-score-hidden-by-default'
 
+// View mode: table ↔ card, persisted to localStorage
+const ACCOUNT_VIEW_MODE_KEY = 'account-view-mode'
+const viewMode = ref<'table' | 'card'>(localStorage.getItem(ACCOUNT_VIEW_MODE_KEY) === 'card' ? 'card' : 'table')
+watch(viewMode, (v) => { localStorage.setItem(ACCOUNT_VIEW_MODE_KEY, v) })
+
+// Card optional fields visibility, persisted to localStorage
+const ACCOUNT_CARD_FIELDS_KEY = 'account-card-fields'
+const allCardOptionalFields = [
+  { key: 'proxy', label: () => t('admin.accounts.columns.proxy') },
+  { key: 'priority', label: () => t('admin.accounts.columns.priority') },
+  { key: 'rate_multiplier', label: () => t('admin.accounts.columns.billingRateMultiplier') },
+  { key: 'scheduler_score', label: () => t('admin.accounts.columns.schedulerScore') },
+  { key: 'upstream_billing_rate', label: () => t('admin.accounts.columns.upstreamBillingRate') },
+  { key: 'expires_at', label: () => t('admin.accounts.columns.expiresAt') },
+  { key: 'created_at', label: () => t('admin.accounts.columns.createdAt') },
+  { key: 'notes', label: () => t('admin.accounts.columns.notes') },
+]
+const cardFields = ref<Set<string>>(new Set(
+  (() => {
+    try {
+      const saved = localStorage.getItem(ACCOUNT_CARD_FIELDS_KEY)
+      if (saved) return saved.split(',').filter(Boolean)
+    } catch { /* ignore */ }
+    return []
+  })()
+))
+watch(cardFields, (s) => {
+  localStorage.setItem(ACCOUNT_CARD_FIELDS_KEY, [...s].join(','))
+}, { deep: true })
+const toggleCardField = (key: string) => {
+  const next = new Set(cardFields.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  cardFields.value = next
+}
+
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
 type AccountSortOrder = 'asc' | 'desc'
@@ -729,8 +832,9 @@ const accountSupportsBatchUsage = (account: Account) => {
   }
   if (account.platform === 'gemini') return true
   if (account.platform === 'antigravity') return account.type === 'oauth'
-  if (account.platform === 'openai') return account.type === 'oauth'
+  if (account.platform === 'openai') return account.type === 'oauth' || account.type === 'apikey'
   if (account.platform === 'grok') return account.type === 'oauth'
+  if (account.platform === 'opencode') return account.type === 'apikey'
   return false
 }
 

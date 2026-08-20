@@ -21,6 +21,7 @@ export default {
       dataActions: 'Data',
       toolActions: 'Tools',
       viewColumns: 'Columns',
+      cardFieldsLabel: 'Card Fields',
       selectedCount: '{count} selected',
       dataExportConfirmMessage: 'The exported data contains sensitive account and proxy information. Store it securely.',
       dataExportConfirm: 'Confirm Export',
@@ -107,6 +108,17 @@ export default {
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
+        opencode: 'OpenCode',
+      },
+      opencode: {
+        baseUrlHint: 'OpenCode Go API base URL. OpenCode supports Messages and Chat Completions, not Responses.',
+        usage: {
+          rolling: 'Rolling',
+          weekly: 'Weekly',
+          monthly: 'Monthly',
+          stale: 'Stale usage snapshot',
+          error: 'Usage unavailable'
+        }
       },
       cnProviders: {
         accountMode: {
@@ -158,6 +170,7 @@ export default {
       status: {
         active: 'Active',
         inactive: 'Inactive',
+        disabled: 'Disabled',
         expired: 'Expired',
         error: 'Error',
         cooldown: 'Cooldown',
@@ -1533,6 +1546,27 @@ export default {
       needsReauth: 'Re-auth Required',
       rateLimited: 'Rate Limited',
       usageError: 'Fetch Error'
+    },
+
+    // Card view
+    card: {
+      viewTable: 'Table View',
+      viewCard: 'Card View',
+      optionalFields: 'Card Fields',
+      capacity: 'Capacity',
+      groups: 'Groups',
+      today: 'Today',
+      usage: 'Usage',
+      proxy: 'Proxy',
+      priority: 'Priority',
+      rateMultiplier: 'Rate',
+      schedulerScore: 'Score',
+      upstreamBilling: 'Upstream',
+      expiresAt: 'Expires',
+      createdAt: 'Created',
+      notes: 'Notes',
+      lastUsed: 'Last used',
+      neverUsed: 'Never used'
     },
 
     // Scheduled Tests

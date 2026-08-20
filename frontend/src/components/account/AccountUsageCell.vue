@@ -554,9 +554,53 @@
       </div>
     </template>
 
+    <!-- OpenCode API-key usage snapshot -->
+    <template v-else-if="account.platform === 'opencode' && account.type === 'apikey'">
+      <div v-if="loading" class="space-y-1.5">
+        <div v-for="label in ['rolling', 'weekly', 'monthly']" :key="label" class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="usageInfo?.opencode" class="space-y-1">
+        <UsageProgressBar
+          v-for="window in opencodeUsageBars"
+          :key="window.label"
+          :label="window.label"
+          :utilization="window.percent"
+          :resets-at="window.resetsAt"
+          color="indigo"
+        />
+        <div v-if="usageInfo.opencode.error || opencodeUsageStale" class="text-[10px] text-amber-600 dark:text-amber-400">
+          {{ usageInfo.opencode.error || t('admin.accounts.usageError') }}
+        </div>
+      </div>
+      <div v-else-if="error" class="text-xs text-red-500">{{ error }}</div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
-      <div class="text-xs text-gray-400">-</div>
+      <div v-if="usageInfo?.upstream_balance" class="space-y-1">
+        <div v-if="usageInfo.upstream_balance.balance != null" class="flex items-center justify-between gap-2 text-xs">
+          <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.columns.usageWindows') }}</span>
+          <strong :class="usageInfo.upstream_balance.balance > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400'">
+            ${{ usageInfo.upstream_balance.balance.toFixed(2) }}
+          </strong>
+        </div>
+        <div v-if="usageInfo.upstream_balance.today" class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ usageInfo.upstream_balance.today.requests }} req</span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ usageInfo.upstream_balance.today.tokens }} tok</span>
+          <span v-if="usageInfo.upstream_balance.today.cost" class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
+            A ${{ usageInfo.upstream_balance.today.cost.toFixed(4) }}
+          </span>
+        </div>
+        <div v-if="usageInfo.upstream_balance.stale" class="text-[10px] text-amber-600 dark:text-amber-400">
+          {{ t('admin.accounts.usageError') }}
+        </div>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
     </template>
   </div>
 
@@ -572,10 +616,7 @@
         @updated="handleOllamaCloudUsageUpdated"
       />
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
-      <div
-        v-if="todayStats"
-        class="mb-0.5 flex items-center"
-      >
+      <div v-if="todayStats && !cardMode" class="mb-0.5 flex items-center">
         <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
           <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
             {{ formatKeyRequests }} req
@@ -588,7 +629,7 @@
           </span>
           <span
             v-if="todayStats.user_cost != null"
-            class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+            class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-dark-800"
             :title="t('usage.userBilled')"
           >
             U ${{ formatKeyUserCost }}
@@ -662,6 +703,7 @@ const SUPPRESS_USAGE_REFRESH_WINDOW_MS = 5 * 1000
 const props = withDefaults(
   defineProps<{
     account: Account
+    cardMode?: boolean
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
@@ -671,6 +713,7 @@ const props = withDefaults(
     requestBatchedUsage?: ((account: Account, options?: { force?: boolean }) => void) | null
   }>(),
   {
+    cardMode: false,
     todayStats: null,
     todayStatsLoading: false,
     manualRefreshToken: 0,
@@ -721,7 +764,8 @@ const showUsageWindows = computed(() => {
   if (
     props.account.platform === 'kimi' ||
     props.account.platform === 'zhipu' ||
-    props.account.platform === 'deepseek'
+    props.account.platform === 'deepseek' ||
+    (props.account.platform === 'opencode' && props.account.type === 'apikey')
   ) {
     return true
   }
@@ -742,7 +786,10 @@ const shouldFetchUsage = computed(() => {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'openai') {
-    return props.account.type === 'oauth'
+    return props.account.type === 'oauth' || props.account.type === 'apikey'
+  }
+  if (props.account.platform === 'opencode') {
+    return props.account.type === 'apikey'
   }
   return false
 })
@@ -773,6 +820,26 @@ const geminiUsageAvailable = computed(() => {
   )
 })
 
+const opencodeUsageBars = computed(() => {
+  const snapshot = usageInfo.value?.opencode
+  if (!snapshot) return []
+  return [
+    { label: t('admin.accounts.opencode.usage.rolling'), window: snapshot.rolling },
+    { label: t('admin.accounts.opencode.usage.weekly'), window: snapshot.weekly },
+    { label: t('admin.accounts.opencode.usage.monthly'), window: snapshot.monthly }
+  ].filter((item): item is { label: string; window: NonNullable<typeof item.window> } =>
+    !!item.window && typeof item.window.percent === 'number'
+  ).map(item => ({
+    label: item.label,
+    percent: item.window.percent ?? 0,
+    resetsAt: item.window.resets_at ?? null
+  }))
+})
+
+const opencodeUsageStale = computed(() => {
+  const snapshot = usageInfo.value?.opencode
+  return snapshot?.status === 'stale' || [snapshot?.rolling, snapshot?.weekly, snapshot?.monthly].some(window => window?.status === 'stale')
+})
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
