@@ -1,0 +1,64 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Merge upstream main
+        id: merge
+        continue-on-error: true
+        run: |
+          git merge upstream/main --no-edit
+          echo "merge_result=success" >> $GITHUB_OUTPUT
+
+      - name: Push (no conflicts)
+        if: steps.merge.outputs.merge_result == 'success'
+        run: git push origin main
+
+      - name: Create PR (conflicts)
+        if: steps.merge.outputs.merge_result != 'success'
+        run: |
+          git merge --abort
+          git checkout -b sync-upstream-$(date +%Y%m%d)
+          git merge upstream/main --no-edit || true
+          git add -A
+          git commit -m "sync: merge upstream (conflicts need manual resolution)" || true
+          git push origin sync-upstream-$(date +%Y%m%d)
+          echo "::warning::Upstream merge has conflicts. A PR has been created for manual resolution."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify
+        run: |
+          if [ "${{ steps.merge.outputs.merge_result }}" = "success" ]; then
+            echo "Upstream synced successfully, pushed to main."
+          else
+            echo "Upstream sync has conflicts. Check the created PR for manual resolution."
+          fi
