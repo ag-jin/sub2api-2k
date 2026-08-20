@@ -55,9 +55,9 @@ func TestCNMillisToRFC3339(t *testing.T) {
 	t.Parallel()
 	// 1700000000 秒 = 1700000000000 毫秒
 	want := time.UnixMilli(1700000000000).UTC().Format(time.RFC3339)
-	require.Equal(t, want, cnMillisToRFC3339(1700000000))      // 秒级
-	require.Equal(t, want, cnMillisToRFC3339(1700000000000))   // 毫秒级
-	require.Equal(t, "", cnMillisToRFC3339(0))                 // 非正
+	require.Equal(t, want, cnMillisToRFC3339(1700000000))    // 秒级
+	require.Equal(t, want, cnMillisToRFC3339(1700000000000)) // 毫秒级
+	require.Equal(t, "", cnMillisToRFC3339(0))               // 非正
 	require.Equal(t, "", cnMillisToRFC3339(-1))
 }
 
@@ -294,8 +294,8 @@ func TestEvaluateAccountSchedulingThreshold_KimiCodingPlan(t *testing.T) {
 	account := &Account{
 		Platform: PlatformKimi,
 		Extra: map[string]any{
-			"kimi_5h_used_percent": 90.0,
-			"kimi_5h_reset_at":     reset.Format(time.RFC3339),
+			"kimi_5h_used_percent":     90.0,
+			"kimi_5h_reset_at":         reset.Format(time.RFC3339),
 			"kimi_weekly_used_percent": 30.0,
 			"kimi_weekly_reset_at":     now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
 		},
@@ -398,6 +398,7 @@ func TestNormalizeOpenAICompatiblePlatform_SchedulerExactMatch(t *testing.T) {
 	require.Equal(t, PlatformKimi, NormalizeOpenAICompatiblePlatform(PlatformKimi))
 	require.Equal(t, PlatformZhipu, NormalizeOpenAICompatiblePlatform(PlatformZhipu))
 	require.Equal(t, PlatformDeepseek, NormalizeOpenAICompatiblePlatform(PlatformDeepseek))
+	require.Equal(t, PlatformOpenCode, NormalizeOpenAICompatiblePlatform(PlatformOpenCode))
 	// 其他平台（含空、anthropic、未知）一律归一为 openai。
 	require.Equal(t, PlatformOpenAI, NormalizeOpenAICompatiblePlatform(""))
 	require.Equal(t, PlatformOpenAI, NormalizeOpenAICompatiblePlatform(PlatformAnthropic))
@@ -410,9 +411,9 @@ func TestGetOpenAIProtocolAPIKey_CNProviders(t *testing.T) {
 	t.Parallel()
 
 	kimi := &Account{
-		Platform:     PlatformKimi,
-		Type:         AccountTypeAPIKey,
-		Credentials:  map[string]any{"api_key": "sk-kimi"},
+		Platform:    PlatformKimi,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-kimi"},
 	}
 	require.Equal(t, "sk-kimi", kimi.GetOpenAIProtocolAPIKey())
 	require.False(t, kimi.IsOpenAIApiKey(), "IsOpenAIApiKey stays openai-only for scheduling gates")
@@ -425,13 +426,24 @@ func TestGetOpenAIProtocolAPIKey_CNProviders(t *testing.T) {
 	}
 	require.Equal(t, "", notAPIKey.GetOpenAIProtocolAPIKey())
 
-	// openai 原生账号行为不变
 	openai := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"api_key": "sk-openai"},
 	}
 	require.Equal(t, "sk-openai", openai.GetOpenAIProtocolAPIKey())
+
+	opencode := &Account{
+		Platform:    PlatformOpenCode,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "placeholder-opencode-key", "base_url": "https://example.invalid/opencode/v1"},
+	}
+	require.True(t, opencode.IsOpenAICompatible())
+	require.True(t, opencode.IsOpenCodeAPIKey())
+	require.Equal(t, "placeholder-opencode-key", opencode.GetOpenAIProtocolAPIKey())
+	require.Equal(t, "https://example.invalid/opencode/v1", opencode.GetOpenAIBaseURL())
+
+	// openai 原生账号行为不变
 }
 
 // TestBuildUpstreamModelsRequest_CNProviders 验证“同步上游支持的模型”对国产供应商可用：

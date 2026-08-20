@@ -204,13 +204,17 @@ func allowOpenAICompatibleMessagesDispatch(apiKey *service.APIKey) bool {
 	if service.IsCNProvider(apiKey.Group.Platform) {
 		return true
 	}
+	if apiKey.Group.Platform == service.PlatformOpenCode {
+		return true
+	}
 	return apiKey.Group.AllowMessagesDispatch
 }
 
 func openAICompatibleTextTargetAllowed(c *gin.Context, apiKey *service.APIKey, model string) bool {
 	return compositeTargetPlatformAllowed(c, apiKey, model,
 		service.PlatformOpenAI, service.PlatformGrok,
-		service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek)
+		service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
+		service.PlatformOpenCode)
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler

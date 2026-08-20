@@ -15,6 +15,7 @@ import (
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	opencodepkg "github.com/Wei-Shaw/sub2api/internal/pkg/opencode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -104,6 +105,20 @@ type antigravityUsageCache struct {
 	timestamp time.Time
 }
 
+// opencodeUsageCache caches both successful snapshots and negative errors.
+type opencodeUsageCache struct {
+	usageInfo   *UsageInfo
+	lastSuccess *UsageInfo
+	timestamp   time.Time
+}
+
+// upstreamBalanceCache caches upstream balance fetches (success + negative).
+type upstreamBalanceCache struct {
+	usageInfo   *UsageInfo
+	lastSuccess *UsageInfo
+	timestamp   time.Time
+}
+
 const (
 	apiCacheTTL         = 3 * time.Minute
 	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
@@ -117,13 +132,17 @@ const (
 
 // UsageCache 封装账户使用量相关的缓存
 type UsageCache struct {
-	apiCache          sync.Map           // accountID -> *apiUsageCache
-	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
-	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
-	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
-	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
-	openAIProbeCache  sync.Map           // accountID -> time.Time
-	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
+	apiCache              sync.Map           // accountID -> *apiUsageCache
+	windowStatsCache      sync.Map           // accountID -> *windowStatsCache
+	antigravityCache      sync.Map           // accountID -> *antigravityUsageCache
+	opencodeCache         sync.Map           // accountID -> *opencodeUsageCache
+	upstreamBalanceCache  sync.Map           // accountID -> *upstreamBalanceCache
+	apiFlight             singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
+	antigravityFlight     singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	opencodeFlight        singleflight.Group // 防止同一 OpenCode 账号的并发请求击穿缓存
+	upstreamBalanceFlight singleflight.Group // 防止同一上游余额账号的并发请求击穿缓存
+	openAIProbeCache      sync.Map           // accountID -> time.Time
+	grokProbeCache        sync.Map           // accountID -> last billing probe attempt
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -154,6 +173,47 @@ type UsageProgress struct {
 	LimitRequests    int64        `json:"limit_requests,omitempty"`
 }
 
+// OpencodeUsage is the typed JSON `opencode` snapshot exposed by UsageInfo.
+type OpencodeUsage struct {
+	Rolling *OpencodeWindow `json:"rolling,omitempty"`
+	Weekly  *OpencodeWindow `json:"weekly,omitempty"`
+	Monthly *OpencodeWindow `json:"monthly,omitempty"`
+	Status  string          `json:"status,omitempty"`
+	Stale   bool            `json:"stale,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+// OpencodeWindow contains one OpenCode status/percent/reset window.
+type OpencodeWindow struct {
+	Status   string     `json:"status"`
+	Percent  float64    `json:"percent"`
+	ResetsAt *time.Time `json:"resets_at,omitempty"`
+}
+
+// UpstreamBalanceUsage holds the balance and usage stats returned by a
+// sub2api-compatible upstream's /v1/usage endpoint.
+type UpstreamBalanceUsage struct {
+	Balance   *float64              `json:"balance,omitempty"`
+	Remaining *float64              `json:"remaining,omitempty"`
+	Unit      string                `json:"unit,omitempty"`
+	Mode      string                `json:"mode,omitempty"`
+	PlanName  string                `json:"plan_name,omitempty"`
+	Today     *UpstreamBalanceStats `json:"today,omitempty"`
+	Total     *UpstreamBalanceStats `json:"total,omitempty"`
+	Status    string                `json:"status,omitempty"`
+	Stale     bool                  `json:"stale,omitempty"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// UpstreamBalanceStats is one period of upstream usage stats.
+type UpstreamBalanceStats struct {
+	Requests     int64   `json:"requests"`
+	Tokens       int64   `json:"tokens"`
+	Cost         float64 `json:"cost"`
+	InputTokens  int64   `json:"input_tokens,omitempty"`
+	OutputTokens int64   `json:"output_tokens,omitempty"`
+}
+
 // AntigravityModelQuota Antigravity 单个模型的配额信息
 type AntigravityModelQuota struct {
 	Utilization int    `json:"utilization"` // 使用率 0-100
@@ -181,18 +241,22 @@ type AICredit struct {
 
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
-	Source             string         `json:"source,omitempty"`               // "passive" or "active"
-	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`           // 更新时间
-	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
-	SevenDay           *UsageProgress `json:"seven_day,omitempty"`            // 7天窗口
-	SevenDaySonnet     *UsageProgress `json:"seven_day_sonnet,omitempty"`     // 7天Sonnet窗口
-	SevenDayFable      *UsageProgress `json:"seven_day_fable,omitempty"`      // 7天Fable窗口（响应头 7d_oi）
-	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
-	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
-	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
-	GeminiSharedMinute *UsageProgress `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
-	GeminiProMinute    *UsageProgress `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
-	GeminiFlashMinute  *UsageProgress `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
+	Source         string         `json:"source,omitempty"`           // "passive" or "active"
+	UpdatedAt      *time.Time     `json:"updated_at,omitempty"`       // 更新时间
+	FiveHour       *UsageProgress `json:"five_hour"`                  // 5小时窗口
+	SevenDay       *UsageProgress `json:"seven_day,omitempty"`        // 7天窗口
+	SevenDaySonnet *UsageProgress `json:"seven_day_sonnet,omitempty"` // 7天Sonnet窗口
+	SevenDayFable  *UsageProgress `json:"seven_day_fable,omitempty"`  // 7天Fable窗口（响应头 7d_oi）
+
+	// Opencode is the upstream OpenCode API-key usage snapshot.
+	Opencode           *OpencodeUsage        `json:"opencode,omitempty"`
+	UpstreamBalance    *UpstreamBalanceUsage `json:"upstream_balance,omitempty"`
+	GeminiSharedDaily  *UsageProgress        `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
+	GeminiProDaily     *UsageProgress        `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
+	GeminiFlashDaily   *UsageProgress        `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
+	GeminiSharedMinute *UsageProgress        `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
+	GeminiProMinute    *UsageProgress        `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
+	GeminiFlashMinute  *UsageProgress        `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
@@ -298,6 +362,8 @@ type AccountUsageService struct {
 	grokQuotaFetcher        *GrokQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
+	opencodeFetcher         *OpenCodeUsageFetcher
+	upstreamBalanceFetcher  *UpstreamBalanceFetcher
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
@@ -318,7 +384,13 @@ func NewAccountUsageService(
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	opencodeFetcher *OpenCodeUsageFetcher,
+	upstreamBalanceFetchers ...*UpstreamBalanceFetcher,
 ) *AccountUsageService {
+	var upstreamBalanceFetcher *UpstreamBalanceFetcher
+	if len(upstreamBalanceFetchers) > 0 {
+		upstreamBalanceFetcher = upstreamBalanceFetchers[0]
+	}
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
 		usageLogRepo:            usageLogRepo,
@@ -328,6 +400,8 @@ func NewAccountUsageService(
 		grokQuotaFetcher:        grokQuotaFetcher,
 		grokQuotaService:        grokQuotaService,
 		openAIQuotaService:      openAIQuotaService,
+		opencodeFetcher:         opencodeFetcher,
+		upstreamBalanceFetcher:  upstreamBalanceFetcher,
 		cache:                   cache,
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
@@ -389,6 +463,16 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
+	}
+
+	if account.Platform == PlatformOpenCode && account.Type == AccountTypeAPIKey {
+		return s.getOpenCodeUsage(ctx, account, forceProbe)
+	}
+
+	// API Key accounts with a base_url: fetch upstream balance from {base_url}/usage.
+	// This covers sub2api-compatible upstreams that expose /v1/usage.
+	if account.Type == AccountTypeAPIKey && strings.TrimSpace(account.GetCredential("base_url")) != "" && account.Platform != PlatformOpenCode {
+		return s.getUpstreamBalance(ctx, account, forceProbe)
 	}
 
 	// 只有oauth类型账号可以通过API获取usage（有profile scope）
@@ -1241,6 +1325,262 @@ func (s *AccountUsageService) shouldProbeGrokBilling(accountID int64, now time.T
 	}
 	s.cache.grokProbeCache.Store(accountID, now)
 	return true
+}
+
+func (s *AccountUsageService) getOpenCodeUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if s == nil || account == nil || s.opencodeFetcher == nil {
+		return nil, fmt.Errorf("opencode usage fetcher unavailable")
+	}
+	if s.cache == nil {
+		s.cache = NewUsageCache()
+	}
+	cachedEntry := func() (*opencodeUsageCache, bool) {
+		cached, ok := s.cache.opencodeCache.Load(account.ID)
+		if !ok {
+			return nil, false
+		}
+		entry, ok := cached.(*opencodeUsageCache)
+		return entry, ok && entry != nil
+	}
+	if entry, ok := cachedEntry(); ok && entry.usageInfo != nil && entry.usageInfo.Opencode != nil && entry.usageInfo.Opencode.Error != "" && time.Since(entry.timestamp) < apiErrorCacheTTL {
+		return entry.usageInfo, nil
+	}
+	if !force {
+		if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && entry.usageInfo != nil && entry.usageInfo.Opencode != nil && entry.usageInfo.Error == "" {
+			return entry.usageInfo, nil
+		}
+	}
+
+	result, flightErr, _ := s.cache.opencodeFlight.Do(fmt.Sprintf("opencode-usage:%d", account.ID), func() (any, error) {
+		if entry, ok := cachedEntry(); ok && entry.usageInfo != nil && entry.usageInfo.Opencode != nil && entry.usageInfo.Error != "" && time.Since(entry.timestamp) < apiErrorCacheTTL {
+			return entry.usageInfo, nil
+		}
+		if !force {
+			if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && entry.usageInfo != nil && entry.usageInfo.Opencode != nil && entry.usageInfo.Error == "" {
+				return entry.usageInfo, nil
+			}
+		}
+
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		baseURL := account.GetOpenAIBaseURL()
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, opencodeUsageRequestTimeout)
+		defer cancel()
+		snapshot, err := s.opencodeFetcher.FetchUsage(fetchCtx, &OpenCodeUsageFetchOptions{
+			APIKey:      apiKey,
+			BaseURL:     baseURL,
+			ProxyURL:    proxyURL,
+			AccountID:   account.ID,
+			Concurrency: account.Concurrency,
+			HeaderApply: account.ApplyHeaderOverrides,
+		})
+		now := time.Now()
+		if err != nil {
+			var lastSuccess *UsageInfo
+			if previous, ok := cachedEntry(); ok {
+				lastSuccess = previous.lastSuccess
+				if lastSuccess == nil && previous.usageInfo != nil && previous.usageInfo.Opencode != nil && previous.usageInfo.Opencode.Error == "" {
+					lastSuccess = previous.usageInfo
+				}
+			}
+			degraded := buildOpenCodeUsageError(err, now)
+			if lastSuccess != nil {
+				stale := cloneOpenCodeUsage(lastSuccess)
+				stale.UpdatedAt = &now
+				stale.Opencode.Stale = true
+				stale.Opencode.Status = "stale"
+				stale.Opencode.Error = opencodeUsageErrorCode(err)
+				stale.Error = opencodeUsageErrorCode(err)
+				degraded = stale
+			}
+			s.cache.opencodeCache.Store(account.ID, &opencodeUsageCache{usageInfo: degraded, lastSuccess: lastSuccess, timestamp: now})
+			return degraded, nil
+		}
+		usage := openCodeUsageFromSnapshot(snapshot, now)
+		s.cache.opencodeCache.Store(account.ID, &opencodeUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
+		return usage, nil
+	})
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		return nil, fmt.Errorf("opencode usage unavailable")
+	}
+	return usage, nil
+}
+
+func openCodeUsageFromSnapshot(snapshot *opencodepkg.UsageSnapshot, now time.Time) *UsageInfo {
+	usage := &UsageInfo{Source: "active", UpdatedAt: &now, Opencode: &OpencodeUsage{Status: "ok"}}
+	if snapshot == nil {
+		return usage
+	}
+	usage.Opencode.Rolling = openCodeWindowFromSnapshot(snapshot.Rolling)
+	usage.Opencode.Weekly = openCodeWindowFromSnapshot(snapshot.Weekly)
+	usage.Opencode.Monthly = openCodeWindowFromSnapshot(snapshot.Monthly)
+	return usage
+}
+
+func openCodeWindowFromSnapshot(window opencodepkg.UsageWindow) *OpencodeWindow {
+	status := string(window.Status)
+	if status == "" {
+		status = string(opencodepkg.UsageStatusOK)
+	}
+	percent := window.Percent
+	if window.Status == opencodepkg.UsageStatusRateLimited && percent < 100 {
+		percent = 100
+	}
+	return &OpencodeWindow{Status: status, Percent: percent, ResetsAt: window.ResetsAt}
+}
+
+func opencodeUsageErrorCode(err error) string {
+	if usageErr, ok := err.(*opencodepkg.UsageError); ok && usageErr.Code != "" {
+		return usageErr.Code
+	}
+	return "network_error"
+}
+
+func buildOpenCodeUsageError(err error, now time.Time) *UsageInfo {
+	code := opencodeUsageErrorCode(err)
+	return &UsageInfo{
+		Source:    "active",
+		UpdatedAt: &now,
+		Error:     code,
+		Opencode:  &OpencodeUsage{Status: "error", Error: code},
+	}
+}
+
+func cloneOpenCodeUsage(source *UsageInfo) *UsageInfo {
+	if source == nil || source.Opencode == nil {
+		return source
+	}
+	clone := *source
+	opencode := *source.Opencode
+	clone.Opencode = &opencode
+	return &clone
+}
+
+func opencodeUsageCacheTTL(usage *UsageInfo) time.Duration {
+	if usage == nil || usage.Opencode == nil || usage.Opencode.Error != "" {
+		return apiErrorCacheTTL
+	}
+	return apiCacheTTL
+}
+
+func (s *AccountUsageService) getUpstreamBalance(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if s == nil || account == nil || s.upstreamBalanceFetcher == nil {
+		return nil, fmt.Errorf("upstream balance fetcher unavailable")
+	}
+	if s.cache == nil {
+		s.cache = NewUsageCache()
+	}
+	cachedEntry := func() (*upstreamBalanceCache, bool) {
+		cached, ok := s.cache.upstreamBalanceCache.Load(account.ID)
+		if !ok {
+			return nil, false
+		}
+		entry, ok := cached.(*upstreamBalanceCache)
+		return entry, ok && entry != nil
+	}
+	if entry, ok := cachedEntry(); ok && entry.usageInfo != nil && entry.usageInfo.UpstreamBalance != nil && entry.usageInfo.UpstreamBalance.Error != "" && time.Since(entry.timestamp) < apiErrorCacheTTL {
+		return entry.usageInfo, nil
+	}
+	if !force {
+		if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && entry.usageInfo != nil && entry.usageInfo.UpstreamBalance != nil && entry.usageInfo.Error == "" {
+			return entry.usageInfo, nil
+		}
+	}
+
+	result, flightErr, _ := s.cache.upstreamBalanceFlight.Do(fmt.Sprintf("upstream-balance:%d", account.ID), func() (any, error) {
+		if entry, ok := cachedEntry(); ok && entry.usageInfo != nil && entry.usageInfo.UpstreamBalance != nil && entry.usageInfo.Error != "" && time.Since(entry.timestamp) < apiErrorCacheTTL {
+			return entry.usageInfo, nil
+		}
+		if !force {
+			if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && entry.usageInfo != nil && entry.usageInfo.UpstreamBalance != nil && entry.usageInfo.Error == "" {
+				return entry.usageInfo, nil
+			}
+		}
+
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		baseURL := account.GetOpenAIBaseURL()
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, upstreamBalanceRequestTimeout)
+		defer cancel()
+		snapshot, err := s.upstreamBalanceFetcher.FetchUsage(fetchCtx, &UpstreamBalanceFetchOptions{
+			APIKey:      apiKey,
+			BaseURL:     baseURL,
+			ProxyURL:    proxyURL,
+			AccountID:   account.ID,
+			Concurrency: account.Concurrency,
+			HeaderApply: account.ApplyHeaderOverrides,
+		})
+		now := time.Now()
+		if err != nil {
+			var lastSuccess *UsageInfo
+			if previous, ok := cachedEntry(); ok {
+				lastSuccess = previous.lastSuccess
+				if lastSuccess == nil && previous.usageInfo != nil && previous.usageInfo.UpstreamBalance != nil && previous.usageInfo.UpstreamBalance.Error == "" {
+					lastSuccess = previous.usageInfo
+				}
+			}
+			degraded := buildUpstreamBalanceError(err, now)
+			if lastSuccess != nil {
+				stale := cloneUpstreamBalance(lastSuccess)
+				stale.UpdatedAt = &now
+				stale.UpstreamBalance.Stale = true
+				stale.UpstreamBalance.Status = "stale"
+				stale.UpstreamBalance.Error = upstreamBalanceErrorCode(err)
+				stale.Error = upstreamBalanceErrorCode(err)
+				degraded = stale
+			}
+			s.cache.upstreamBalanceCache.Store(account.ID, &upstreamBalanceCache{usageInfo: degraded, lastSuccess: lastSuccess, timestamp: now})
+			return degraded, nil
+		}
+		usage := &UsageInfo{Source: "active", UpdatedAt: &now, UpstreamBalance: snapshot}
+		s.cache.upstreamBalanceCache.Store(account.ID, &upstreamBalanceCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
+		return usage, nil
+	})
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		return nil, fmt.Errorf("upstream balance unavailable")
+	}
+	return usage, nil
+}
+
+func upstreamBalanceErrorCode(err error) string {
+	if balanceErr, ok := err.(*UpstreamBalanceError); ok && balanceErr.Code != "" {
+		return balanceErr.Code
+	}
+	return "network_error"
+}
+
+func buildUpstreamBalanceError(err error, now time.Time) *UsageInfo {
+	code := upstreamBalanceErrorCode(err)
+	return &UsageInfo{
+		Source:          "active",
+		UpdatedAt:       &now,
+		Error:           code,
+		UpstreamBalance: &UpstreamBalanceUsage{Status: "error", Error: code},
+	}
+}
+
+func cloneUpstreamBalance(source *UsageInfo) *UsageInfo {
+	if source == nil || source.UpstreamBalance == nil {
+		return source
+	}
+	clone := *source
+	balance := *source.UpstreamBalance
+	clone.UpstreamBalance = &balance
+	return &clone
 }
 
 // recalcAntigravityRemainingSeconds 重新计算 Antigravity UsageInfo 中各窗口的 RemainingSeconds

@@ -284,6 +284,21 @@ func (a *Account) IsDeepseek() bool {
 	return a.Platform == PlatformDeepseek
 }
 
+func (a *Account) IsOpenCode() bool {
+	return a != nil && a.Platform == PlatformOpenCode
+}
+
+func (a *Account) IsOpenCodeAPIKey() bool {
+	return a.IsOpenCode() && a.Type == AccountTypeAPIKey
+}
+
+func (a *Account) GetOpenCodeAPIKey() string {
+	if !a.IsOpenCodeAPIKey() {
+		return ""
+	}
+	return a.GetCredential("api_key")
+}
+
 // IsCNProvider 报告是否为国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）。
 func (a *Account) IsCNProvider() bool {
 	return a != nil && IsCNProvider(a.Platform)
@@ -294,7 +309,8 @@ func (a *Account) IsCNProvider() bool {
 // 兼容上游，也经 OpenAI 网关转发。
 func (a *Account) IsOpenAICompatible() bool {
 	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok ||
-		a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepseek)
+		a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepseek ||
+		a.IsOpenCodeAPIKey())
 }
 
 func (a *Account) GeminiOAuthType() string {
@@ -1300,14 +1316,14 @@ func (a *Account) IsOpenAIPersonalAccessToken() bool {
 }
 
 func (a *Account) IsOpenAIApiKey() bool {
-	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+	return (a.IsOpenAI() || a.IsOpenCode()) && a.Type == AccountTypeAPIKey
 }
 
 // GetOpenAIBaseURL 解析 OpenAI 协议族账号的上游 base_url。
 // 适用 openai 与国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）；grok 走 GetGrokBaseURL，
 // 此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() && !a.IsCNProvider() {
+	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsOpenCode() {
 		return ""
 	}
 	if a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream {
@@ -1329,6 +1345,8 @@ func (a *Account) GetOpenAIBaseURL() string {
 		return DefaultZhipuPayGBaseURL
 	case PlatformDeepseek:
 		return DefaultDeepseekBaseURL
+	case PlatformOpenCode:
+		return DefaultOpenCodeBaseURL
 	default:
 		return "https://api.openai.com"
 	}
@@ -1584,6 +1602,9 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 		}
 		return a.GetCredential("api_key")
 	}
+	if a.IsOpenCodeAPIKey() {
+		return a.GetCredential("api_key")
+	}
 	return a.GetOpenAIApiKey()
 }
 
@@ -1668,6 +1689,9 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 			return false
 		}
 	}
+	if a.IsOpenCode() && capability != OpenAIEndpointCapabilityChatCompletions {
+		return false
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
 	case OpenAIEndpointCapabilityLive:
@@ -1680,7 +1704,8 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		// credentials 能力集。已探测确认不支持 /v1/responses 的 APIKey 上游
 		// 必须排除——否则会在 forward 阶段被静默降级为 Chat Completions，
 		// 无法完成生图（#4417）。未探测/OAuth 账号保留旧行为（不排除）。
-		if a.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(a.Extra) {
+		// OpenCode 永远不支持 Responses API。
+		if a.Type == AccountTypeAPIKey && (a.IsOpenCode() || !openai_compat.ShouldUseResponsesAPI(a.Extra)) {
 			return false
 		}
 		// 支持 Responses 的上游同样需具备 chat 能力：复用下方 chat_completions

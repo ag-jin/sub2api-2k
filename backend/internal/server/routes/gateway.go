@@ -45,11 +45,20 @@ func RegisterGatewayRoutes(
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 
+	isOpenAICompatibleGatewayPlatform := func(c *gin.Context) bool {
+		switch getGroupPlatform(c) {
+		case service.PlatformOpenAI, service.PlatformGrok,
+			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
+			service.PlatformOpenCode:
+			return true
+		default:
+			return false
+		}
+	}
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok,
 			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek:
-			// 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 openai/grok 一样经 OpenAI 网关转发。
 			return true
 		default:
 			return false
@@ -174,6 +183,21 @@ func RegisterGatewayRoutes(
 		}
 	}
 
+	guardOpenCodeResponses := func(c *gin.Context) bool {
+		return getGroupPlatform(c) == service.PlatformOpenCode
+	}
+	unsupportedOpenCodeResponses := func(c *gin.Context) {
+		if guardOpenCodeResponses(c) {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"type":    "unsupported-provider",
+				"message": "OpenCode does not support the Responses API",
+			}})
+			return
+		}
+		c.Next()
+	}
+
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
@@ -187,7 +211,7 @@ func RegisterGatewayRoutes(
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if isOpenAICompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -204,7 +228,7 @@ func RegisterGatewayRoutes(
 		gateway.POST("/live", h.OpenAIGateway.Live)
 		gateway.GET("/live/:call_id", h.OpenAIGateway.LiveSideband)
 		// OpenAI Responses API: auto-route based on group platform
-		gateway.POST("/responses", func(c *gin.Context) {
+		gateway.POST("/responses", unsupportedOpenCodeResponses, func(c *gin.Context) {
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Responses(c)
 				return
@@ -212,6 +236,10 @@ func RegisterGatewayRoutes(
 			h.Gateway.Responses(c)
 		})
 		gateway.POST("/responses/*subpath", guardResponsesSubpath(func(c *gin.Context) {
+			if guardOpenCodeResponses(c) {
+				unsupportedOpenCodeResponses(c)
+				return
+			}
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Responses(c)
 				return
@@ -220,11 +248,15 @@ func RegisterGatewayRoutes(
 		}))
 		gateway.POST("/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
 		gateway.GET("/responses", func(c *gin.Context) {
+			if guardOpenCodeResponses(c) {
+				unsupportedOpenCodeResponses(c)
+				return
+			}
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if isOpenAICompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -345,6 +377,10 @@ func RegisterGatewayRoutes(
 
 	// OpenAI Responses API（不带v1前缀的别名）— auto-route based on group platform
 	responsesHandler := func(c *gin.Context) {
+		if guardOpenCodeResponses(c) {
+			unsupportedOpenCodeResponses(c)
+			return
+		}
 		if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 			h.OpenAIGateway.Responses(c)
 			return
@@ -355,6 +391,10 @@ func RegisterGatewayRoutes(
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, guardResponsesSubpath(responsesHandler))
 	r.POST("/alpha/search", textBodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, h.OpenAIGateway.AlphaSearch)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
+		if guardOpenCodeResponses(c) {
+			unsupportedOpenCodeResponses(c)
+			return
+		}
 		h.OpenAIGateway.ResponsesWebSocket(c)
 	})
 	r.GET("/models", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, modelsHandler)
@@ -368,6 +408,10 @@ func RegisterGatewayRoutes(
 		codexDirect.POST("/responses/*subpath", guardResponsesSubpath(responsesHandler))
 		codexDirect.POST("/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
 		codexDirect.GET("/responses", func(c *gin.Context) {
+			if guardOpenCodeResponses(c) {
+				unsupportedOpenCodeResponses(c)
+				return
+			}
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
 		codexDirect.GET("/models", h.OpenAIGateway.CodexModels)

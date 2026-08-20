@@ -29,13 +29,13 @@
     <div class="flex items-center gap-1">
       <!-- Label badge (fixed width for alignment) -->
       <span
-        :class="['w-[32px] shrink-0 rounded px-1 text-center text-[10px] font-medium', labelClass]"
+        :class="['min-w-[34px] shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-medium', labelClass]"
       >
         {{ label }}
       </span>
 
       <!-- Progress bar container -->
-      <div class="h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+      <div class="h-2 min-w-[64px] flex-1 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         <div
           :class="['h-full transition-all duration-300', barClass]"
           :style="{ width: barWidth }"
@@ -43,7 +43,7 @@
       </div>
 
       <!-- Percentage -->
-      <span :class="['w-[32px] shrink-0 text-right text-[10px] font-medium', textClass]">
+      <span :class="['w-[42px] shrink-0 text-right text-[11px] font-medium', textClass]">
         {{ displayPercent }}
       </span>
 

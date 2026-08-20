@@ -527,7 +527,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'composite'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'opencode' | 'composite'
 
 export type VideoModelPrices = Record<string, Record<string, number>>
 
@@ -884,7 +884,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'opencode'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -1314,7 +1314,47 @@ export interface GrokBillingSummary {
   failed_windows?: string[]
 }
 
+export interface OpenCodeUsageWindow {
+  status: 'ok' | 'stale' | 'error' | 'unavailable' | 'rate-limited'
+  percent?: number | null
+  resets_at?: string | null
+  updated_at?: string | null
+  error?: string | null
+}
+
+export interface OpenCodeUsageSnapshot {
+  status: 'ok' | 'stale' | 'error' | 'unavailable' | 'rate-limited'
+  rolling?: OpenCodeUsageWindow | null
+  weekly?: OpenCodeUsageWindow | null
+  monthly?: OpenCodeUsageWindow | null
+  updated_at?: string | null
+  error?: string | null
+}
+
+export interface UpstreamBalanceStats {
+  requests: number
+  tokens: number
+  cost: number
+  input_tokens?: number
+  output_tokens?: number
+}
+
+export interface UpstreamBalanceSnapshot {
+  balance?: number | null
+  remaining?: number | null
+  unit?: string
+  mode?: string
+  plan_name?: string
+  today?: UpstreamBalanceStats | null
+  total?: UpstreamBalanceStats | null
+  status?: string
+  stale?: boolean
+  error?: string | null
+}
+
 export interface AccountUsageInfo {
+  opencode?: OpenCodeUsageSnapshot | null
+  upstream_balance?: UpstreamBalanceSnapshot | null
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null

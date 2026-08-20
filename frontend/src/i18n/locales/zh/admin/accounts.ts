@@ -21,6 +21,7 @@ export default {
       dataActions: '数据操作',
       toolActions: '工具',
       viewColumns: '列显示',
+      cardFieldsLabel: '卡片字段',
       selectedCount: '已选 {count}',
       dataExportConfirmMessage: '导出的数据包含账号与代理的敏感信息，请妥善保存。',
       dataExportConfirm: '确认导出',
@@ -310,6 +311,17 @@ export default {
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
+        opencode: 'OpenCode',
+      },
+      opencode: {
+        baseUrlHint: 'OpenCode Go API 地址。OpenCode 支持 Messages 和 Chat Completions，不支持 Responses。',
+        usage: {
+          rolling: '滚动',
+          weekly: '每周',
+          monthly: '每月',
+          stale: '用量快照已过期',
+          error: '用量不可用'
+        }
       },
       cnProviders: {
         accountMode: {
@@ -361,6 +373,7 @@ export default {
       status: {
         active: '正常',
         inactive: '停用',
+        disabled: '已禁用',
         expired: '已过期',
         error: '错误',
         cooldown: '冷却中',
@@ -1507,6 +1520,27 @@ export default {
         usageTrend: '30天费用与请求趋势',
         noData: '该账号暂无使用数据'
       }
+    },
+
+    // 卡片视图
+    card: {
+      viewTable: '表格视图',
+      viewCard: '卡片视图',
+      optionalFields: '卡片字段',
+      capacity: '容量',
+      groups: '分组',
+      today: '今日',
+      usage: '用量',
+      proxy: '代理',
+      priority: '优先级',
+      rateMultiplier: '倍率',
+      schedulerScore: '评分',
+      upstreamBilling: '上游计费',
+      expiresAt: '过期',
+      createdAt: '创建',
+      notes: '备注',
+      lastUsed: '最后使用',
+      neverUsed: '未使用'
     },
 
     // Scheduled Tests

@@ -252,6 +252,42 @@ func TestGrokCustomVoiceEndpointUsesRouteTemplateNotRawPath(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesOpenCodeMessagesAndChatUseOpenAIGateway(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformOpenCode)
+
+	for _, path := range []string{"/v1/messages", "/v1/chat/completions", "/chat/completions"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"placeholder-model","messages":[]}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should use OpenAI gateway routing", path)
+		require.NotContains(t, w.Body.String(), "not supported for this platform", "path=%s", path)
+	}
+}
+
+func TestGatewayRoutesOpenCodeResponsesRejectBeforeGatewayDispatch(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformOpenCode)
+
+	for _, path := range []string{"/v1/responses", "/responses", "/backend-api/codex/responses"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"placeholder-model","input":"hi"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusBadRequest, w.Code, "path=%s", path)
+		var response struct {
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response), "path=%s", path)
+		require.Equal(t, "unsupported-provider", response.Error.Type, "path=%s", path)
+		require.Equal(t, "OpenCode does not support the Responses API", response.Error.Message, "path=%s", path)
+	}
+}
+
 func TestGatewayRoutesCompositeVideoLookupsUseGrokHandler(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformComposite)
 
