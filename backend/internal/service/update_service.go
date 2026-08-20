@@ -653,14 +653,28 @@ func compareVersions(current, latest string) int {
 	return 0
 }
 
+// parseVersion parses the numeric core of a version, ignoring suffixes:
+// "0.1.178-card" and "v0.1.178" both yield [0, 1, 178].
 func parseVersion(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
 	result := [3]int{0, 0, 0}
 	for i := 0; i < len(parts) && i < 3; i++ {
-		if parsed, err := strconv.Atoi(parts[i]); err == nil {
-			result[i] = parsed
-		}
+		result[i] = parseLeadingDigits(parts[i])
 	}
 	return result
+}
+
+// parseLeadingDigits scans the leading digits of a version segment,
+// e.g. "178-card" -> 178. Returns 0 when the segment has no numeric prefix.
+func parseLeadingDigits(segment string) int {
+	n := 0
+	for n < len(segment) && segment[n] >= '0' && segment[n] <= '9' {
+		n++
+	}
+	value, err := strconv.Atoi(segment[:n])
+	if err != nil {
+		return 0
+	}
+	return value
 }

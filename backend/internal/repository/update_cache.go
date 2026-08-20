@@ -8,7 +8,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const updateCacheKey = "update:latest"
+// Repository-specific key so forks (ag-jin/sub2api-2k) never read update info
+// cached by upstream binaries under the shared "update:latest" key.
+const updateCacheKey = "update:latest:ag-jin/sub2api-2k"
 
 type updateCache struct {
 	rdb *redis.Client

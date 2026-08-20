@@ -185,3 +185,49 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 	require.NotErrorIs(t, err, ErrRollbackVersionNotAllowed)
 	require.Contains(t, err.Error(), "no compatible release found")
 }
+
+func TestParseVersionExtractsLeadingDigitsPerSegment(t *testing.T) {
+	tests := []struct {
+		name string
+		v    string
+		want [3]int
+	}{
+		{name: "plain", v: "0.1.178", want: [3]int{0, 1, 178}},
+		{name: "card suffix on patch", v: "0.1.178-card", want: [3]int{0, 1, 178}},
+		{name: "v prefix", v: "v0.1.178", want: [3]int{0, 1, 178}},
+		{name: "v prefix with card suffix", v: "v0.1.178-card", want: [3]int{0, 1, 178}},
+		{name: "missing patch segment", v: "0.1", want: [3]int{0, 1, 0}},
+		{name: "non-numeric segment", v: "alpha", want: [3]int{0, 0, 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, parseVersion(tt.v))
+		})
+	}
+}
+
+func TestCompareVersionsWithSuffixesAndVPrefix(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		want    int
+	}{
+		// card suffixes: numeric prefix of each segment must win
+		{name: "card suffix patch lower", current: "0.1.178-card", latest: "0.1.179-card", want: -1},
+		{name: "card suffix patch higher", current: "0.1.179-card", latest: "0.1.178-card", want: 1},
+		{name: "card suffix across segments", current: "0.1.178-card", latest: "0.2.0-card", want: -1},
+		// v prefix remains supported
+		{name: "v prefix both sides", current: "v0.1.178", latest: "v0.1.179", want: -1},
+		{name: "v prefix vs plain", current: "v0.1.178-card", latest: "0.1.179", want: -1},
+		{name: "plain vs v prefix", current: "v0.1.180", latest: "0.1.179-card", want: 1},
+		// same core: suffix is ignored, so they compare equal
+		{name: "same core plain vs card suffix", current: "0.1.178", latest: "0.1.178-card", want: 0},
+		{name: "same core card suffix vs plain", current: "0.1.178-card", latest: "0.1.178", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, compareVersions(tt.current, tt.latest))
+		})
+	}
+}
