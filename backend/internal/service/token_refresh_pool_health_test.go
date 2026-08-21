@@ -933,6 +933,22 @@ func TestTokenRefreshService_ParentCancellationStopsRetryWithoutAccountMutation(
 	require.Zero(t, setTempUnschedCalls)
 }
 
+func TestRefreshAttemptTimedOut_UsesDeadlineTimestampBeforeCancellationNotification(t *testing.T) {
+	now := time.Now()
+
+	require.True(t, refreshAttemptTimedOut(context.Background(), context.Background(), now, now))
+	require.False(t, refreshAttemptTimedOut(context.Background(), context.Background(), now.Add(time.Nanosecond), now))
+
+	canceledParent, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.False(t, refreshAttemptTimedOut(canceledParent, context.Background(), now, now))
+
+	parentDeadline := now.Add(-time.Nanosecond)
+	parentWithElapsedDeadline, cancelDeadline := context.WithDeadline(context.Background(), parentDeadline)
+	defer cancelDeadline()
+	require.False(t, refreshAttemptTimedOut(parentWithElapsedDeadline, context.Background(), now, now))
+}
+
 func TestTokenRefreshService_LateSuccessPastAttemptDeadlineIsRejected(t *testing.T) {
 	repo := &poolHealthAccountRepo{}
 	refresher := &poolHealthRefresher{

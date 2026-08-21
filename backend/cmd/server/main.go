@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	_ "embed"
 	"errors"
 	"flag"
@@ -19,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
@@ -36,6 +38,14 @@ var (
 	Date      = "unknown"
 	BuildType = "source" // "source" for manual builds, "release" for CI builds (set by ldflags)
 )
+
+const (
+	migrationDatabaseDSNEnv = "MIGRATION_DATABASE_DSN"
+	migrationOnlyTimeout    = 10 * time.Minute
+)
+
+type databaseOpener func(driverName, dataSourceName string) (*sql.DB, error)
+type migrationRunner func(context.Context, *sql.DB) error
 
 func init() {
 	// 如果 Version 已通过 ldflags 注入（例如 -X main.Version=...），则不要覆盖。
@@ -59,10 +69,19 @@ func main() {
 	// Parse command line flags
 	setupMode := flag.Bool("setup", false, "Run setup wizard in CLI mode")
 	showVersion := flag.Bool("version", false, "Show version information")
+	migrateOnly := flag.Bool("migrate-only", false, "Apply database migrations and exit")
 	flag.Parse()
 
 	if *showVersion {
 		log.Printf("Sub2API %s (commit: %s, built: %s)\n", Version, Commit, Date)
+		return
+	}
+
+	if *migrateOnly {
+		if err := runMigrationsOnly(); err != nil {
+			log.Fatalf("Migration-only failed: %v", err)
+		}
+		log.Println("Database migrations completed")
 		return
 	}
 
@@ -92,6 +111,32 @@ func main() {
 
 	// Normal server mode
 	runMainServer()
+}
+
+func runMigrationsOnly() error {
+	dsn := strings.TrimSpace(os.Getenv(migrationDatabaseDSNEnv))
+	ctx, cancel := context.WithTimeout(context.Background(), migrationOnlyTimeout)
+	defer cancel()
+	return runMigrationsWithDSN(ctx, dsn, sql.Open, repository.ApplyMigrations)
+}
+
+func runMigrationsWithDSN(ctx context.Context, dsn string, openDB databaseOpener, runMigrations migrationRunner) error {
+	if strings.TrimSpace(dsn) == "" {
+		return errors.New("MIGRATION_DATABASE_DSN is required for --migrate-only")
+	}
+
+	db, err := openDB("postgres", dsn)
+	if err != nil {
+		return errors.New("open migration database connection")
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	if err := runMigrations(ctx, db); err != nil {
+		return errors.New("apply database migrations")
+	}
+	return nil
 }
 
 func runSetupServer() {

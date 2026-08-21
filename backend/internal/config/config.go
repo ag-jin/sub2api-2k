@@ -1451,6 +1451,9 @@ type DatabaseConfig struct {
 	ConnMaxLifetimeMinutes int `mapstructure:"conn_max_lifetime_minutes"`
 	// ConnMaxIdleTimeMinutes: 空闲连接最大存活时间，及时释放不活跃连接
 	ConnMaxIdleTimeMinutes int `mapstructure:"conn_max_idle_time_minutes"`
+	// RunMigrationsOnStartup preserves the legacy automatic migration behavior.
+	// Production releases can disable it after a dedicated migration job succeeds.
+	RunMigrationsOnStartup bool `mapstructure:"run_migrations_on_startup"`
 	// UserPlatformQuotaFlusherEnabled: 是否启用 user×platform 配额写聚合 flusher
 	UserPlatformQuotaFlusherEnabled bool `mapstructure:"user_platform_quota_flusher_enabled"`
 	// UserPlatformQuotaFlushIntervalMs: flusher 刷写间隔（毫秒）
@@ -2092,6 +2095,7 @@ func setDefaults() {
 	viper.SetDefault("database.max_idle_conns", 128)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
+	viper.SetDefault("database.run_migrations_on_startup", true)
 	viper.SetDefault("database.user_platform_quota_flusher_enabled", false)
 	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 2000)
 	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)

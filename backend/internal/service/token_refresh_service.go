@@ -859,7 +859,8 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				acquireRate = gate.acquire
 			}
 		}
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.attemptTimeout())
+		attemptDeadline := time.Now().Add(s.attemptTimeout())
+		attemptCtx, cancelAttempt := context.WithDeadline(ctx, attemptDeadline)
 		var newCredentials map[string]any
 		var err error
 		shortCircuit := false
@@ -904,7 +905,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			if releaseRate != nil {
 				releaseRate()
 			}
-			attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+			attemptTimedOut := refreshAttemptTimedOut(ctx, attemptCtx, attemptDeadline, time.Now())
 			if err == nil && newCredentials != nil && !attemptTimedOut {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
 				if saveErr := persistAccountCredentials(attemptCtx, s.accountRepo, account, newCredentials); saveErr != nil {
@@ -914,7 +915,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				}
 			}
 		}
-		attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		attemptTimedOut := refreshAttemptTimedOut(ctx, attemptCtx, attemptDeadline, time.Now())
 		cancelAttempt()
 		releaseAttempt()
 		persistedAfterAttemptDeadline := attemptTimedOut && credentialsPersisted && err == nil
@@ -1137,6 +1138,16 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	}
 
 	return lastErr
+}
+
+func refreshAttemptTimedOut(parentCtx, attemptCtx context.Context, attemptDeadline, now time.Time) bool {
+	if parentCtx.Err() != nil {
+		return false
+	}
+	if parentDeadline, ok := parentCtx.Deadline(); ok && !parentDeadline.After(attemptDeadline) && !now.Before(parentDeadline) {
+		return false
+	}
+	return errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || !now.Before(attemptDeadline)
 }
 
 func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Duration {

@@ -832,6 +832,12 @@ database:
   # Connection max idle time (minutes)
   # 空闲连接最大存活时间（分钟）
   conn_max_idle_time_minutes: 5
+  # Run embedded SQL migrations when the runtime service starts. Keep true for
+  # existing deployments. Set false only after a dedicated --migrate-only job
+  # succeeds using MIGRATION_DATABASE_DSN supplied by a secret manager.
+  # 运行时服务启动时执行嵌入式 SQL 迁移。现有部署保持 true；仅在通过密钥服务提供
+  # MIGRATION_DATABASE_DSN 的 --migrate-only 任务成功后设置为 false。
+  run_migrations_on_startup: true
 
 # =============================================================================
 # Redis Configuration

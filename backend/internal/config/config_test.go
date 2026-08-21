@@ -72,6 +72,34 @@ func TestLoadServerTimingConfig(t *testing.T) {
 	})
 }
 
+func TestLoadRunMigrationsOnStartupConfig(t *testing.T) {
+	t.Run("enabled by default", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.True(t, cfg.Database.RunMigrationsOnStartup)
+	})
+
+	t.Run("disabled by environment variable", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("DATABASE_RUN_MIGRATIONS_ON_STARTUP", "false")
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.False(t, cfg.Database.RunMigrationsOnStartup)
+	})
+
+	t.Run("disabled by config file", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		configFile := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(configFile, []byte("database:\n  run_migrations_on_startup: false\n"), 0o600))
+		t.Setenv("CONFIG_FILE", configFile)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.False(t, cfg.Database.RunMigrationsOnStartup)
+	})
+}
+
 func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("REDIS_USERNAME", "app-user")

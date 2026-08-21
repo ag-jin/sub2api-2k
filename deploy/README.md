@@ -152,6 +152,24 @@ When using Docker Compose with `AUTO_SETUP=true`:
 - `schema_migrations` tracks applied migrations (filename + checksum).
 - Migrations are forward-only; rollback requires a DB backup restore or a manual compensating SQL script.
 
+### Controlled Production Migration Window
+
+For releases that contain database migrations, do not rely on a runtime service
+restart as the migration mechanism. Before any production migration, deploy the
+identical SHA256-recorded release artifact to dev and record successful health,
+frontend-root, and migration-related runtime checks. Obtain separate production
+authorization only after that evidence is recorded. Then stop or drain writers
+and background workers, create the rehearsed recovery point, inject
+`MIGRATION_DATABASE_DSN` from the deployment secret manager, and run the exact
+release binary with `--migrate-only`. This command applies embedded migrations
+and exits without starting HTTP, Redis, or background workers.
+
+After it exits successfully, verify the expected `schema_migrations` rows and
+schema invariants. Start the runtime service with
+`DATABASE_RUN_MIGRATIONS_ON_STARTUP=false`; its database role should have only
+the runtime DML permissions it needs. Do not place a migration DSN in command
+arguments, config files, logs, or deployment manifests.
+
 **Verify `users.allowed_groups` → `user_allowed_groups` backfill**
 
 During the incremental GORM→Ent migration, `users.allowed_groups` (legacy `BIGINT[]`) is being replaced by a normalized join table `user_allowed_groups(user_id, group_id)`.

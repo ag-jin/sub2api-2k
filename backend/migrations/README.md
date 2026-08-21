@@ -116,7 +116,25 @@ touch migrations/018_your_new_change.sql
 - **Checksum Algorithm**: SHA256 of trimmed file content
 - **Tracking Table**: `schema_migrations` (filename, checksum, applied_at)
 - **Runner**: `internal/repository/migrations_runner.go`
-- **Auto-run**: Migrations run automatically on service startup
+- **Default auto-run**: Migrations run automatically on service startup unless
+  `database.run_migrations_on_startup` is set to `false`.
+
+### Dedicated Production Migration Mode
+
+For a production release that separates schema changes from the runtime service,
+run the exact release binary once with `--migrate-only`. This mode does not load
+the application, initialize Redis, listen for HTTP requests, or start workers.
+
+- Inject `MIGRATION_DATABASE_DSN` through the deployment environment or a secret
+  manager. Do not pass a DSN on the command line or add it to a config file.
+- Use a dedicated migration database role, not the runtime service role.
+- Before production, deploy the identical SHA256-recorded artifact to dev and
+  record successful health, frontend-root, and migration-related runtime checks.
+  Production migration requires a separate authorization after that evidence exists.
+- After a successful migration job, set `database.run_migrations_on_startup: false`
+  for the runtime service so it cannot perform DDL during a later restart.
+- Migrations remain forward-only. A committed migration is recovered through the
+  rehearsed database restore or compensating migration process, not a binary rollback.
 
 ## Best Practices
 
