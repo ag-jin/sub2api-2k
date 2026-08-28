@@ -674,6 +674,28 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		intervalCh = intervalTicker.C
 	}
 
+	firstTokenTimeout := s.chatCompletionsFirstTokenTimeout()
+	var firstTokenTimer *time.Timer
+	var firstTokenCh <-chan time.Time
+	if firstTokenTimeout > 0 {
+		firstTokenTimer = time.NewTimer(firstTokenTimeout)
+		firstTokenCh = firstTokenTimer.C
+		defer firstTokenTimer.Stop()
+	}
+	stopFirstTokenTimer := func() {
+		if firstTokenTimer == nil {
+			return
+		}
+		if !firstTokenTimer.Stop() {
+			select {
+			case <-firstTokenTimer.C:
+			default:
+			}
+		}
+		firstTokenTimer = nil
+		firstTokenCh = nil
+	}
+
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
@@ -700,6 +722,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
+			stopFirstTokenTimer()
 		}
 		if countSearch {
 			searchCount += countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen)
@@ -964,7 +987,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	// No keepalive: fast synchronous path
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 && keepaliveInterval <= 0 && firstTokenTimeout <= 0 {
 		var parser openAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -1073,6 +1096,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if processFrame(frame) {
 				return finalizeStream()
 			}
+
+		case <-firstTokenCh:
+			logger.L().Warn("openai chat_completions stream: first token timeout",
+				zap.String("request_id", requestID),
+				zap.String("model", originalModel),
+				zap.Duration("timeout", firstTokenTimeout),
+			)
+			_ = resp.Body.Close()
+			return nil, s.newOpenAIChatFirstTokenTimeoutError(c.Request.Context(), c, account, originalModel, requestID, time.Since(startTime))
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
