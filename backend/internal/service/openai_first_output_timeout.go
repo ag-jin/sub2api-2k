@@ -376,6 +376,17 @@ func (g *openAIFirstOutputHeaderGuard) Fired() bool {
 	}
 }
 
+// fire 在 close 之后人为恢复 fired 标记：守卫因截止触发而取消请求时，
+// 传输错误路径会先 close 释放资源，调用方仍需 Fired() 归因首 token 超时。
+func (g *openAIFirstOutputHeaderGuard) fire() {
+	if g == nil {
+		return
+	}
+	g.once.Do(func() {
+		close(g.fired)
+	})
+}
+
 func (g *openAIFirstOutputHeaderGuard) close() {
 	g.once.Do(func() {
 		g.timer.Stop()

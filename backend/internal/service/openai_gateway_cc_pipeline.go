@@ -244,10 +244,16 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
+		// 守卫触发导致的取消也表现为传输错误；close 会重置守卫，先记录 fired
+		// 状态供调用方归因为首 token 超时而非通用传输故障。
+		fired := firstTokenGuard != nil && firstTokenGuard.Fired()
 		if firstTokenGuard != nil {
 			firstTokenGuard.close()
 		}
-		return nil, nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		if fired {
+			firstTokenGuard.fire()
+		}
+		return resp, firstTokenGuard, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	return resp, firstTokenGuard, nil
 }

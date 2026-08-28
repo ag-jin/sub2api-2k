@@ -102,6 +102,32 @@ func TestRawChatCompletionsFirstTokenTimeoutFailsOver(t *testing.T) {
 	require.Zero(t, recorder.Body.Len())
 }
 
+// 上游在响应头阶段挂起（连 HTTP 头都不回），守卫应在限时内取消请求并归类为
+// 首 token 超时 failover，而不是通用传输错误。
+func TestRawChatCompletionsFirstTokenTimeoutAtHeaderStage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc, account := newFirstTokenTimeoutTestService(t, 1, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+	}))
+	body := firstTokenTimeoutStreamBody()
+	c, _ := firstTokenTimeoutTestContext(body)
+
+	start := time.Now()
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "expected UpstreamFailoverError, got: %v", err)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Less(t, elapsed, 10*time.Second)
+}
+
 func TestRawChatCompletionsFirstTokenTimeoutDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	// timeout=0 → 不启用守卫；上游挂起 1s 后自行断开（EOF），

@@ -183,7 +183,23 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity, firstTokenTimeout)
 	if err != nil {
+		// 请求在首 token 截止前就挂起（连接/响应头阶段被守卫取消）：
+		// 归类为超时 failover，而非传输错误。守卫已在 sendCCUpstreamRequest
+		// 内释放，这里只根据 Fired() 判定归因。
+		if firstTokenGuard != nil && firstTokenGuard.Fired() {
+			return nil, s.newOpenAIChatFirstTokenTimeoutError(ctx, c, account, originalModel, "", time.Since(startTime))
+		}
 		return nil, err
+	}
+	if firstTokenGuard != nil && firstTokenGuard.Fired() {
+		// 响应头在截止之后才到达：同样按超时 failover 处理（与 /v1/responses
+		// 路径的 headerGuard 语义一致）。注意不能 stopHeaderWait——守卫还要
+		// 继续覆盖流读取阶段，只有首个数据块到达才停表。
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		firstTokenGuard.close()
+		return nil, s.newOpenAIChatFirstTokenTimeoutError(ctx, c, account, originalModel, resp.Header.Get("x-request-id"), time.Since(startTime))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if firstTokenGuard != nil {
