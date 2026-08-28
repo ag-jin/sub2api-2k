@@ -243,6 +243,55 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeout(reasoningEffort string) 
 	return time.Duration(seconds) * time.Second
 }
 
+// chatCompletionsFirstTokenTimeout 返回 /v1/chat/completions 流式上游首个数据块的
+// 截止时限；0 表示禁用。独立于 Responses 路径的 OpenAIFirstOutputTimeoutSeconds，
+// 面向 CC 直转/转换链路的上游排队挂起（HTTP 200 后长时间不产出首个 data 帧）。
+func (s *OpenAIGatewayService) chatCompletionsFirstTokenTimeout() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.Gateway.ChatCompletionsFirstTokenTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(s.cfg.Gateway.ChatCompletionsFirstTokenTimeoutSeconds) * time.Second
+}
+
+// newOpenAIChatFirstTokenTimeoutError 构造 CC 流式首 token 超时的 failover 错误。
+// SafeToFailoverAfterWrite：超时期间下游至多收到 SSE 注释 keepalive，没有语义输出，
+// 可在同一客户端流内切换账号重放。
+func (s *OpenAIGatewayService) newOpenAIChatFirstTokenTimeoutError(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	model string,
+	upstreamRequestID string,
+	elapsed time.Duration,
+) *UpstreamFailoverError {
+	timeout := s.chatCompletionsFirstTokenTimeout()
+	logger.LegacyPrintf(
+		"service.openai_gateway",
+		"Chat Completions first token timeout: account=%d model=%s elapsed=%s limit=%s",
+		account.ID, model, elapsed, timeout,
+	)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: http.StatusGatewayTimeout,
+		UpstreamRequestID:  upstreamRequestID,
+		Kind:               "first_token_timeout",
+		Message:            "Upstream produced no first token before the deadline",
+		Detail:             fmt.Sprintf("elapsed_ms=%d timeout_ms=%d", elapsed.Milliseconds(), timeout.Milliseconds()),
+	})
+	if s.rateLimitService != nil {
+		s.rateLimitService.HandleStreamTimeout(ctx, account, model)
+	}
+	return &UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		ResponseBody: []byte(
+			`{"error":{"type":"first_token_timeout","message":"Upstream produced no first token before the deadline"}}`,
+		),
+		SafeToFailoverAfterWrite: true,
+	}
+}
+
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	ctx context.Context,
 	c *gin.Context,
@@ -304,11 +353,38 @@ func newOpenAIFirstOutputHeaderGuard(
 }
 
 func (g *openAIFirstOutputHeaderGuard) stopHeaderWait() bool {
+	if g == nil {
+		return false
+	}
 	if g.timer.Stop() {
 		return false
 	}
 	<-g.fired
 	return true
+}
+
+// Fired 报告守卫截止是否已触发（触发即守卫派生的上游 context 已被取消）。
+func (g *openAIFirstOutputHeaderGuard) Fired() bool {
+	if g == nil {
+		return false
+	}
+	select {
+	case <-g.fired:
+		return true
+	default:
+		return false
+	}
+}
+
+// fire 在 close 之后人为恢复 fired 标记：守卫因截止触发而取消请求时，
+// 传输错误路径会先 close 释放资源，调用方仍需 Fired() 归因首 token 超时。
+func (g *openAIFirstOutputHeaderGuard) fire() {
+	if g == nil {
+		return
+	}
+	g.once.Do(func() {
+		close(g.fired)
+	})
 }
 
 func (g *openAIFirstOutputHeaderGuard) close() {

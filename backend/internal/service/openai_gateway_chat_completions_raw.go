@@ -168,11 +168,35 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA == "" && account.IsGrokOAuth() {
 		customUA = "sub2api-grok/1.0"
 	}
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity)
+	firstTokenTimeout := time.Duration(0)
+	if clientStream {
+		firstTokenTimeout = s.chatCompletionsFirstTokenTimeout()
+	}
+	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity, firstTokenTimeout)
 	if err != nil {
+		// 请求在首 token 截止前就挂起（连接/响应头阶段被守卫取消）：
+		// 归类为超时 failover，而非传输错误。守卫已在 sendCCUpstreamRequest
+		// 内释放，这里只根据 Fired() 判定归因。
+		if firstTokenGuard != nil && firstTokenGuard.Fired() {
+			return nil, s.newOpenAIChatFirstTokenTimeoutError(ctx, c, account, originalModel, "", time.Since(startTime))
+		}
 		return nil, err
 	}
+	if firstTokenGuard != nil && firstTokenGuard.Fired() {
+		// 响应头在截止之后才到达：同样按超时 failover 处理（与 /v1/responses
+		// 路径的 headerGuard 语义一致）。注意不能 stopHeaderWait——守卫还要
+		// 继续覆盖流读取阶段，只有首个数据块到达才停表。
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		firstTokenGuard.close()
+		return nil, s.newOpenAIChatFirstTokenTimeoutError(ctx, c, account, originalModel, resp.Header.Get("x-request-id"), time.Since(startTime))
+	}
 	defer func() { _ = resp.Body.Close() }()
+	if firstTokenGuard != nil {
+		// 守卫的停表/取消随响应体关闭兜底释放；首个数据块到达后由流循环停表。
+		resp.Body = &openAIRequestContextReadCloser{ReadCloser: resp.Body, cleanup: firstTokenGuard.close}
+	}
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
@@ -216,7 +240,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	var result *OpenAIForwardResult
 	var forwardErr error
 	if clientStream {
-		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), firstTokenGuard)
 	} else {
 		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
@@ -256,6 +280,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	serviceTier *string,
 	startTime time.Time,
 	requestBodyLen int,
+	firstTokenGuard *openAIFirstOutputHeaderGuard,
 ) (*OpenAIForwardResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -318,6 +343,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
+					// 首个数据块已到，解除首 token 截止守卫（仅停表，不取消上游）。
+					if firstTokenGuard != nil {
+						firstTokenGuard.stopHeaderWait()
+					}
 				}
 			}
 		}
@@ -332,6 +361,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if !clientDisconnected && clientOutputStarted {
 			c.Writer.Flush()
 		}
+	}
+
+	// 首 token 截止守卫已触发且始终未收到数据块：上游在限时内挂起（排队/静默），
+	// 守卫取消上游请求导致的 context.Canceled 属于上游故障而非客户端断开，
+	// 判为可切换的 failover 错误。
+	if firstTokenGuard != nil && firstTokenGuard.Fired() && firstTokenMs == nil {
+		return nil, s.newOpenAIChatFirstTokenTimeoutError(c.Request.Context(), c, account, originalModel, requestID, time.Since(startTime))
 	}
 
 	if err := scanner.Err(); err != nil {

@@ -167,6 +167,10 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(account *Account) (apiKey
 // 统一由 handleOpenAIUpstreamTransportError 归一为 failover。
 //
 // userAgent 为空时保留默认 UA；Grok 的默认 UA 兜底由调用方解析后传入。
+//
+// firstTokenTimeout > 0 时启用首 token 截止守卫：在分离的上游 context 上叠加
+// 截止取消，覆盖响应头等待与首 token 等待两个阶段；守卫随响应返回给调用方，
+// 由调用方在首个数据块到达后停表、在响应体关闭时释放。
 func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	ctx context.Context,
 	c *gin.Context,
@@ -177,12 +181,24 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	bearerToken string,
 	userAgent string,
 	grokCacheIdentity string,
-) (*http.Response, error) {
+	firstTokenTimeout time.Duration,
+) (*http.Response, *openAIFirstOutputHeaderGuard, error) {
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	var firstTokenGuard *openAIFirstOutputHeaderGuard
+	if firstTokenTimeout > 0 {
+		upstreamCtx, firstTokenGuard = newOpenAIFirstOutputHeaderGuard(
+			upstreamCtx, releaseUpstreamCtx, time.Now().Add(firstTokenTimeout),
+		)
+	}
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
-	releaseUpstreamCtx()
+	if firstTokenGuard == nil {
+		releaseUpstreamCtx()
+	}
 	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
+		if firstTokenGuard != nil {
+			firstTokenGuard.close()
+		}
+		return nil, nil, fmt.Errorf("build upstream request: %w", err)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -222,9 +238,18 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		// 守卫触发导致的取消也表现为传输错误；close 会重置守卫，先记录 fired
+		// 状态供调用方归因为首 token 超时而非通用传输故障。
+		fired := firstTokenGuard != nil && firstTokenGuard.Fired()
+		if firstTokenGuard != nil {
+			firstTokenGuard.close()
+		}
+		if fired {
+			firstTokenGuard.fire()
+		}
+		return resp, firstTokenGuard, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
-	return resp, nil
+	return resp, firstTokenGuard, nil
 }
 
 // ccStreamScanState 是 scanCCStream 返回的读取状态快照。
