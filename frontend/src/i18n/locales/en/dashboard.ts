@@ -120,6 +120,10 @@ export default {
     groupChangedSuccess: 'Group changed successfully',
     failedToChangeGroup: 'Failed to change group',
     groupRequired: 'Please select a group',
+    planLabel: 'Pricing Plan',
+    selectPlan: 'Select a pricing plan',
+    searchPlan: 'Search plans...',
+    planRequired: 'Please select a pricing plan',
     usage: 'Usage',
     today: 'Today',
     total: 'Last 30d',
@@ -565,47 +569,45 @@ export default {
     }
   },
 
-  // Model Plaza (public group/model pricing showcase)
+  // Model Plaza (public plan/model/protocol pricing catalog)
   modelPlaza: {
     title: 'Model Plaza',
-    description: 'Browse available models and pricing by group',
+    description: 'Browse available models and pricing by plan',
     loading: 'Loading...',
-    empty: 'No groups to display',
+    empty: 'No plans to display',
     loadFailed: 'Failed to load model plaza',
     noSearchResult: 'No matching models',
-    anonymousHint: 'Sign in to see your exclusive groups and personal rates',
+    anonymousHint: 'Sign in to see your exclusive plans',
     filters: {
-      platformLabel: 'Platform',
-      groupLabel: 'Group',
-      rateLabel: 'Rate',
+      planLabel: 'Plan',
+      protocolLabel: 'Protocol',
       modelLabel: 'Model',
       searchPlaceholder: 'Search models',
       all: 'All'
     },
-    badges: {
-      exclusive: 'Exclusive',
-      subscription: 'Subscription'
-    },
     detail: {
-      noModels: 'No models configured for this group',
-      noPricing: 'Pricing not configured',
-      peakNote: 'Peak hours {window}: billing rate ×{multiplier}'
+      noModels: 'No models configured for this plan'
     },
     table: {
       model: 'Model',
+      protocol: 'Protocol',
+      billing: 'Billing',
+      price: 'Price',
       input: 'Input',
       output: 'Output',
       cache: 'Cache',
       cacheWrite: 'Write',
       cacheRead: 'Read',
-      paidPrice: 'Your Price (Discounted)',
-      officialPrice: 'Official Price',
-      rate: 'Rate',
+      direct: 'Direct',
+      relay: 'Relay',
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',
+      perUnitVideo: '/ video',
       perRequest: 'Per request',
-      perImage: 'Per image'
+      perImage: 'Per image',
+      perVideo: 'Per video',
+      billingToken: 'Per token'
     },
     nav: {
       login: 'Sign In',

@@ -120,6 +120,10 @@ export default {
     groupChangedSuccess: '分组更换成功',
     failedToChangeGroup: '更换分组失败',
     groupRequired: '请选择分组',
+    planLabel: '定价套餐',
+    selectPlan: '选择定价套餐',
+    searchPlan: '搜索套餐...',
+    planRequired: '请选择定价套餐',
     usage: '用量',
     today: '今日',
     total: '近30天',
@@ -573,44 +577,42 @@ export default {
   // Model Plaza (public group/model pricing showcase)
   modelPlaza: {
     title: '模型广场',
-    description: '按分组浏览可用模型与价格',
+    description: '按套餐浏览可用模型与价格',
     loading: '加载中...',
-    empty: '暂无可展示的分组',
+    empty: '暂无可展示的套餐',
     loadFailed: '加载模型广场失败',
     noSearchResult: '没有匹配的模型',
-    anonymousHint: '登录后可查看你的专属分组与专属倍率',
+    anonymousHint: '登录后可查看你的专属套餐',
     filters: {
-      platformLabel: '平台',
-      groupLabel: '分组',
-      rateLabel: '倍率',
+      planLabel: '套餐',
+      protocolLabel: '协议',
       modelLabel: '模型',
       searchPlaceholder: '搜索模型名称',
       all: '全部'
     },
-    badges: {
-      exclusive: '专属分组',
-      subscription: '订阅'
-    },
     detail: {
-      noModels: '该分组暂未配置模型',
-      noPricing: '未配置定价',
-      peakNote: '高峰时段 {window} 计费倍率 ×{multiplier}'
+      noModels: '该套餐暂未配置模型'
     },
     table: {
       model: '模型',
+      protocol: '协议',
+      billing: '计费',
+      price: '价格',
       input: '输入',
       output: '输出',
       cache: '缓存',
       cacheWrite: '写入',
       cacheRead: '读取',
-      paidPrice: '实付价格(折后)',
-      officialPrice: '官方价格',
-      rate: '折扣倍率',
+      direct: '直连',
+      relay: '中转',
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',
+      perUnitVideo: '/ 条',
       perRequest: '按次计费',
-      perImage: '按图片计费'
+      perImage: '按图片计费',
+      perVideo: '按视频计费',
+      billingToken: '按 Token 计费'
     },
     nav: {
       login: '登录',

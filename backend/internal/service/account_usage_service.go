@@ -363,6 +363,7 @@ type AccountUsageService struct {
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
 	opencodeFetcher         *OpenCodeUsageFetcher
+	runtimeBlocker          AccountRuntimeBlocker
 	upstreamBalanceFetcher  *UpstreamBalanceFetcher
 	cache                   *UsageCache
 	identityCache           IdentityCache
@@ -406,6 +407,10 @@ func NewAccountUsageService(
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
 	}
+}
+
+func (s *AccountUsageService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
+	s.runtimeBlocker = blocker
 }
 
 func supportsAnthropicPassiveUsage(account *Account) bool {
@@ -1407,6 +1412,7 @@ func (s *AccountUsageService) getOpenCodeUsage(ctx context.Context, account *Acc
 			return degraded, nil
 		}
 		usage := openCodeUsageFromSnapshot(snapshot, now)
+		persistOpenCodeRateLimit(ctx, s.accountRepo, s.runtimeBlocker, account, snapshot)
 		s.cache.opencodeCache.Store(account.ID, &opencodeUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil
 	})

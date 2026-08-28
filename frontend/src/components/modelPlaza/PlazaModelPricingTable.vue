@@ -1,208 +1,151 @@
 <template>
-  <div class="plaza-pricing-table overflow-x-auto" :style="accentStyle">
-    <table class="w-full min-w-[860px] table-fixed border-collapse text-sm tabular-nums">
+  <div class="plaza-catalog-table overflow-x-auto">
+    <table class="w-full min-w-[760px] table-fixed border-collapse text-sm tabular-nums">
       <colgroup>
-        <col class="w-[22%]" />
-        <col class="w-[10%]" />
-        <col class="w-[10%]" />
-        <col class="w-[14%]" />
-        <col class="w-[10%]" />
-        <col class="w-[10%]" />
-        <col class="w-[14%]" />
-        <col class="w-[10%]" />
+        <col class="w-[24%]" />
+        <col class="w-[12%]" />
+        <col class="w-[12%]" />
+        <col class="w-[24%]" />
+        <col class="w-[16%]" />
+        <col class="w-[12%]" />
       </colgroup>
       <thead>
-        <tr
-          class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-dark-400"
-        >
-          <th
-            rowspan="2"
-            class="border-r border-gray-100 py-2.5 pl-5 pr-4 text-left align-middle dark:border-dark-700/60"
-          >
-            {{ t('modelPlaza.table.model') }}
+        <tr class="border-b border-gray-200 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:border-dark-700 dark:text-dark-400">
+          <th class="py-2.5 pl-5 pr-4 text-left font-semibold">{{ t('modelPlaza.table.model') }}</th>
+          <th class="px-3 py-2.5 text-left font-semibold">{{ t('modelPlaza.table.protocol') }}</th>
+          <th class="px-3 py-2.5 text-left font-semibold">{{ t('modelPlaza.table.billing') }}</th>
+          <th class="px-3 py-2.5 text-left font-semibold">
+            {{ t('modelPlaza.table.price') }}
+            <span class="ml-1 normal-case font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.unitPerMillion') }}</span>
           </th>
-          <th colspan="3" class="pz-bg pt-2 text-center">
-            <div class="pz-title border-b pb-2 font-semibold">
-              {{ t('modelPlaza.table.paidPrice') }}
-              <span class="pz-unit ml-1 normal-case font-normal">{{ t('modelPlaza.table.unitPerMillion') }}</span>
-            </div>
-          </th>
-          <th
-            colspan="3"
-            class="border-l border-gray-100 pt-2 text-center dark:border-dark-700/60"
-          >
-            <div class="border-b border-gray-200 pb-2 text-gray-400 dark:border-dark-600 dark:text-dark-500">
-              {{ t('modelPlaza.table.officialPrice') }}
-              <span class="ml-1 normal-case font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.unitPerMillion') }}</span>
-            </div>
-          </th>
-          <th
-            rowspan="2"
-            class="border-l border-gray-100 py-2.5 pl-3 pr-5 text-right align-middle dark:border-dark-700/60"
-          >
-            {{ t('modelPlaza.table.rate') }}
-          </th>
-        </tr>
-        <tr
-          class="border-b border-gray-200 text-left text-[11px] font-medium uppercase leading-4 tracking-wide text-gray-400 dark:border-dark-700 dark:text-dark-500"
-        >
-          <th class="pz-bg px-3 py-2 font-medium">{{ t('modelPlaza.table.input') }}</th>
-          <th class="pz-bg px-3 py-2 font-medium">{{ t('modelPlaza.table.output') }}</th>
-          <th class="pz-bg px-3 py-2 font-medium">{{ t('modelPlaza.table.cache') }}</th>
-          <th class="border-l border-gray-100 px-3 py-2 font-medium dark:border-dark-700/60">
-            {{ t('modelPlaza.table.input') }}
-          </th>
-          <th class="px-3 py-2 font-medium">{{ t('modelPlaza.table.output') }}</th>
-          <th class="px-3 py-2 font-medium">{{ t('modelPlaza.table.cache') }}</th>
+          <th class="px-3 py-2.5 text-left font-semibold">{{ t('modelPlaza.table.cache') }}</th>
+          <th class="py-2.5 pl-3 pr-5 text-center font-semibold">{{ t('modelPlaza.table.direct') }}</th>
         </tr>
       </thead>
       <tbody>
-        <tr
-          v-for="m in sortedModels"
-          :key="`${m.platform}:${m.name}`"
-          class="border-b border-gray-100 transition-colors last:border-b-0 hover:bg-gray-50/70 dark:border-dark-800 dark:hover:bg-dark-800/50"
-        >
-          <!-- 模型名 + 非 token 计费模式徽章 -->
-          <td class="border-r border-gray-100 py-2.5 pl-5 pr-4 align-middle dark:border-dark-700/60">
-            <div class="flex flex-wrap items-center gap-1.5">
-              <span class="font-medium text-gray-900 dark:text-white">{{ m.name }}</span>
-              <span
-                v-if="platform && m.platform !== platform"
-                :class="[
-                  'inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium',
-                  platformBadgeLightClass(m.platform)
-                ]"
-              >
-                {{ platformLabel(m.platform) }}
-              </span>
-              <span
-                v-if="billingMode(m) !== BILLING_MODE_TOKEN"
-                class="rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-dark-700/70 dark:text-dark-300"
-              >
-                {{ billingModeLabel(m) }}
-              </span>
-            </div>
-          </td>
+        <template v-for="m in displayModels" :key="m.id">
+          <tr
+            v-for="(p, idx) in m.protocols"
+            :key="`${m.id}:${p.protocol}`"
+            class="border-b border-gray-100 transition-colors last:border-b-0 hover:bg-gray-50/70 dark:border-dark-800 dark:hover:bg-dark-800/50"
+          >
+            <!-- 模型:展示名 + 模型标识,协议的协议行合并单元格 -->
+            <td
+              v-if="idx === 0"
+              :rowspan="m.protocols.length"
+              class="border-r border-gray-100 py-2.5 pl-5 pr-4 align-middle dark:border-dark-700/60"
+            >
+              <div class="font-medium text-gray-900 dark:text-white">{{ m.display_name }}</div>
+              <div class="mt-0.5 font-mono text-xs text-gray-400 dark:text-dark-500">{{ m.id }}</div>
+            </td>
 
-          <!-- token 计费:输入 / 输出(阶梯内联)/ 缓存(写/读) -->
-          <template v-if="billingMode(m) === BILLING_MODE_TOKEN">
-            <td class="pz-cell px-3 py-2.5 align-middle font-mono font-semibold text-gray-900 dark:text-gray-50">
-              <template v-if="tokenIntervals(m).length">
-                <div
-                  v-for="(iv, idx) in tokenIntervals(m)"
-                  :key="idx"
-                  class="whitespace-nowrap text-xs leading-5"
-                >
-                  <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
-                  {{ paidPerMillion(iv.input_price) }}
+            <!-- 协议 -->
+            <td class="px-3 py-2.5 align-middle">
+              <span
+                class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium"
+                :class="platformBadgeLightClass(p.protocol)"
+              >
+                {{ p.protocol }}
+              </span>
+            </td>
+
+            <!-- 计费模式 -->
+            <td class="px-3 py-2.5 align-middle">
+              <span class="rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-dark-700/70 dark:text-dark-300">
+                {{ billingModeLabel(p) }}
+              </span>
+            </td>
+
+            <!-- 价格:token 输入/输出(阶梯内联);按次/按图/按视频为单单位价 -->
+            <td class="px-3 py-2.5 align-middle">
+              <template v-if="p.billing_mode === BILLING_MODE_TOKEN">
+                <div class="space-y-0.5 font-mono text-xs text-gray-800 dark:text-gray-200">
+                  <div v-if="tokenIntervals(p).length">
+                    <template v-for="iv in tokenIntervals(p)" :key="iv.min_tokens">
+                      <div class="whitespace-nowrap leading-5">
+                        <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.input') }} {{ tierLabel(iv) }}</span>
+                        {{ perMillion(iv.input_price) }}
+                      </div>
+                    </template>
+                  </div>
+                  <div v-else class="whitespace-nowrap leading-5">
+                    <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.input') }}</span>
+                    {{ perMillion(p.pricing?.input_price) }}
+                  </div>
+                  <div v-if="tokenIntervals(p).length">
+                    <template v-for="iv in tokenIntervals(p)" :key="iv.min_tokens">
+                      <div class="whitespace-nowrap leading-5">
+                        <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.output') }} {{ tierLabel(iv) }}</span>
+                        {{ perMillion(iv.output_price) }}
+                      </div>
+                    </template>
+                  </div>
+                  <div v-else class="whitespace-nowrap leading-5">
+                    <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.output') }}</span>
+                    {{ perMillion(p.pricing?.output_price) }}
+                  </div>
                 </div>
               </template>
-              <template v-else>{{ paidPerMillion(m.pricing?.input_price) }}</template>
-            </td>
-            <td class="pz-cell px-3 py-2.5 align-middle font-mono font-semibold text-gray-900 dark:text-gray-50">
-              <template v-if="tokenIntervals(m).length">
+              <!-- 非 token 计费:阶梯芯片或单一按单位价 -->
+              <template v-else>
                 <div
-                  v-for="(iv, idx) in tokenIntervals(m)"
-                  :key="idx"
-                  class="whitespace-nowrap text-xs leading-5"
+                  v-if="requestIntervals(p).length"
+                  class="flex flex-wrap items-center gap-1.5"
                 >
-                  <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
-                  {{ paidPerMillion(iv.output_price) }}
+                  <span
+                    v-for="(iv, i) in requestIntervals(p)"
+                    :key="i"
+                    class="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-800 dark:bg-dark-700/60 dark:text-gray-200"
+                  >
+                    <span class="font-sans text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
+                    {{ requestPrice(iv.per_request_price)
+                    }}<span class="font-sans text-gray-400 dark:text-dark-500">{{ perUnitSuffix(p) }}</span>
+                  </span>
                 </div>
+                <template v-else-if="p.pricing?.per_request_price != null">
+                  <span class="font-mono text-xs font-semibold text-gray-900 dark:text-gray-50">
+                    {{ requestPrice(p.pricing?.per_request_price) }}
+                  </span>
+                  <span class="ml-1 text-xs text-gray-400 dark:text-dark-500">{{ perUnitSuffix(p) }}</span>
+                </template>
+                <span v-else class="text-gray-400 dark:text-dark-500">-</span>
               </template>
-              <template v-else>{{ paidPerMillion(m.pricing?.output_price) }}</template>
             </td>
-            <td class="pz-cell px-3 py-2.5 align-middle">
+
+            <!-- 缓存(仅 token;写/读) -->
+            <td class="px-3 py-2.5 align-middle">
               <div
-                v-if="hasCachePricing(m)"
+                v-if="p.billing_mode === BILLING_MODE_TOKEN && hasCachePricing(p)"
                 class="space-y-0.5 font-mono text-xs text-gray-800 dark:text-gray-200"
               >
                 <div>
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheWrite') }}</span>
-                  {{ paidPerMillion(m.pricing?.cache_write_price) }}
+                  {{ perMillion(p.pricing?.cache_write_price) }}
                 </div>
                 <div>
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheRead') }}</span>
-                  {{ paidPerMillion(m.pricing?.cache_read_price) }}
+                  {{ perMillion(p.pricing?.cache_read_price) }}
                 </div>
               </div>
               <span v-else class="text-gray-400 dark:text-dark-500">-</span>
             </td>
-          </template>
 
-          <!-- 按次 / 按图片计费:实付区整体合并,阶梯芯片或单一按次价 -->
-          <template v-else>
-            <td colspan="3" class="pz-cell px-3 py-2.5 align-middle">
-              <div
-                v-if="requestIntervals(m).length"
-                class="flex flex-wrap items-center gap-1.5"
+            <!-- 直连 / 中转 -->
+            <td class="py-2.5 pl-3 pr-5 text-center align-middle">
+              <span
+                v-if="p.direct"
+                class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 dark:text-teal-400"
               >
-                <span
-                  v-for="(iv, idx) in requestIntervals(m)"
-                  :key="idx"
-                  class="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-800 dark:bg-dark-700/60 dark:text-gray-200"
-                >
-                  <span class="font-sans text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
-                  {{ paidRequestPrice(m, iv.per_request_price)
-                  }}<span class="font-sans text-gray-400 dark:text-dark-500">{{ perUnitSuffix(m) }}</span>
-                </span>
-              </div>
-              <template v-else-if="m.pricing?.per_request_price != null">
-                <span class="font-mono font-semibold text-gray-900 dark:text-gray-50">
-                  {{ paidRequestPrice(m, m.pricing.per_request_price) }}
-                </span>
-                <span class="ml-1 text-xs text-gray-400 dark:text-dark-500">{{ perUnitSuffix(m) }}</span>
-              </template>
-              <span v-else class="text-gray-400 dark:text-dark-500">-</span>
+                <Icon name="checkCircle" size="xs" class="h-3.5 w-3.5" />
+                {{ t('modelPlaza.table.direct') }}
+              </span>
+              <span v-else class="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-dark-500">
+                <Icon name="x" size="xs" class="h-3.5 w-3.5" />
+                {{ t('modelPlaza.table.relay') }}
+              </span>
             </td>
-          </template>
-
-          <!-- 官方价格(LiteLLM 参考价,不乘倍率) -->
-          <td
-            class="border-l border-gray-100 px-3 py-2.5 align-middle font-mono text-xs text-gray-500 dark:border-dark-700/60 dark:text-dark-400"
-          >
-            {{ official(m.official_pricing?.input_price) }}
-          </td>
-          <td class="px-3 py-2.5 align-middle font-mono text-xs text-gray-500 dark:text-dark-400">
-            {{ official(m.official_pricing?.output_price) }}
-          </td>
-          <td class="px-3 py-2.5 align-middle">
-            <div
-              v-if="m.official_pricing && hasOfficialCache(m.official_pricing)"
-              class="space-y-0.5 font-mono text-xs text-gray-500 dark:text-dark-400"
-            >
-              <div>
-                <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheWrite') }}</span>
-                {{ official(m.official_pricing.cache_write_price)
-                }}<template v-if="m.official_pricing.cache_write_1h_price != null"
-                  ><span class="font-sans text-gray-400 dark:text-dark-500"> (1h </span>{{ official(m.official_pricing.cache_write_1h_price)
-                  }}<span class="font-sans text-gray-400 dark:text-dark-500">)</span></template
-                >
-              </div>
-              <div>
-                <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheRead') }}</span>
-                {{ official(m.official_pricing.cache_read_price) }}
-              </div>
-            </div>
-            <span v-else class="text-gray-400 dark:text-dark-500">-</span>
-          </td>
-
-          <!-- 折扣倍率(生图独立倍率行展示独立倍率;专属倍率划线展示原倍率) -->
-          <td
-            class="border-l border-gray-100 py-2.5 pl-3 pr-5 text-right align-middle font-mono text-xs dark:border-dark-700/60"
-          >
-            <span
-              v-if="usesIndependentImageRate(m)"
-              class="font-bold text-gray-700 dark:text-gray-300"
-              >{{ requestRate(m) }}x</span
-            >
-            <template v-else-if="hasCustomRate">
-              <span class="mr-1 text-gray-400 line-through dark:text-dark-500">{{ rateMultiplier }}x</span>
-              <span class="font-bold text-primary-600 dark:text-primary-400">{{ effectiveRate }}x</span>
-            </template>
-            <span v-else class="font-bold text-gray-700 dark:text-gray-300">{{ effectiveRate }}x</span>
-          </td>
-        </tr>
+          </tr>
+        </template>
       </tbody>
     </table>
   </div>
@@ -212,128 +155,117 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { formatScaled } from '@/utils/pricing'
-import { platformAccentColor, platformBadgeLightClass, platformLabel } from '@/utils/platformColors'
+import { platformBadgeLightClass } from '@/utils/platformColors'
 import {
   BILLING_MODE_TOKEN,
   BILLING_MODE_IMAGE,
+  BILLING_MODE_PER_REQUEST,
+  BILLING_MODE_VIDEO,
   type BillingMode
 } from '@/constants/channel'
-import type { PlazaModel } from '@/api/modelPlaza'
-import type { UserPricingInterval } from '@/api/channels'
+import Icon from '@/components/icons/Icon.vue'
+import type { CatalogModel, CatalogPricingInterval, CatalogProtocol } from '@/api/modelPlaza'
 
 const props = defineProps<{
-  models: PlazaModel[]
-  /** 分组平台;实付分区底色随平台着色,未知平台回退品牌青。 */
-  platform?: string
-  /** 分组默认倍率。 */
-  rateMultiplier: number
-  /** 用户专属倍率;与默认不同,实付价按此计算并划线展示原倍率。 */
-  userRateMultiplier?: number | null
-  /** 生图独立倍率:true 时图片计费模型的实付倍率取 imageRateMultiplier,不取分组/专属倍率。 */
-  imageRateIndependent?: boolean
-  imageRateMultiplier?: number | null
+  /** 某个套餐下的模型清单（已过滤出非空协议行）。 */
+  models: CatalogModel[]
 }>()
 
 const { t } = useI18n()
 
-/** 实付分区只从平台拿一个主色,浅底/标题/下划线全部由 scoped CSS 用 color-mix 派生。 */
-const accentStyle = computed(() => ({ '--plaza-accent': platformAccentColor(props.platform ?? '') }))
-
-const PER_MILLION = 1_000_000
-
 /**
  * 展示顺序:
- * 1. token 计费的排在前,按图/按次计费的沉到末尾——它们的官方 token 价与实付的按张/按次价不同量纲,混排无意义;
- * 2. 组内按官方输出价从高到低,无官方价的排最后;
- * 3. 同价按名称降序(新版本号在前,如 gpt-5.6 先于 gpt-5.5)。
+ * 1. token 计费的协议行排在前,按图/按次/按视频沉到末尾——单位量纲不同,混排无意义;
+ * 2. 同计费组内按输出价从高到低,无输出价的排最后;
+ * 3. 同价按展示名降序(新版本号在前,如 gpt-5.6 先于 gpt-5.5)。
  */
-const sortedModels = computed(() => {
-  return [...props.models].sort((a, b) => {
-    const ta = billingMode(a) === BILLING_MODE_TOKEN
-    const tb = billingMode(b) === BILLING_MODE_TOKEN
-    if (ta !== tb) return ta ? -1 : 1
-    const pa = a.official_pricing?.output_price ?? null
-    const pb = b.official_pricing?.output_price ?? null
-    if (pa != null && pb != null && pa !== pb) return pb - pa
-    if (pa != null && pb == null) return -1
-    if (pa == null && pb != null) return 1
-    return b.name.localeCompare(a.name)
-  })
-})
-
-const effectiveRate = computed(() => props.userRateMultiplier ?? props.rateMultiplier)
-const hasCustomRate = computed(
-  () => props.userRateMultiplier != null && props.userRateMultiplier !== props.rateMultiplier
+const displayModels = computed(() =>
+  [...props.models]
+    .filter((m) => m.protocols.length > 0)
+    .sort((a, b) => {
+      const ta = a.protocols.some((p) => p.billing_mode === BILLING_MODE_TOKEN)
+      const tb = b.protocols.some((p) => p.billing_mode === BILLING_MODE_TOKEN)
+      if (ta !== tb) return ta ? -1 : 1
+      const pa = maxOutputPrice(a)
+      const pb = maxOutputPrice(b)
+      if (pa != null && pb != null && pa !== pb) return pb - pa
+      if (pa != null && pb == null) return -1
+      if (pa == null && pb != null) return 1
+      return b.display_name.localeCompare(a.display_name)
+    })
+    .map((m) => ({
+      ...m,
+      protocols: [...m.protocols].sort((x, y) =>
+        billingRank(x.billing_mode) - billingRank(y.billing_mode) ||
+        (x.protocol.localeCompare(y.protocol))
+      )
+    }))
 )
 
-function billingMode(m: PlazaModel): BillingMode {
-  return (m.pricing?.billing_mode || BILLING_MODE_TOKEN) as BillingMode
+/** 模型下所有协议行的输出价中最高者(无价返回 null),与旧版按官方输出价排序口径一致。 */
+function maxOutputPrice(m: CatalogModel): number | null {
+  let max: number | null = null
+  for (const p of m.protocols) {
+    const v = p.pricing?.output_price
+    if (v != null && (max == null || v > max)) max = v
+  }
+  return max
 }
 
-function billingModeLabel(m: PlazaModel): string {
-  return billingMode(m) === BILLING_MODE_IMAGE
-    ? t('modelPlaza.table.perImage')
-    : t('modelPlaza.table.perRequest')
+/** token 组排最前,其余按常量定义的顺序(图片 < 按次 < 视频)。 */
+function billingRank(mode: BillingMode): number {
+  if (mode === BILLING_MODE_TOKEN) return 0
+  if (mode === BILLING_MODE_IMAGE) return 1
+  if (mode === BILLING_MODE_PER_REQUEST) return 2
+  return 3
+}
+
+function billingModeLabel(p: CatalogProtocol): string {
+  if (p.billing_mode === BILLING_MODE_IMAGE) return t('modelPlaza.table.perImage')
+  if (p.billing_mode === BILLING_MODE_PER_REQUEST) return t('modelPlaza.table.perRequest')
+  if (p.billing_mode === BILLING_MODE_VIDEO) return t('modelPlaza.table.perVideo')
+  return t('modelPlaza.table.billingToken')
 }
 
 /** 价格统一保底 2 位小数,更长的有效小数原样保留。 */
 const MIN_DECIMALS = 2
+const PER_MILLION = 1_000_000
 
-/** 实付价 = 渠道单价 × 生效倍率,按 $/1M token 展示。 */
-function paidPerMillion(value: number | null | undefined): string {
-  if (value == null) return '-'
-  return formatScaled(value * effectiveRate.value, PER_MILLION, MIN_DECIMALS)
-}
-
-/** 图片计费模型且分组开启生图独立倍率:实付倍率取独立倍率,与计费口径一致。 */
-function usesIndependentImageRate(m: PlazaModel): boolean {
-  return billingMode(m) === BILLING_MODE_IMAGE && props.imageRateIndependent === true
-}
-
-/** 按次/按图片行的生效倍率。 */
-function requestRate(m: PlazaModel): number {
-  return usesIndependentImageRate(m) ? (props.imageRateMultiplier ?? 1) : effectiveRate.value
-}
-
-/** 按次 / 按图片单价(乘该行生效倍率,不换算 1M)。 */
-function paidRequestPrice(m: PlazaModel, value: number | null | undefined): string {
-  if (value == null) return '-'
-  return formatScaled(value * requestRate(m), 1, MIN_DECIMALS)
-}
-
-/** 官方参考价不乘倍率。 */
-function official(value: number | null | undefined): string {
+/** 目录价格即展示价(无内部倍率折算),token 计费按 $/1M token 展示。 */
+function perMillion(value: number | null | undefined): string {
   if (value == null) return '-'
   return formatScaled(value, PER_MILLION, MIN_DECIMALS)
 }
 
-/** 非 token 计费的单位后缀:按图片 → “/ 张”,按次 → “/ 次”。 */
-function perUnitSuffix(m: PlazaModel): string {
-  return billingMode(m) === BILLING_MODE_IMAGE
-    ? t('modelPlaza.table.perUnitImage')
-    : t('modelPlaza.table.perUnitRequest')
+/** 按次 / 按图片 / 按视频单价(不换算 1M)。 */
+function requestPrice(value: number | null | undefined): string {
+  if (value == null) return '-'
+  return formatScaled(value, 1, MIN_DECIMALS)
 }
 
-function hasCachePricing(m: PlazaModel): boolean {
-  return m.pricing?.cache_write_price != null || m.pricing?.cache_read_price != null
+/** 非 token 计费的单位后缀:按图片 → “/ 张”,按次 → “/ 次”,按视频 → “/ 条”。 */
+function perUnitSuffix(p: CatalogProtocol): string {
+  if (p.billing_mode === BILLING_MODE_IMAGE) return t('modelPlaza.table.perUnitImage')
+  if (p.billing_mode === BILLING_MODE_VIDEO) return t('modelPlaza.table.perUnitVideo')
+  return t('modelPlaza.table.perUnitRequest')
 }
 
-function hasOfficialCache(o: NonNullable<PlazaModel['official_pricing']>): boolean {
-  return o.cache_write_price != null || o.cache_read_price != null || o.cache_write_1h_price != null
+function hasCachePricing(p: CatalogProtocol): boolean {
+  return p.pricing?.cache_write_price != null || p.pricing?.cache_read_price != null
 }
 
 /** token 模式的阶梯定价(内联进输入/输出列)。 */
-function tokenIntervals(m: PlazaModel): UserPricingInterval[] {
-  return m.pricing?.intervals ?? []
+function tokenIntervals(p: CatalogProtocol): CatalogPricingInterval[] {
+  return p.pricing?.intervals ?? []
 }
 
-/** 按次/按图模式的阶梯定价(仅保留配了按次价的档位)。 */
-function requestIntervals(m: PlazaModel): UserPricingInterval[] {
-  return (m.pricing?.intervals ?? []).filter((iv) => iv.per_request_price != null)
+/** 按次/按图模式的阶梯定价(仅保留配了按单位价的档位)。 */
+function requestIntervals(p: CatalogProtocol): CatalogPricingInterval[] {
+  return (p.pricing?.intervals ?? []).filter((iv) => iv.per_request_price != null)
 }
 
 /** 档位标签:优先管理员配置的 tier_label,否则按 token 区间生成(≤200K / >200K / 200K–1M)。 */
-function tierLabel(iv: UserPricingInterval): string {
+function tierLabel(iv: CatalogPricingInterval): string {
   if (iv.tier_label) return iv.tier_label
   const { min_tokens: min, max_tokens: max } = iv
   if (max == null) return `>${formatTokenCount(min)}`
@@ -351,42 +283,3 @@ function trimZero(n: number): string {
   return String(Math.round(n * 100) / 100)
 }
 </script>
-
-<style scoped>
-/* 实付分区配色统一从 --plaza-accent(平台主色)派生,新增平台无需扩展样式 */
-.plaza-pricing-table {
-  --pz-title: color-mix(in srgb, var(--plaza-accent) 88%, black);
-  --pz-bg: color-mix(in srgb, var(--plaza-accent) 7%, transparent);
-  --pz-bg-hover: color-mix(in srgb, var(--plaza-accent) 13%, transparent);
-}
-
-.dark .plaza-pricing-table {
-  --pz-title: color-mix(in srgb, var(--plaza-accent) 70%, white);
-  --pz-bg: color-mix(in srgb, var(--plaza-accent) 6%, transparent);
-  --pz-bg-hover: color-mix(in srgb, var(--plaza-accent) 10%, transparent);
-}
-
-.pz-bg,
-.pz-cell {
-  background-color: var(--pz-bg);
-}
-
-.pz-cell {
-  transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-tbody tr:hover .pz-cell {
-  background-color: var(--pz-bg-hover);
-}
-
-.pz-title {
-  /* color-mix 不可用的老浏览器回退为平台原色 */
-  color: var(--plaza-accent);
-  color: var(--pz-title);
-  border-color: color-mix(in srgb, var(--pz-title) 30%, transparent);
-}
-
-.pz-unit {
-  color: color-mix(in srgb, var(--pz-title) 62%, transparent);
-}
-</style>

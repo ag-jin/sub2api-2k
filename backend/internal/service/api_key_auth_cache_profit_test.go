@@ -50,10 +50,11 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	svc := &APIKeyService{}
 	apiKey := profitAuthTestAPIKey()
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	require.Equal(t, apiKeyAuthSnapshotVersion, snapshot.Version)
-	require.Equal(t, 20, snapshot.Version, "v20 起认证快照携带分组长上下文与模型定价字段")
+	require.Equal(t, 21, snapshot.Version, "v21 起认证快照携带定价套餐字段（套餐身份 + 模型协议条目 + 路由层）")
 
 	// 模拟 L2 缓存的完整 JSON 往返（与 apiKeyCache.SetAuthCache/GetAuthCache 同构）。
 	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
@@ -82,7 +83,8 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 // 旧版本快照（v16 及更早，无利润字段保真保证）必须被淘汰回源，不得复用。
 func TestAPIKeyAuthSnapshotOldVersionEvicted(t *testing.T) {
 	svc := &APIKeyService{}
-	snapshot := svc.snapshotFromAPIKey(context.Background(), profitAuthTestAPIKey())
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), profitAuthTestAPIKey())
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	snapshot.Version = 16
 

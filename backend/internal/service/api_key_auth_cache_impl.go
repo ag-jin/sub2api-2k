@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 20 // v20: group long-context and model pricing fields (force refresh of pre-fix snapshots)
+const apiKeyAuthSnapshotVersion = 21 // v21: pricing plan snapshot fields (plan identity + model protocol offers + route layers)
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -282,7 +282,10 @@ func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey st
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	apiKey.Key = key
-	snapshot := s.snapshotFromAPIKey(ctx, apiKey)
+	snapshot, err := s.snapshotFromAPIKey(ctx, apiKey)
+	if err != nil {
+		return nil, err
+	}
 	if snapshot == nil {
 		return nil, fmt.Errorf("get api key: %w", ErrAPIKeyNotFound)
 	}
@@ -331,25 +334,48 @@ func (s *APIKeyService) applyAuthCacheEntry(key string, entry *APIKeyAuthCacheEn
 	return s.snapshotToAPIKey(key, entry.Snapshot), true, nil
 }
 
-func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) *APIKeyAuthSnapshot {
+func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) (*APIKeyAuthSnapshot, error) {
 	if apiKey == nil || apiKey.User == nil {
-		return nil
+		return nil, nil
+	}
+	// 套餐 Key：认证时先做套餐可用性门（缺失/停用一律按通用
+	// GROUP_OR_PLAN_UNAVAILABLE 拒绝，不暴露套餐内部数据）。通过后才
+	// 允许进入快照；因此快照里的套餐恒为可用状态。
+	if apiKey.PricingPlanID != nil {
+		if s.pricingPlanRepo == nil {
+			return nil, ErrPricingPlanUnavailable
+		}
+		plan := apiKey.PricingPlan
+		if plan == nil {
+			loaded, err := s.pricingPlanRepo.GetPlanByID(ctx, *apiKey.PricingPlanID)
+			if err != nil {
+				if errors.Is(err, ErrPricingPlanNotFound) {
+					return nil, ErrPricingPlanUnavailable
+				}
+				return nil, err
+			}
+			plan = loaded
+		}
+		if plan == nil || plan.Status != PricingPlanStatusActive {
+			return nil, ErrPricingPlanUnavailable
+		}
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		Version:     apiKeyAuthSnapshotVersion,
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Name:        apiKey.Name,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
-		Quota:       apiKey.Quota,
-		QuotaUsed:   apiKey.QuotaUsed,
-		ExpiresAt:   apiKey.ExpiresAt,
-		RateLimit5h: apiKey.RateLimit5h,
-		RateLimit1d: apiKey.RateLimit1d,
-		RateLimit7d: apiKey.RateLimit7d,
+		Version:       apiKeyAuthSnapshotVersion,
+		APIKeyID:      apiKey.ID,
+		UserID:        apiKey.UserID,
+		GroupID:       apiKey.GroupID,
+		PricingPlanID: apiKey.PricingPlanID,
+		Name:          apiKey.Name,
+		Status:        apiKey.Status,
+		IPWhitelist:   apiKey.IPWhitelist,
+		IPBlacklist:   apiKey.IPBlacklist,
+		Quota:         apiKey.Quota,
+		QuotaUsed:     apiKey.QuotaUsed,
+		ExpiresAt:     apiKey.ExpiresAt,
+		RateLimit5h:   apiKey.RateLimit5h,
+		RateLimit1d:   apiKey.RateLimit1d,
+		RateLimit7d:   apiKey.RateLimit7d,
 		User: APIKeyAuthUserSnapshot{
 			ID:                         apiKey.User.ID,
 			Status:                     apiKey.User.Status,
@@ -432,7 +458,87 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			ProfitSafetyBuffer:              apiKey.Group.ProfitSafetyBuffer,
 		}
 	}
-	return snapshot
+
+	// 套餐快照：模型协议条目与路由层只在缓存未命中（快照构建）时回源读取，
+	// 认证热路径零额外 DB 往返。不可用套餐在上方已被拒绝，不会进入快照。
+	if apiKey.PricingPlanID != nil {
+		planSnapshot, err := s.pricingPlanSnapshotForAPIKey(ctx, apiKey)
+		if err != nil {
+			return nil, err
+		}
+		if planSnapshot == nil {
+			return nil, ErrPricingPlanUnavailable
+		}
+		snapshot.PricingPlan = planSnapshot
+	}
+	return snapshot, nil
+}
+
+// pricingPlanSnapshotForAPIKey 在认证缓存未命中时构建套餐快照：套餐身份 +
+// 启用的模型协议条目 + 按优先级排序的启用路由层。任何一层读取失败都按
+// 套餐不可用处理（通用授权错误），不把内部 group 数据带出。
+func (s *APIKeyService) pricingPlanSnapshotForAPIKey(ctx context.Context, apiKey *APIKey) (*APIKeyAuthPricingPlanSnapshot, error) {
+	if apiKey == nil || apiKey.PricingPlanID == nil || s.pricingPlanRepo == nil {
+		return nil, nil
+	}
+	planID := *apiKey.PricingPlanID
+	models, err := s.pricingPlanRepo.ListModelsByPlan(ctx, planID, false)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := s.pricingPlanRepo.ListRoutesByPlan(ctx, planID, false)
+	if err != nil {
+		return nil, err
+	}
+	status := PricingPlanStatusActive
+	if apiKey.PricingPlan != nil {
+		status = apiKey.PricingPlan.Status
+	}
+	snapshot := &APIKeyAuthPricingPlanSnapshot{
+		PlanID: planID,
+		Status: status,
+	}
+	if len(models) > 0 {
+		snapshot.Models = make([]APIKeyAuthPricingPlanModelSnapshot, 0, len(models))
+		for _, m := range models {
+			snapshot.Models = append(snapshot.Models, pricingPlanModelSnapshot(m))
+		}
+	}
+	if len(routes) > 0 {
+		snapshot.Routes = make([]APIKeyAuthPricingPlanRouteSnapshot, 0, len(routes))
+		for _, route := range routes {
+			snapshot.Routes = append(snapshot.Routes, pricingPlanRouteSnapshot(route))
+		}
+	}
+	return snapshot, nil
+}
+
+// pricingPlanModelSnapshot 适配 service.PricingPlanModel -> 认证快照条目。
+func pricingPlanModelSnapshot(m PricingPlanModel) APIKeyAuthPricingPlanModelSnapshot {
+	var pricing *ChannelModelPricing
+	if m.Pricing != nil {
+		cloned := m.Pricing.Clone()
+		pricing = &cloned
+	}
+	return APIKeyAuthPricingPlanModelSnapshot{
+		PublicModel:                m.PublicModel,
+		Protocol:                   m.Protocol,
+		UpstreamModel:              m.UpstreamModel,
+		Pricing:                    pricing,
+		Direct:                     m.Direct,
+		AllowCompatibilityFallback: m.AllowCompatibilityFallback,
+	}
+}
+
+// pricingPlanRouteSnapshot 适配 service.PricingPlanRoute -> 认证快照路由层。
+// 路由层 = 内部 group（pricing_plan_routes.group_id）；GroupID<=0 的层视为
+// 空层，调度器跳过，不会产生叉向选择。
+func pricingPlanRouteSnapshot(route PricingPlanRoute) APIKeyAuthPricingPlanRouteSnapshot {
+	return APIKeyAuthPricingPlanRouteSnapshot{
+		GroupID:  route.GroupID,
+		Priority: route.Priority,
+		Enabled:  route.Enabled,
+	}
 }
 
 func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapshot) *APIKey {
@@ -440,20 +546,21 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Name:        snapshot.Name,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
-		Quota:       snapshot.Quota,
-		QuotaUsed:   snapshot.QuotaUsed,
-		ExpiresAt:   snapshot.ExpiresAt,
-		RateLimit5h: snapshot.RateLimit5h,
-		RateLimit1d: snapshot.RateLimit1d,
-		RateLimit7d: snapshot.RateLimit7d,
+		ID:            snapshot.APIKeyID,
+		UserID:        snapshot.UserID,
+		GroupID:       snapshot.GroupID,
+		PricingPlanID: snapshot.PricingPlanID,
+		Key:           key,
+		Name:          snapshot.Name,
+		Status:        snapshot.Status,
+		IPWhitelist:   snapshot.IPWhitelist,
+		IPBlacklist:   snapshot.IPBlacklist,
+		Quota:         snapshot.Quota,
+		QuotaUsed:     snapshot.QuotaUsed,
+		ExpiresAt:     snapshot.ExpiresAt,
+		RateLimit5h:   snapshot.RateLimit5h,
+		RateLimit1d:   snapshot.RateLimit1d,
+		RateLimit7d:   snapshot.RateLimit7d,
 		User: &User{
 			ID:                         snapshot.User.ID,
 			Status:                     snapshot.User.Status,
@@ -528,6 +635,13 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ProfitMinMargin:                 snapshot.Group.ProfitMinMargin,
 			ProfitSafetyBuffer:              snapshot.Group.ProfitSafetyBuffer,
 		}
+	}
+	if snapshot.PricingPlan != nil {
+		apiKey.PricingPlan = &PricingPlan{
+			ID:     snapshot.PricingPlan.PlanID,
+			Status: snapshot.PricingPlan.Status,
+		}
+		apiKey.PricingPlanSnapshot = snapshot.PricingPlan
 	}
 	s.compileAPIKeyIPRules(apiKey)
 	return apiKey

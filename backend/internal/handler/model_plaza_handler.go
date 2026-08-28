@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"log/slog"
-
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -10,76 +8,84 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ModelPlazaHandler 处理「模型广场」查询。
+// ModelPlazaHandler 处理「模型广场」查询（公开产品目录）。
 //
-// 广场路由挂 OptionalJWT 中间件：匿名可访问（除非 require_auth 开启），带 token 则
-// 识别用户。可见性规则（橱窗语义，与「可用渠道」的可绑定语义不同）：
-//   - 匿名：仅非专属分组（订阅型照常展示）；
-//   - 登录：非专属分组 + user_allowed_groups 授权的专属分组（不检查订阅有效性）。
+// 数据源为定价套餐的公开产品（PricingPlanRepository.ListPublicProducts）：
+// 只下发公开售价与展示字段，任何内部数据（分组、group_id、路由层、账号、
+// 上游成本、倍率、健康状态、平台/基址）都不进入响应。广场路由挂
+// OptionalJWT 中间件：匿名可访问（除非 require_auth 开启），带 token 仅用于
+// 识别用户；原分组/专属可见性语义已整体移除。
 type ModelPlazaHandler struct {
-	channelService *service.ChannelService
-	apiKeyService  *service.APIKeyService
-	settingService *service.SettingService
+	pricingPlanRepo service.PricingPlanRepository
+	settingService  *service.SettingService
 }
 
 // NewModelPlazaHandler 创建模型广场 handler。
 func NewModelPlazaHandler(
-	channelService *service.ChannelService,
-	apiKeyService *service.APIKeyService,
+	pricingPlanRepo service.PricingPlanRepository,
 	settingService *service.SettingService,
 ) *ModelPlazaHandler {
 	return &ModelPlazaHandler{
-		channelService: channelService,
-		apiKeyService:  apiKeyService,
-		settingService: settingService,
+		pricingPlanRepo: pricingPlanRepo,
+		settingService:  settingService,
 	}
 }
 
-// modelPlazaOfficialPricing LiteLLM 官方参考价（USD per token）。
-type modelPlazaOfficialPricing struct {
-	InputPrice        *float64 `json:"input_price"`
-	OutputPrice       *float64 `json:"output_price"`
-	CacheWritePrice   *float64 `json:"cache_write_price"`
-	CacheWrite1hPrice *float64 `json:"cache_write_1h_price,omitempty"`
-	CacheReadPrice    *float64 `json:"cache_read_price"`
+// modelPlazaPricingInterval 目录定价区间白名单（去掉内部 ID、倍率、SortOrder 等）。
+type modelPlazaPricingInterval struct {
+	MinTokens       int      `json:"min_tokens"`
+	MaxTokens       *int     `json:"max_tokens"`
+	TierLabel       string   `json:"tier_label,omitempty"`
+	InputPrice      *float64 `json:"input_price"`
+	OutputPrice     *float64 `json:"output_price"`
+	CacheWritePrice *float64 `json:"cache_write_price"`
+	CacheReadPrice  *float64 `json:"cache_read_price"`
+	PerRequestPrice *float64 `json:"per_request_price"`
 }
 
-// modelPlazaModel 广场模型条目：渠道定价（白名单形态）+ 官方参考价。
+// modelPlazaPricing 目录定价白名单（USD；token 计费为每 token 单价，
+// 按次/按图为每单位单价），等价于公开售价，不携带渠道/内部字段。
+type modelPlazaPricing struct {
+	InputPrice       *float64                    `json:"input_price"`
+	OutputPrice      *float64                    `json:"output_price"`
+	CacheWritePrice  *float64                    `json:"cache_write_price"`
+	CacheReadPrice   *float64                    `json:"cache_read_price"`
+	ImageInputPrice  *float64                    `json:"image_input_price"`
+	ImageOutputPrice *float64                    `json:"image_output_price"`
+	PerRequestPrice  *float64                    `json:"per_request_price"`
+	Intervals        []modelPlazaPricingInterval `json:"intervals"`
+}
+
+// modelPlazaProtocol 单个协议计价行：协议 + 是否直连 + 计费模式 + 公开定价。
+type modelPlazaProtocol struct {
+	Protocol    string             `json:"protocol"`
+	Direct      bool               `json:"direct"`
+	BillingMode string             `json:"billing_mode"`
+	Pricing     *modelPlazaPricing `json:"pricing"`
+}
+
+// modelPlazaModel 目录模型条目：模型标识 + 展示名 + 各协议计价行。
 type modelPlazaModel struct {
-	Name            string                     `json:"name"`
-	Platform        string                     `json:"platform"`
-	Pricing         *userSupportedModelPricing `json:"pricing"`
-	OfficialPricing *modelPlazaOfficialPricing `json:"official_pricing"`
+	ID          string               `json:"id"`
+	DisplayName string               `json:"display_name"`
+	Protocols   []modelPlazaProtocol `json:"protocols"`
 }
 
-// modelPlazaGroup 广场分组条目（白名单字段）。
-type modelPlazaGroup struct {
-	ID                 int64    `json:"id"`
-	Name               string   `json:"name"`
-	Description        string   `json:"description"`
-	Platform           string   `json:"platform"`
-	SubscriptionType   string   `json:"subscription_type"`
-	RateMultiplier     float64  `json:"rate_multiplier"`
-	UserRateMultiplier *float64 `json:"user_rate_multiplier,omitempty"`
-	PeakRateEnabled    bool     `json:"peak_rate_enabled"`
-	PeakStart          string   `json:"peak_start"`
-	PeakEnd            string   `json:"peak_end"`
-	PeakRateMultiplier float64  `json:"peak_rate_multiplier"`
-	IsExclusive        bool     `json:"is_exclusive"`
-	// 生图独立倍率：为 true 时图片计费模型的实付倍率取 ImageRateMultiplier，
-	// 不取分组/用户专属倍率。
-	ImageRateIndependent bool              `json:"image_rate_independent"`
-	ImageRateMultiplier  float64           `json:"image_rate_multiplier"`
-	Models               []modelPlazaModel `json:"models"`
+// modelPlazaPlan 目录套餐（白名单字段）。
+type modelPlazaPlan struct {
+	Code        string            `json:"code"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Models      []modelPlazaModel `json:"models"`
 }
 
 // modelPlazaResponse 广场页响应。
 type modelPlazaResponse struct {
-	Description string            `json:"description"`
-	Groups      []modelPlazaGroup `json:"groups"`
+	Description string           `json:"description"`
+	Plans       []modelPlazaPlan `json:"plans"`
 }
 
-// Get 返回模型广场数据。
+// Get 返回模型广场数据（公开产品目录）。
 // GET /api/v1/model-plaza
 func (h *ModelPlazaHandler) Get(c *gin.Context) {
 	if h.settingService == nil {
@@ -92,113 +98,110 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 		return
 	}
 
-	subject, authed := middleware.GetAuthSubjectFromContext(c)
+	_, authed := middleware.GetAuthSubjectFromContext(c)
 	if rt.RequireAuth && !authed {
 		response.Unauthorized(c, "Authentication required")
 		return
 	}
 
-	groups, err := h.channelService.ListPlazaGroups(c.Request.Context())
+	if h.pricingPlanRepo == nil {
+		// fail-closed：仓储缺失视为功能未启用，不返回半成品目录。
+		response.NotFound(c, "Model plaza is not enabled")
+		return
+	}
+	products, err := h.pricingPlanRepo.ListPublicProducts(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	// allowedExclusive == nil 表示匿名；登录用户恒为非 nil（可能为空集合）。
-	var allowedExclusive map[int64]struct{}
-	var userRates map[int64]float64
-	if authed {
-		allowedExclusive, err = h.apiKeyService.GetUserAllowedGroupIDSet(c.Request.Context(), subject.UserID)
-		if err != nil {
-			// 可见性数据拿不到时不能静默降级成匿名视图（会错漏专属分组），直接报错。
-			response.ErrorFrom(c, err)
-			return
-		}
-		userRates, err = h.apiKeyService.GetUserGroupRates(c.Request.Context(), subject.UserID)
-		if err != nil {
-			// 专属倍率仅是展示增强，失败降级为分组默认倍率。
-			slog.Warn("model_plaza_user_rates_failed", "error", err, "user_id", subject.UserID)
-			userRates = nil
-		}
-	}
-
-	visible := filterPlazaVisibleGroups(groups, allowedExclusive)
-
-	out := make([]modelPlazaGroup, 0, len(visible))
-	for i := range visible {
-		out = append(out, toModelPlazaGroupDTO(&visible[i], userRates))
+	plans := make([]modelPlazaPlan, 0, len(products))
+	for _, p := range products {
+		plans = append(plans, toModelPlazaPlan(p))
 	}
 	response.Success(c, modelPlazaResponse{
 		Description: rt.Description,
-		Groups:      out,
+		Plans:       plans,
 	})
 }
 
-// filterPlazaVisibleGroups 按登录态裁剪分组可见性。
-// allowedExclusive == nil 表示匿名（仅非专属）；非 nil 表示登录（非专属 + 授权专属）。
-func filterPlazaVisibleGroups(
-	groups []service.PlazaGroup,
-	allowedExclusive map[int64]struct{},
-) []service.PlazaGroup {
-	visible := make([]service.PlazaGroup, 0, len(groups))
-	for _, g := range groups {
-		if g.IsExclusive {
-			if allowedExclusive == nil {
-				continue
-			}
-			if _, ok := allowedExclusive[g.ID]; !ok {
-				continue
-			}
+// toModelPlazaPlan 将公开产品映射为目录套餐：code=套餐稳定代号（Name），
+// name=展示名（Title），description=套餐描述；模型按公开模型分组。
+func toModelPlazaPlan(p service.PricingPlanProduct) modelPlazaPlan {
+	return modelPlazaPlan{
+		Code:        p.Plan.Name,
+		Name:        p.Plan.Title,
+		Description: p.Plan.Description,
+		Models:      groupModelPlazaProtocols(p.Models),
+	}
+}
+
+// groupModelPlazaProtocols 把套餐的「模型 -> 协议」条目按公开模型分组为目录
+// 模型条目：同模型的多协议行合并到 protocols（保持仓库返回顺序，即
+// priority 升序）；display_name 暂以 public_model 兜底展示。
+func groupModelPlazaProtocols(models []service.PricingPlanModel) []modelPlazaModel {
+	out := make([]modelPlazaModel, 0)
+	idx := make(map[string]int, len(models))
+	for i := range models {
+		m := &models[i]
+		if !m.Enabled {
+			continue
 		}
-		visible = append(visible, g)
+		at, seen := idx[m.PublicModel]
+		if !seen {
+			at = len(out)
+			idx[m.PublicModel] = at
+			out = append(out, modelPlazaModel{
+				ID:          m.PublicModel,
+				DisplayName: m.PublicModel,
+			})
+		}
+		out[at].Protocols = append(out[at].Protocols, toModelPlazaProtocol(m))
 	}
-	return visible
+	return out
 }
 
-// toModelPlazaGroupDTO 将 service 层广场分组映射为白名单 DTO,并合并用户专属倍率。
-func toModelPlazaGroupDTO(g *service.PlazaGroup, userRates map[int64]float64) modelPlazaGroup {
-	models := make([]modelPlazaModel, 0, len(g.Models))
-	for i := range g.Models {
-		m := &g.Models[i]
-		models = append(models, modelPlazaModel{
-			Name:            m.Name,
-			Platform:        m.Platform,
-			Pricing:         toUserPricing(m.Pricing),
-			OfficialPricing: toModelPlazaOfficialPricing(m.OfficialPricing),
-		})
+// toModelPlazaProtocol 将套餐「模型 -> 协议」条目映射为协议计价行；
+// 计费模式取定价文档的 BillingMode，未配置时按 token 计费展示。
+func toModelPlazaProtocol(m *service.PricingPlanModel) modelPlazaProtocol {
+	billingMode := string(service.BillingModeToken)
+	if m.Pricing != nil && m.Pricing.BillingMode != "" {
+		billingMode = string(m.Pricing.BillingMode)
 	}
-	dto := modelPlazaGroup{
-		ID:                   g.ID,
-		Name:                 g.Name,
-		Description:          g.Description,
-		Platform:             g.Platform,
-		SubscriptionType:     g.SubscriptionType,
-		RateMultiplier:       g.RateMultiplier,
-		PeakRateEnabled:      g.PeakRateEnabled,
-		PeakStart:            g.PeakStart,
-		PeakEnd:              g.PeakEnd,
-		PeakRateMultiplier:   g.PeakRateMultiplier,
-		IsExclusive:          g.IsExclusive,
-		ImageRateIndependent: g.ImageRateIndependent,
-		ImageRateMultiplier:  g.ImageRateMultiplier,
-		Models:               models,
+	return modelPlazaProtocol{
+		Protocol:    m.Protocol,
+		Direct:      m.Direct,
+		BillingMode: billingMode,
+		Pricing:     toModelPlazaPricing(m.Pricing),
 	}
-	if rate, ok := userRates[g.ID]; ok {
-		dto.UserRateMultiplier = &rate
-	}
-	return dto
 }
 
-// toModelPlazaOfficialPricing 转换官方参考价；nil 透传（前端显示 "-"）。
-func toModelPlazaOfficialPricing(p *service.PlazaOfficialPricing) *modelPlazaOfficialPricing {
+// toModelPlazaPricing 将定价文档映射为公开售价白名单；nil 透传（前端显示空价）。
+func toModelPlazaPricing(p *service.ChannelModelPricing) *modelPlazaPricing {
 	if p == nil {
 		return nil
 	}
-	return &modelPlazaOfficialPricing{
-		InputPrice:        p.InputPrice,
-		OutputPrice:       p.OutputPrice,
-		CacheWritePrice:   p.CacheWritePrice,
-		CacheWrite1hPrice: p.CacheWrite1hPrice,
-		CacheReadPrice:    p.CacheReadPrice,
+	intervals := make([]modelPlazaPricingInterval, 0, len(p.Intervals))
+	for _, iv := range p.Intervals {
+		intervals = append(intervals, modelPlazaPricingInterval{
+			MinTokens:       iv.MinTokens,
+			MaxTokens:       iv.MaxTokens,
+			TierLabel:       iv.TierLabel,
+			InputPrice:      iv.InputPrice,
+			OutputPrice:     iv.OutputPrice,
+			CacheWritePrice: iv.CacheWritePrice,
+			CacheReadPrice:  iv.CacheReadPrice,
+			PerRequestPrice: iv.PerRequestPrice,
+		})
+	}
+	return &modelPlazaPricing{
+		InputPrice:       p.InputPrice,
+		OutputPrice:      p.OutputPrice,
+		CacheWritePrice:  p.CacheWritePrice,
+		CacheReadPrice:   p.CacheReadPrice,
+		ImageInputPrice:  p.ImageInputPrice,
+		ImageOutputPrice: p.ImageOutputPrice,
+		PerRequestPrice:  p.PerRequestPrice,
+		Intervals:        intervals,
 	}
 }

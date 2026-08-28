@@ -24,6 +24,7 @@ type RateLimitService struct {
 	usageRepo             UsageLogRepository
 	cfg                   *config.Config
 	geminiQuotaService    *GeminiQuotaService
+	opencodeFetcher       *OpenCodeUsageFetcher
 	tempUnschedCache      TempUnschedCache
 	openAIAPIKeyHealth    OpenAIAPIKeyHealthCache
 	timeoutCounterCache   TimeoutCounterCache
@@ -123,6 +124,10 @@ func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvali
 
 func (s *RateLimitService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
 	s.runtimeBlocker = blocker
+}
+
+func (s *RateLimitService) SetOpenCodeUsageFetcher(fetcher *OpenCodeUsageFetcher) {
+	s.opencodeFetcher = fetcher
 }
 
 func (s *RateLimitService) IsOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx context.Context) bool {
@@ -1101,6 +1106,13 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			return
 		}
 	}
+	if account.Platform == PlatformOpenCode && account.Type == AccountTypeAPIKey {
+		if s.tryApplyOpenCode429UsageLimit(ctx, account) {
+			return
+		}
+		s.apply429FallbackRateLimit(ctx, account, "opencode_usage_unavailable")
+		return
+	}
 	// 1. OpenAI 平台：优先尝试解析 x-codex-* 响应头（用于 rate_limit_exceeded）
 	if account.Platform == PlatformOpenAI {
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)
@@ -1215,6 +1227,33 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt)
 }
 
+const openCode429UsageProbeTimeout = time.Second
+
+func (s *RateLimitService) tryApplyOpenCode429UsageLimit(ctx context.Context, account *Account) bool {
+	if s == nil || account == nil || s.opencodeFetcher == nil {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, openCode429UsageProbeTimeout)
+	defer cancel()
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	snapshot, err := s.opencodeFetcher.FetchUsage(probeCtx, &OpenCodeUsageFetchOptions{
+		APIKey:      account.GetCredential("api_key"),
+		BaseURL:     account.GetOpenAIBaseURL(),
+		ProxyURL:    proxyURL,
+		AccountID:   account.ID,
+		Concurrency: account.Concurrency,
+		HeaderApply: account.ApplyHeaderOverrides,
+	})
+	if err != nil {
+		slog.Warn("opencode_429_usage_query_failed", "account_id", account.ID, "error", err)
+		return false
+	}
+	return persistOpenCodeRateLimit(ctx, s.accountRepo, s.runtimeBlocker, account, snapshot)
+}
+
 func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, account *Account, reason string) {
 	cooldown, enabled := s.get429FallbackCooldown(ctx, account)
 	if !enabled {
@@ -1223,9 +1262,22 @@ func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, accoun
 	}
 
 	resetAt := time.Now().Add(cooldown)
+	if account.Platform == PlatformOpenCode && account.RateLimitResetAt != nil && account.RateLimitResetAt.After(resetAt) {
+		resetAt = *account.RateLimitResetAt
+	}
 	slog.Warn("rate_limit_429_fallback_used", "account_id", account.ID, "platform", account.Platform, "reason", reason, "using_default", cooldown.String())
 	s.notifyAccountSchedulingBlocked(account, resetAt, "429_fallback")
-	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+	var err error
+	if account.Platform == PlatformOpenCode {
+		if extendingRepo, ok := s.accountRepo.(openCodeRateLimitExtendingRepository); ok {
+			err = extendingRepo.SetRateLimitedIfLater(ctx, account.ID, resetAt)
+		} else {
+			err = s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
+		}
+	} else {
+		err = s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
+	}
+	if err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 	}
 }

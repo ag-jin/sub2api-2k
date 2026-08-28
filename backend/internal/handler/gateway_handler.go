@@ -170,6 +170,20 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
+
+	// 定价套餐准入（模型解析后）：绑定套餐的 Key 必须命中启用的
+	// model×messages 条目（Anthropic 协议）；未命中直接走本端点协议
+	// 错误路径，不进入选号。
+	planState, rStatus, rType, rMsg := resolvePricingPlanGatewayState(apiKey, reqModel, service.PricingPlanProtocolMessages)
+	if rType != "" {
+		h.errorResponse(c, rStatus, rType, rMsg)
+		return
+	}
+	if planState.active && !planState.bindNextLayer(c, apiKey, h.gatewayService.ResolveGroupByID) {
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", pricingPlanNoLayersMessage)
+		return
+	}
+
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	// 解析渠道级模型映射
@@ -313,6 +327,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			c.Request = c.Request.WithContext(ctx)
 		}
 
+	planLayerLoop:
 		for {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 			if err != nil {
@@ -328,6 +343,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
+					// 套餐分层：层内首轮选号即无可用账号时推进到下一层。
+					if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+						fs = NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+						channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+						reqLog.Info("gateway.messages.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+						continue planLayerLoop
+					}
 					message := cls.Message
 					if !cls.ModelNotFound {
 						message = "No available accounts: " + err.Error()
@@ -345,6 +367,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
+					// 套餐分层：层内 failover 耗尽且未提交响应时推进下一层。
+					if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+						fs = NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+						channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+						reqLog.Info("gateway.messages.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+						continue planLayerLoop
+					}
 					if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
 					} else {
@@ -355,6 +384,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+
+			// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时排除重选。
+			if !planState.accountPlanProtocolAllowed(account) {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+					selection.ReleaseFunc = nil
+				}
+				fs.FailedAccountIDs[account.ID] = struct{}{}
+				reqLog.Debug("gateway.messages.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+				continue
+			}
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
@@ -608,6 +648,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		c.Request = c.Request.WithContext(ctx)
 	}
 
+	// 套餐分层：main loop 外层标签，层内无可选账号时推进到下一层并重建
+	// 本层 FailoverState（层间互不共享排除表与切换预算）。
+planLayerLoopMain:
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
@@ -641,6 +684,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
+					// 套餐分层：层内首轮选号即无可用账号时推进到下一层
+					// （未提交响应前）。
+					if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+						channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), currentAPIKey.GroupID, reqModel)
+						reqLog.Info("gateway.messages.plan_layer_advanced", zap.Int64p("group_id", currentAPIKey.GroupID))
+						continue planLayerLoopMain
+					}
 					message := cls.Message
 					if !cls.ModelNotFound {
 						message = "No available accounts: " + err.Error()
@@ -658,6 +708,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
+					// 套餐分层：层内 failover 耗尽且未提交响应时推进下一层。
+					if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+						channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), currentAPIKey.GroupID, reqModel)
+						reqLog.Info("gateway.messages.plan_layer_advanced", zap.Int64p("group_id", currentAPIKey.GroupID))
+						continue planLayerLoopMain
+					}
 					if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
 					} else {
@@ -668,6 +724,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+
+			// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时排除重选。
+			if !planState.accountPlanProtocolAllowed(account) {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+					selection.ReleaseFunc = nil
+				}
+				fs.FailedAccountIDs[account.ID] = struct{}{}
+				reqLog.Debug("gateway.messages.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+				continue
+			}
 
 			// [DEBUG-STICKY] 打印账号选择结果
 			reqLog.Info("sticky.account_selected",

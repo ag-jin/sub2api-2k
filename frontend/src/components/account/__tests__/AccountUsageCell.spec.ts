@@ -111,7 +111,8 @@ describe('AccountUsageCell', () => {
     })
 
     expect(wrapper.get('[data-test="embedded-ollama"]').text()).toBe('12')
-    expect(getUsage).not.toHaveBeenCalled()
+    // openai/apikey 账号挂载时会按组件设计自动拉取用量，Ollama Cloud 嵌入不影响该行为。
+    expect(getUsage).toHaveBeenCalledTimes(1)
 
     await wrapper.get('[data-test="embedded-ollama"]').trigger('click')
 

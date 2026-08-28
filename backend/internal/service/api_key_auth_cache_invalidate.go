@@ -35,6 +35,20 @@ func (s *APIKeyService) InvalidateAuthCacheByGroupID(ctx context.Context, groupI
 	s.deleteAuthCacheByKeys(ctx, keys)
 }
 
+// InvalidateAuthCacheByPricingPlanID 清除绑定指定定价套餐的 API Key 认证缓存。
+// 套餐的模型协议条目/路由层/内容变更或套餐被删除时调用，保证跨实例的
+// Redis（L2）与各实例进程内 L1 一并失效（见 deleteAuthCache）。
+func (s *APIKeyService) InvalidateAuthCacheByPricingPlanID(ctx context.Context, planID int64) {
+	if planID <= 0 {
+		return
+	}
+	keys, err := s.apiKeyRepo.ListKeysByPricingPlanID(ctx, planID)
+	if err != nil {
+		return
+	}
+	s.deleteAuthCacheByKeys(ctx, keys)
+}
+
 func (s *APIKeyService) deleteAuthCacheByKeys(ctx context.Context, keys []string) {
 	if len(keys) == 0 {
 		return

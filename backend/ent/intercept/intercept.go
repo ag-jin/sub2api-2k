@@ -32,6 +32,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplan"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplanmodel"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplanroute"
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
@@ -727,6 +730,87 @@ func (f TraversePendingAuthSession) Traverse(ctx context.Context, q ent.Query) e
 	return fmt.Errorf("unexpected query type %T. expect *ent.PendingAuthSessionQuery", q)
 }
 
+// The PricingPlanFunc type is an adapter to allow the use of ordinary function as a Querier.
+type PricingPlanFunc func(context.Context, *ent.PricingPlanQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f PricingPlanFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.PricingPlanQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanQuery", q)
+}
+
+// The TraversePricingPlan type is an adapter to allow the use of ordinary function as Traverser.
+type TraversePricingPlan func(context.Context, *ent.PricingPlanQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraversePricingPlan) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraversePricingPlan) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.PricingPlanQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanQuery", q)
+}
+
+// The PricingPlanModelFunc type is an adapter to allow the use of ordinary function as a Querier.
+type PricingPlanModelFunc func(context.Context, *ent.PricingPlanModelQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f PricingPlanModelFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.PricingPlanModelQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanModelQuery", q)
+}
+
+// The TraversePricingPlanModel type is an adapter to allow the use of ordinary function as Traverser.
+type TraversePricingPlanModel func(context.Context, *ent.PricingPlanModelQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraversePricingPlanModel) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraversePricingPlanModel) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.PricingPlanModelQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanModelQuery", q)
+}
+
+// The PricingPlanRouteFunc type is an adapter to allow the use of ordinary function as a Querier.
+type PricingPlanRouteFunc func(context.Context, *ent.PricingPlanRouteQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f PricingPlanRouteFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.PricingPlanRouteQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanRouteQuery", q)
+}
+
+// The TraversePricingPlanRoute type is an adapter to allow the use of ordinary function as Traverser.
+type TraversePricingPlanRoute func(context.Context, *ent.PricingPlanRouteQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraversePricingPlanRoute) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraversePricingPlanRoute) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.PricingPlanRouteQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.PricingPlanRouteQuery", q)
+}
+
 // The PromoCodeFunc type is an adapter to allow the use of ordinary function as a Querier.
 type PromoCodeFunc func(context.Context, *ent.PromoCodeQuery) (ent.Value, error)
 
@@ -1208,6 +1292,12 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.PaymentProviderInstanceQuery, predicate.PaymentProviderInstance, paymentproviderinstance.OrderOption]{typ: ent.TypePaymentProviderInstance, tq: q}, nil
 	case *ent.PendingAuthSessionQuery:
 		return &query[*ent.PendingAuthSessionQuery, predicate.PendingAuthSession, pendingauthsession.OrderOption]{typ: ent.TypePendingAuthSession, tq: q}, nil
+	case *ent.PricingPlanQuery:
+		return &query[*ent.PricingPlanQuery, predicate.PricingPlan, pricingplan.OrderOption]{typ: ent.TypePricingPlan, tq: q}, nil
+	case *ent.PricingPlanModelQuery:
+		return &query[*ent.PricingPlanModelQuery, predicate.PricingPlanModel, pricingplanmodel.OrderOption]{typ: ent.TypePricingPlanModel, tq: q}, nil
+	case *ent.PricingPlanRouteQuery:
+		return &query[*ent.PricingPlanRouteQuery, predicate.PricingPlanRoute, pricingplanroute.OrderOption]{typ: ent.TypePricingPlanRoute, tq: q}, nil
 	case *ent.PromoCodeQuery:
 		return &query[*ent.PromoCodeQuery, predicate.PromoCode, promocode.OrderOption]{typ: ent.TypePromoCode, tq: q}, nil
 	case *ent.PromoCodeUsageQuery:

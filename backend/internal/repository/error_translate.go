@@ -68,6 +68,15 @@ func translatePersistenceError(err error, notFound, conflict *infraerrors.Applic
 	return err
 }
 
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var pgErr *pq.Error
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
 // isUniqueConstraintViolation 判断错误是否为唯一约束冲突。
 //
 // 支持多种检测方式：

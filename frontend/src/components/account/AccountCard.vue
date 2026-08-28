@@ -2,43 +2,44 @@
   <article
     class="card card-hover group flex h-full min-w-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800"
   >
-    <div class="flex items-center gap-1 border-b border-gray-100 px-4 py-2 dark:border-dark-700" @click.stop>
+    <header class="flex items-start gap-1 border-b border-gray-100 px-4 py-2 dark:border-dark-700" @click.stop>
       <input
         type="checkbox"
         :checked="selected"
-        class="h-4 w-4 flex-shrink-0 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+        class="mt-0.5 h-4 w-4 flex-shrink-0 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
         @click.stop="$emit('toggle-select', account.id)"
       />
-      <div class="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5" @click.stop="$emit('edit', account)">
-        <PlatformIcon :platform="account.platform" size="sm" class="flex-shrink-0" />
+      <div data-testid="account-card-primary-header" class="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5" @click.stop="$emit('edit', account)">
+        <PlatformIcon :platform="account.platform" size="sm" class="mt-0.5 flex-shrink-0" />
         <div class="min-w-0 flex-1">
           <div class="flex min-w-0 items-baseline gap-1.5">
             <span class="truncate text-[15px] font-semibold text-gray-900 dark:text-white">{{ account.name }}</span>
             <span class="flex-shrink-0 font-mono text-[10px] text-gray-400 dark:text-dark-500">#{{ account.id }}</span>
           </div>
           <span v-if="accountDisplayEmail" class="block truncate text-[11px] text-gray-400 dark:text-dark-400">{{ accountDisplayEmail }}</span>
+          <div data-testid="account-card-status-row" class="mt-1 flex flex-wrap items-center gap-2">
+            <PlatformTypeBadge
+              :platform="account.platform"
+              :type="account.type"
+              :auth-mode="String(account.extra?.openai_auth_mode ?? '')"
+              :plan-type="accountPlanType"
+              :privacy-mode="(account.extra?.privacy_mode as string) || (account.parent_privacy_mode ?? undefined)"
+              :subscription-expires-at="(account.credentials?.subscription_expires_at as string) || (account.parent_subscription_expires_at ?? undefined)"
+            />
+            <AccountStatusIndicator :account="account" @show-temp-unsched="$emit('edit', account)" />
+          </div>
         </div>
       </div>
-      <div class="flex max-w-[55%] flex-shrink-0 items-center gap-2 overflow-hidden">
-        <PlatformTypeBadge
-            :platform="account.platform"
-            :type="account.type"
-            :auth-mode="String(account.extra?.openai_auth_mode ?? '')"
-            :plan-type="accountPlanType"
-            :privacy-mode="(account.extra?.privacy_mode as string) || (account.parent_privacy_mode ?? undefined)"
-            :subscription-expires-at="(account.credentials?.subscription_expires_at as string) || (account.parent_subscription_expires_at ?? undefined)"
-          />
-          <AccountStatusIndicator :account="account" @show-temp-unsched="$emit('edit', account)" />
-          <button
-            type="button"
-            class="flex-shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-dark-700 dark:hover:text-white"
-            :title="t('common.more')"
-            @click.stop="$emit('show-actions', account, $event)"
-          >
-            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75 0 011.5 0z" /></svg>
-          </button>
-        </div>
-    </div>
+      <button
+        data-testid="account-card-actions"
+        type="button"
+        class="mt-0.5 flex-shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-dark-700 dark:hover:text-white"
+        :title="t('common.more')"
+        @click.stop="$emit('show-actions', account, $event)"
+      >
+        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75 0 011.5 0z" /></svg>
+      </button>
+    </header>
 
     <section class="grid grid-cols-2 gap-px border-b border-gray-100 bg-gray-100 dark:border-dark-700 dark:bg-dark-700">
       <div class="min-w-0 bg-white px-3 py-2.5 dark:bg-dark-800">

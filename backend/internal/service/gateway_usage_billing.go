@@ -810,6 +810,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		pricingAt = timezone.Now()
 	}
 	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, multiplier, pricingAt)
+	if apiKey.ActivePricingPlanOffer != nil && apiKey.ActivePricingPlanOffer.Pricing != nil {
+		multiplier = 1
+		imageMultiplier = 1
+	}
 
 	// 确定计费模型
 	concreteBillingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
@@ -942,6 +946,16 @@ func (s *GatewayService) calculateRecordUsageCost(
 	pricingAt time.Time,
 	opts *recordUsageOpts,
 ) *CostBreakdown {
+	if apiKey != nil && apiKey.ActivePricingPlanOffer != nil {
+		if apiKey.ActivePricingPlanOffer.Pricing == nil {
+			logger.LegacyPrintf("service.gateway", "Pricing plan offer has no sale pricing for model %s", billingModel)
+			return &CostBreakdown{ActualCost: 0}
+		}
+		if result.AudioUsage != nil {
+			logger.LegacyPrintf("service.gateway", "Pricing plan audio pricing is not supported for model %s", billingModel)
+			return &CostBreakdown{ActualCost: 0}
+		}
+	}
 	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
 		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
@@ -970,7 +984,7 @@ func (s *GatewayService) calculateRecordUsageCost(
 
 	// Token 计费；SearchCount 为叠加 surcharge（不替代 token）。
 	tokenCost := s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, pricingAt, opts)
-	if result.SearchCount > 0 {
+	if result.SearchCount > 0 && (apiKey == nil || apiKey.ActivePricingPlanOffer == nil) {
 		price := groupSearchPricePer1kFromAPIKey(apiKey)
 		if price != nil && *price == 0 {
 			logger.LegacyPrintf("service.gateway", "[Billing] search_price_per_1k explicit 0; search free group_model=%s count=%d", billingModel, result.SearchCount)
@@ -1056,7 +1070,13 @@ func (s *GatewayService) hasIdentifiedResponseModelPricing(ctx context.Context, 
 // resolveChannelPricing 检查指定模型是否存在渠道级别定价。
 // 返回非 nil 的 ResolvedPricing 表示有渠道定价，nil 表示走默认定价路径。
 func (s *GatewayService) resolveChannelPricing(ctx context.Context, billingModel string, apiKey *APIKey) *ResolvedPricing {
-	if s.resolver == nil || apiKey.Group == nil {
+	if s.resolver == nil || apiKey == nil {
+		return nil
+	}
+	if offer := apiKey.ActivePricingPlanOffer; offer != nil && offer.Pricing != nil {
+		return s.resolver.Resolve(ctx, PricingInput{Model: billingModel, PlanPricing: offer.Pricing})
+	}
+	if apiKey.Group == nil {
 		return nil
 	}
 	gid := apiKey.Group.ID
@@ -1077,16 +1097,27 @@ func (s *GatewayService) calculateImageCost(
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	resolved := s.resolveChannelPricing(ctx, billingModel, apiKey)
-	if resolved != nil && resolved.Source == PricingSourceGroup {
-		gid := apiKey.Group.ID
+	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourcePlan) {
+		var groupID *int64
+		if apiKey != nil && apiKey.Group != nil {
+			groupID = &apiKey.Group.ID
+		}
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
+			Ctx: ctx, Model: billingModel, GroupID: groupID, Group: apiKey.Group,
 			RequestCount: result.ImageCount, SizeTier: sizeTier,
 			RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
 		})
 		if err == nil {
 			return cost
 		}
+		if resolved.Source == PricingSourcePlan {
+			logger.LegacyPrintf("service.gateway", "Calculate plan image cost failed: %v", err)
+			return &CostBreakdown{ActualCost: 0}
+		}
+	}
+	if apiKey != nil && apiKey.ActivePricingPlanOffer != nil {
+		logger.LegacyPrintf("service.gateway", "Pricing plan offer has no image pricing for model %s", billingModel)
+		return &CostBreakdown{ActualCost: 0}
 	}
 	groupConfig := imagePriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredImagePrice(apiKey, sizeTier) {
@@ -1147,11 +1178,14 @@ func (s *GatewayService) calculateTokenCost(
 	// Explicit group/channel pricing wins. Built-in pricing also uses the unified
 	// resolver so the group long-context toggle can veto model-native tiers.
 	if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil {
-		gid := apiKey.Group.ID
+		var groupID *int64
+		if apiKey.Group != nil {
+			groupID = &apiKey.Group.ID
+		}
 		cost, err = s.billingService.CalculateCostUnified(CostInput{
 			Ctx:            ctx,
 			Model:          billingModel,
-			GroupID:        &gid,
+			GroupID:        groupID,
 			Group:          apiKey.Group,
 			Tokens:         tokens,
 			RequestCount:   1,

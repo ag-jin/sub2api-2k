@@ -33,24 +33,21 @@
       {{ t('modelPlaza.loadFailed') }}
     </div>
     <template v-else>
-      <!-- 筛选区:平台 → 分组 → 倍率 -->
+      <!-- 筛选区:套餐 → 协议 → 模型搜索 -->
       <PlazaFilterBar
-        :platforms="platforms"
-        :groups="groupOptions"
-        :rates="rates"
-        :platform="selectedPlatform"
-        :group-id="selectedGroupId"
-        :rate="selectedRate"
+        :plans="respPlans"
+        :protocols="protocols"
+        :plan="selectedPlan"
+        :protocol="selectedProtocol"
         :search="searchQuery"
-        @update:platform="selectedPlatform = $event"
-        @update:group-id="selectedGroupId = $event"
-        @update:rate="selectedRate = $event"
+        @update:plan="selectedPlan = $event"
+        @update:protocol="selectedProtocol = $event"
         @update:search="searchQuery = $event"
       />
 
-      <!-- 分组分节的模型清单(默认按生效倍率升序) -->
-      <div v-if="filteredGroups.length > 0" class="space-y-5">
-        <PlazaGroupSection v-for="g in filteredGroups" :key="g.id" :group="g" />
+      <!-- 套餐分节的目录表(仅渲染有命中的套餐) -->
+      <div v-if="filteredPlans.length > 0" class="space-y-5">
+        <PlazaPlanSection v-for="plan in filteredPlans" :key="plan.code" :plan="plan" />
       </div>
       <div
         v-else
@@ -69,12 +66,12 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import Icon from '@/components/icons/Icon.vue'
 import PlazaFilterBar from './PlazaFilterBar.vue'
-import PlazaGroupSection from './PlazaGroupSection.vue'
-import type { ModelPlazaGroup, ModelPlazaResponse } from '@/api/modelPlaza'
+import PlazaPlanSection from './PlazaPlanSection.vue'
+import type { CatalogModel, PricingCatalog } from '@/api/modelPlaza'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps<{
-  response: ModelPlazaResponse | null
+  response: PricingCatalog | null
   loading: boolean
   error?: boolean
   /** 后台内嵌形态(AppLayout 内):隐藏页头。 */
@@ -85,9 +82,8 @@ const { t } = useI18n()
 const authStore = useAuthStore()
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 
-const selectedPlatform = ref<string>('all')
-const selectedGroupId = ref<number | 'all'>('all')
-const selectedRate = ref<number | 'all'>('all')
+const selectedPlan = ref<string>('all')
+const selectedProtocol = ref<string>('all')
 const searchQuery = ref('')
 
 const searchActive = computed(() => searchQuery.value.trim() !== '')
@@ -98,59 +94,47 @@ const descriptionHtml = computed(() => {
   return DOMPurify.sanitize(marked.parse(md) as string)
 })
 
-/** 生效倍率 = 用户专属倍率 ?? 分组默认倍率。 */
-function effectiveRate(g: ModelPlazaGroup): number {
-  return g.user_rate_multiplier ?? g.rate_multiplier
-}
+const respPlans = computed(() => props.response?.plans ?? [])
 
-const platforms = computed(() =>
-  [...new Set((props.response?.groups ?? []).map((g) => g.platform).filter(Boolean))].sort()
+/** 数据中出现的协议(全目录去重排序)。 */
+const protocols = computed(() =>
+  [...new Set(respPlans.value.flatMap((p) => p.models.flatMap((m) => m.protocols.map((row) => row.protocol))))].sort()
 )
 
-const groupOptions = computed(() =>
-  (props.response?.groups ?? []).map((g) => ({
-    id: g.id,
-    name: g.name,
-    platform: g.platform,
-    rate: effectiveRate(g)
-  }))
-)
-
-/** 全量生效倍率;当前组合下不可用的项由 FilterBar 置灰而非隐藏。 */
-const rates = computed(() =>
-  [...new Set((props.response?.groups ?? []).map(effectiveRate))].sort((a, b) => a - b)
-)
-
-/** 数据刷新后选中的倍率可能不复存在,重置为全部。 */
-watch(rates, (list) => {
-  if (selectedRate.value !== 'all' && !list.includes(selectedRate.value)) {
-    selectedRate.value = 'all'
+/** 数据刷新后选中的套餐/协议可能不复存在,重置为全部。 */
+watch([protocols, respPlans], ([protos, plans]) => {
+  if (selectedProtocol.value !== 'all' && !protos.includes(selectedProtocol.value)) {
+    selectedProtocol.value = 'all'
+  }
+  if (selectedPlan.value !== 'all' && !plans.some((p) => p.code === selectedPlan.value)) {
+    selectedPlan.value = 'all'
   }
 })
 
-const filteredGroups = computed(() => {
-  let groups = props.response?.groups ?? []
-  if (selectedPlatform.value !== 'all') {
-    groups = groups.filter((g) => g.platform === selectedPlatform.value)
+const filteredPlans = computed(() => {
+  let plans = respPlans.value
+  if (selectedPlan.value !== 'all') {
+    plans = plans.filter((p) => p.code === selectedPlan.value)
   }
-  if (selectedGroupId.value !== 'all') {
-    groups = groups.filter((g) => g.id === selectedGroupId.value)
-  }
-  if (selectedRate.value !== 'all') {
-    groups = groups.filter((g) => effectiveRate(g) === selectedRate.value)
-  }
-  // 模型名搜索:分组内只留命中的模型,整组无命中则隐藏该分组。
+  // 模型名/标识搜索 + 协议过滤:套餐内只留命中的模型与协议行,整套餐无命中则隐藏。
   const q = searchQuery.value.trim().toLowerCase()
-  if (q) {
-    groups = groups
-      .map((g) => ({ ...g, models: g.models.filter((m) => m.name.toLowerCase().includes(q)) }))
-      .filter((g) => g.models.length > 0)
-  }
-  // 专属倍率会改变生效值,不能只依赖后端按默认倍率的排序。
-  return [...groups].sort(
-    (a, b) => effectiveRate(a) - effectiveRate(b) || a.name.localeCompare(b.name)
-  )
+  return plans
+    .map((p) => {
+      const models = p.models
+        .map((m) => filterModel(m, q))
+        .filter((m) => m.protocols.length > 0)
+      return { ...p, models }
+    })
+    .filter((p) => p.models.length > 0)
 })
+
+/** 模型按搜索词裁剪展示名/标识,按所选协议裁剪协议行。 */
+function filterModel(m: CatalogModel, q: string): CatalogModel {
+  const hit = !q || m.display_name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+  if (!hit) return { ...m, protocols: [] }
+  if (selectedProtocol.value === 'all') return m
+  return { ...m, protocols: m.protocols.filter((p) => p.protocol === selectedProtocol.value) }
+}
 </script>
 
 <style scoped>

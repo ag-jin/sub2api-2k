@@ -85,6 +85,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Key:                k.Key,
 		Name:               k.Name,
 		GroupID:            k.GroupID,
+		PricingPlanID:      k.PricingPlanID,
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -872,5 +873,17 @@ func PromoCodeUsageFromService(u *service.PromoCodeUsage) *PromoCodeUsage {
 		BonusAmount: u.BonusAmount,
 		UsedAt:      u.UsedAt,
 		User:        UserFromServiceShallow(u.User),
+	}
+}
+
+func PricingPlanOptionFromService(p *service.PricingPlan) *PricingPlanOption {
+	if p == nil {
+		return nil
+	}
+	return &PricingPlanOption{
+		ID:          p.ID,
+		Name:        p.Name,
+		Title:       p.Title,
+		Description: p.Description,
 	}
 }

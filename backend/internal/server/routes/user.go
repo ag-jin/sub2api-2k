@@ -89,6 +89,12 @@ func RegisterUserRoutes(
 			groups.GET("/rates", h.APIKey.GetUserGroupRates)
 		}
 
+		// 用户可选购/可绑定的定价套餐（白名单：id/name/title/description）
+		pricingPlans := authenticated.Group("/pricing-plans")
+		{
+			pricingPlans.GET("/available", h.APIKey.GetSelectablePricingPlans)
+		}
+
 		// 用户可用渠道（非管理员接口）
 		channels := authenticated.Group("/channels")
 		{

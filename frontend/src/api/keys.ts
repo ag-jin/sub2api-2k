@@ -48,7 +48,7 @@ export async function getById(id: number): Promise<ApiKey> {
 /**
  * Create new API key
  * @param name - Key name
- * @param groupId - Optional group ID
+ * @param pricingPlanId - Optional pricing plan ID to bind (mutually exclusive with group_id)
  * @param customKey - Optional custom key value
  * @param ipWhitelist - Optional IP whitelist
  * @param ipBlacklist - Optional IP blacklist
@@ -59,7 +59,7 @@ export async function getById(id: number): Promise<ApiKey> {
  */
 export async function create(
   name: string,
-  groupId?: number | null,
+  pricingPlanId?: number | null,
   customKey?: string,
   ipWhitelist?: string[],
   ipBlacklist?: string[],
@@ -68,8 +68,8 @@ export async function create(
   rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number }
 ): Promise<ApiKey> {
   const payload: CreateApiKeyRequest = { name }
-  if (groupId !== undefined) {
-    payload.group_id = groupId
+  if (pricingPlanId !== undefined && pricingPlanId !== null) {
+    payload.pricing_plan_id = pricingPlanId
   }
   if (customKey) {
     payload.custom_key = customKey

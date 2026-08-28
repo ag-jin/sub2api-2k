@@ -90,6 +90,11 @@ func GroupID(v int64) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldGroupID, v))
 }
 
+// PricingPlanID applies equality check predicate on the "pricing_plan_id" field. It's identical to PricingPlanIDEQ.
+func PricingPlanID(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldPricingPlanID, v))
+}
+
 // Status applies equality check predicate on the "status" field. It's identical to StatusEQ.
 func Status(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldStatus, v))
@@ -468,6 +473,36 @@ func GroupIDIsNil() predicate.APIKey {
 // GroupIDNotNil applies the NotNil predicate on the "group_id" field.
 func GroupIDNotNil() predicate.APIKey {
 	return predicate.APIKey(sql.FieldNotNull(FieldGroupID))
+}
+
+// PricingPlanIDEQ applies the EQ predicate on the "pricing_plan_id" field.
+func PricingPlanIDEQ(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldPricingPlanID, v))
+}
+
+// PricingPlanIDNEQ applies the NEQ predicate on the "pricing_plan_id" field.
+func PricingPlanIDNEQ(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNEQ(FieldPricingPlanID, v))
+}
+
+// PricingPlanIDIn applies the In predicate on the "pricing_plan_id" field.
+func PricingPlanIDIn(vs ...int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldIn(FieldPricingPlanID, vs...))
+}
+
+// PricingPlanIDNotIn applies the NotIn predicate on the "pricing_plan_id" field.
+func PricingPlanIDNotIn(vs ...int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotIn(FieldPricingPlanID, vs...))
+}
+
+// PricingPlanIDIsNil applies the IsNil predicate on the "pricing_plan_id" field.
+func PricingPlanIDIsNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldIsNull(FieldPricingPlanID))
+}
+
+// PricingPlanIDNotNil applies the NotNil predicate on the "pricing_plan_id" field.
+func PricingPlanIDNotNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotNull(FieldPricingPlanID))
 }
 
 // StatusEQ applies the EQ predicate on the "status" field.
@@ -1163,6 +1198,29 @@ func HasGroup() predicate.APIKey {
 func HasGroupWith(preds ...predicate.Group) predicate.APIKey {
 	return predicate.APIKey(func(s *sql.Selector) {
 		step := newGroupStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasPricingPlan applies the HasEdge predicate on the "pricing_plan" edge.
+func HasPricingPlan() predicate.APIKey {
+	return predicate.APIKey(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, PricingPlanTable, PricingPlanColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasPricingPlanWith applies the HasEdge predicate on the "pricing_plan" edge with a given conditions (other predicates).
+func HasPricingPlanWith(preds ...predicate.PricingPlan) predicate.APIKey {
+	return predicate.APIKey(func(s *sql.Selector) {
+		step := newPricingPlanStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

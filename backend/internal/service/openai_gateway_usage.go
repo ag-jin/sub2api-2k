@@ -180,6 +180,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	pricingAt := openAIUsagePricingAt(input)
 	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, pricingAt)
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
+	if apiKey.ActivePricingPlanOffer != nil && apiKey.ActivePricingPlanOffer.Pricing != nil {
+		multiplier = 1
+		imageMultiplier = 1
+		videoMultiplier = 1
+	}
 
 	var cost *CostBreakdown
 	var err error
@@ -511,6 +516,14 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	pricingAt time.Time,
 ) (*CostBreakdown, error) {
 	billingModel := firstUsageBillingModel(billingModels)
+	if apiKey != nil && apiKey.ActivePricingPlanOffer != nil {
+		if apiKey.ActivePricingPlanOffer.Pricing == nil {
+			return &CostBreakdown{ActualCost: 0}, nil
+		}
+		if result != nil && (result.WebSearchCalls > 0 || result.AudioUsage != nil) {
+			return &CostBreakdown{ActualCost: 0}, nil
+		}
+	}
 	if result != nil && result.WebSearchCalls > 0 {
 		// Codex alpha/search 网页搜索按次计费：上游不返回 usage/token 字段，单价只取
 		// 分组覆盖价（nil 时默认 0.01 = 官方 $10/1000 次），不参与渠道级模型定价。
@@ -573,7 +586,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	// Search surcharge is additive. Never let a zero/default search cost mask a
 	// real token-pricing failure for requests that attempted token billing.
 	searchCost := (*CostBreakdown)(nil)
-	if result != nil && result.SearchCount > 0 {
+	if result != nil && result.SearchCount > 0 && (apiKey == nil || apiKey.ActivePricingPlanOffer == nil) {
 		price := groupSearchPricePer1kFromAPIKey(apiKey)
 		if price != nil && *price == 0 {
 			logger.L().Info("openai_usage.search_price_per_1k_explicit_free",
@@ -656,6 +669,18 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	serviceTier string,
 	longContextBillingGate *bool,
 ) (*CostBreakdown, error) {
+	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil {
+		var groupID *int64
+		if apiKey != nil && apiKey.Group != nil {
+			groupID = &apiKey.Group.ID
+		}
+		return s.billingService.CalculateCostUnified(CostInput{
+			Ctx: ctx, Model: billingModel, GroupID: groupID, Group: apiKey.Group,
+			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, PricingAt: pricingAt,
+			ServiceTier: serviceTier, Resolver: s.resolver, Resolved: resolved,
+			LongContextBillingEnabled: longContextBillingGate,
+		})
+	}
 	if s.resolver != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
@@ -683,17 +708,28 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
-	if resolved != nil && resolved.Source == PricingSourceGroup &&
+	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourcePlan) &&
 		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
-		gid := apiKey.Group.ID
+		var groupID *int64
+		if apiKey != nil && apiKey.Group != nil {
+			groupID = &apiKey.Group.ID
+		}
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
+			Ctx: ctx, Model: billingModel, GroupID: groupID, Group: apiKey.Group,
 			RequestCount: result.ImageCount, SizeTier: sizeTier,
 			RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
 		})
 		if err == nil {
 			return cost
 		}
+		if resolved.Source == PricingSourcePlan {
+			logger.LegacyPrintf("service.openai_gateway", "Calculate plan image cost failed: %v", err)
+			return &CostBreakdown{ActualCost: 0}
+		}
+	}
+	if apiKey != nil && apiKey.ActivePricingPlanOffer != nil {
+		logger.LegacyPrintf("service.openai_gateway", "Pricing plan offer has no image pricing for model %s", billingModel)
+		return &CostBreakdown{ActualCost: 0}
 	}
 	groupConfig := imagePriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredImagePrice(apiKey, sizeTier) {
@@ -743,16 +779,27 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 	resolution := NormalizeVideoBillingResolutionOrDefault(result.VideoResolution)
 	durationSeconds := NormalizeVideoBillingDurationSecondsOrDefault(result.VideoDurationSeconds)
 	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
-	if resolved != nil && resolved.Source == PricingSourceGroup && resolved.Mode == BillingModeVideo {
-		gid := apiKey.Group.ID
+	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourcePlan) && resolved.Mode == BillingModeVideo {
+		var groupID *int64
+		if apiKey != nil && apiKey.Group != nil {
+			groupID = &apiKey.Group.ID
+		}
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
+			Ctx: ctx, Model: billingModel, GroupID: groupID, Group: apiKey.Group,
 			UsageUnits: float64(videoCount * durationSeconds), SizeTier: resolution,
 			RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
 		})
 		if err == nil {
 			return cost
 		}
+		if resolved.Source == PricingSourcePlan {
+			logger.LegacyPrintf("service.openai_gateway", "Calculate plan video cost failed: %v", err)
+			return &CostBreakdown{ActualCost: 0}
+		}
+	}
+	if apiKey != nil && apiKey.ActivePricingPlanOffer != nil {
+		logger.LegacyPrintf("service.openai_gateway", "Pricing plan offer has no video pricing for model %s", billingModel)
+		return &CostBreakdown{ActualCost: 0}
 	}
 	groupConfig := videoPriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredVideoPrice(apiKey, billingModel, resolution) {
@@ -881,7 +928,13 @@ func (s *OpenAIGatewayService) filterCNProviderBillingModelCandidates(ctx contex
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIChannelPricing(ctx context.Context, billingModel string, apiKey *APIKey) *ResolvedPricing {
-	if s.resolver == nil || apiKey == nil || apiKey.Group == nil {
+	if s.resolver == nil || apiKey == nil {
+		return nil
+	}
+	if offer := apiKey.ActivePricingPlanOffer; offer != nil && offer.Pricing != nil {
+		return s.resolver.Resolve(ctx, PricingInput{Model: billingModel, PlanPricing: offer.Pricing})
+	}
+	if apiKey.Group == nil {
 		return nil
 	}
 	gid := apiKey.Group.ID

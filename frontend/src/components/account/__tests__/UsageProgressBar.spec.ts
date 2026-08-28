@@ -108,8 +108,8 @@ describe('UsageProgressBar', () => {
     })
 
     expect(wrapper.text()).toContain('100%')
-    expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 100%')
-    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-green-500')
+    expect(wrapper.get('.h-2 > div').attributes('style')).toContain('width: 100%')
+    expect(wrapper.get('.h-2 > div').classes()).toContain('bg-green-500')
   })
 
   it('剩余容量模式在低量和耗尽时缩短并变红', async () => {
@@ -123,14 +123,14 @@ describe('UsageProgressBar', () => {
     })
 
     expect(wrapper.text()).toContain('15%')
-    expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 15%')
-    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
+    expect(wrapper.get('.h-2 > div').attributes('style')).toContain('width: 15%')
+    expect(wrapper.get('.h-2 > div').classes()).toContain('bg-red-500')
 
     await wrapper.setProps({ utilization: 0 })
 
     expect(wrapper.text()).toContain('0%')
-    expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 0%')
-    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
+    expect(wrapper.get('.h-2 > div').attributes('style')).toContain('width: 0%')
+    expect(wrapper.get('.h-2 > div').classes()).toContain('bg-red-500')
   })
 
   it('默认利用率模式仍把超限显示为满格红色', () => {
@@ -143,7 +143,7 @@ describe('UsageProgressBar', () => {
     })
 
     expect(wrapper.text()).toContain('120%')
-    expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 100%')
-    expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
+    expect(wrapper.get('.h-2 > div').attributes('style')).toContain('width: 100%')
+    expect(wrapper.get('.h-2 > div').classes()).toContain('bg-red-500')
   })
 })

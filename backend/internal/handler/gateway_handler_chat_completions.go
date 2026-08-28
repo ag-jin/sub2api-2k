@@ -76,6 +76,20 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+
+	// 定价套餐准入（模型解析后）：绑定套餐的 Key 必须命中启用的
+	// model×chat_completions 条目；未命中直接走本端点协议错误路径，
+	// 不进入选号。层解析失败由下方分层逻辑处理。
+	planState, rStatus, rType, rMsg := resolvePricingPlanGatewayState(apiKey, reqModel, service.PricingPlanProtocolChatCompletions)
+	if rType != "" {
+		h.chatCompletionsErrorResponse(c, rStatus, rType, rMsg)
+		return
+	}
+	if planState.active && !planState.bindNextLayer(c, apiKey, h.gatewayService.ResolveGroupByID) {
+		h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "api_error", pricingPlanNoLayersMessage)
+		return
+	}
+
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !compositeTargetPlatformResolved(c, apiKey, reqModel) {
 		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by composite groups")
@@ -161,10 +175,13 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		selectionSessionHash = "gemini:" + selectionSessionHash
 	}
 	// 3. Account selection + failover loop
-	fs := NewFailoverState(h.maxAccountSwitches, false)
-	if groupPlatform == service.PlatformGemini {
-		fs = NewFailoverState(h.maxAccountSwitchesGemini, false)
+	newLayerFS := func() *FailoverState {
+		if groupPlatform == service.PlatformGemini {
+			return NewFailoverState(h.maxAccountSwitchesGemini, false)
+		}
+		return NewFailoverState(h.maxAccountSwitches, false)
 	}
+	fs := newLayerFS()
 
 	for {
 		if c.Request.Context().Err() != nil {
@@ -177,6 +194,13 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				cls = classifySelectionFailureError(err, cls)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				}
+				// 套餐分层：层内首轮选号即无可用账号时推进到下一层（未提交响应前）。
+				if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+					fs = newLayerFS()
+					channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+					reqLog.Info("gateway.cc.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+					continue
 				}
 				message := cls.Message
 				if !cls.ModelNotFound {
@@ -193,6 +217,13 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default:
+				// 套餐分层：层内 failover 耗尽且未提交响应时允许推进下一层。
+				if planState.active && planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+					fs = newLayerFS()
+					channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+					reqLog.Info("gateway.cc.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+					continue
+				}
 				if fs.LastFailoverErr != nil {
 					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 				} else {
@@ -203,6 +234,17 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+
+		// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时排除重选。
+		if !planState.accountPlanProtocolAllowed(account) {
+			if selection.Acquired && selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+				selection.ReleaseFunc = nil
+			}
+			fs.FailedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("gateway.cc.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+			continue
+		}
 
 		// 4. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc

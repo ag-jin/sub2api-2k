@@ -220,6 +220,7 @@ func ProvideAccountUsageService(
 		NewUpstreamBalanceFetcher(httpUpstream),
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.SetAccountRuntimeBlocker(openAIGatewayService)
 	return service
 }
 
@@ -463,6 +464,7 @@ func ProvideRateLimitService(
 	openAI403CounterCache OpenAI403CounterCache,
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
+	httpUpstream HTTPUpstream,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
@@ -472,6 +474,7 @@ func ProvideRateLimitService(
 	svc.SetOpenAI403CounterCache(openAI403CounterCache)
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
+	svc.SetOpenCodeUsageFetcher(NewOpenCodeUsageFetcher(httpUpstream))
 	return svc
 }
 
@@ -788,10 +791,67 @@ func ProvideAPIKeyService(
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
 	concurrencyService *ConcurrencyService,
+	pricingPlanRepo PricingPlanRepository,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
 	svc.SetConcurrencyService(concurrencyService)
+	svc.SetPricingPlanRepository(pricingPlanRepo)
+	// 把 APIKeyService 的认证缓存失效能力反向注入套餐仓储（可选接口）：
+	// 套餐内容/删除变更时按 planID 批量失效绑定 Key 的快照（L2 + 跨实例
+	// L1 广播）。走接口断言而非仓储构造参数，避免仓储与 APIKeyService
+	// 形成构造环（APIKeyService 构造时又依赖 PricingPlanRepository）。
+	if settable, ok := pricingPlanRepo.(interface {
+		SetAuthCacheInvalidator(APIKeyAuthCacheInvalidator)
+	}); ok {
+		settable.SetAuthCacheInvalidator(svc)
+	}
+	return svc
+}
+
+// ProvideGatewayService wires GatewayService and connects the pricing plan
+// repository (used for plan-aware layer resolution; hot path reads the
+// auth-cache plan snapshot instead of the repository).
+func ProvideGatewayService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	identityService *IdentityService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	claudeTokenProvider *ClaudeTokenProvider,
+	sessionLimitCache SessionLimitCache,
+	rpmCache RPMCache,
+	digestStore *DigestSessionStore,
+	settingService *SettingService,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	channelService *ChannelService,
+	resolver *ModelPricingResolver,
+	compositeResolver *CompositeRouteResolver,
+	balanceNotifyService *BalanceNotifyService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	pricingPlanRepo PricingPlanRepository,
+) *GatewayService {
+	svc := NewGatewayService(
+		accountRepo, groupRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo,
+		userGroupRateRepo, cache, cfg, schedulerSnapshot, concurrencyService, billingService,
+		rateLimitService, billingCacheService, identityService, httpUpstream, deferredService,
+		claudeTokenProvider, sessionLimitCache, rpmCache, digestStore, settingService,
+		tlsFPProfileService, channelService, resolver, compositeResolver, balanceNotifyService,
+		userPlatformQuotaRepo,
+	)
+	svc.SetPricingPlanRepository(pricingPlanRepo)
 	return svc
 }
 
@@ -817,7 +877,7 @@ var ProviderSet = wire.NewSet(
 	ProvideBillingCacheService,
 	NewAnnouncementService,
 	NewAdminService,
-	NewGatewayService,
+	ProvideGatewayService,
 	NewOpenAIGatewayService,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
@@ -921,6 +981,7 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
+	NewPricingPlanService, // 定价套餐管理端服务（CRUD 含模型协议条目与路由层）
 )
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。

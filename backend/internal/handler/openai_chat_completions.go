@@ -76,6 +76,18 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// 定价套餐准入（模型解析后）：绑定套餐的 Key 必须命中启用的
+	// model×chat_completions 条目；未命中直接走本端点协议错误路径，
+	// 不进入选号。层解析失败由下方分层逻辑处理。
+	planState, rStatus, rType, rMsg := resolvePricingPlanGatewayState(apiKey, reqModel, service.PricingPlanProtocolChatCompletions)
+	if rType != "" {
+		h.errorResponse(c, rStatus, rType, rMsg)
+		return
+	}
+	if planState.active && !planState.bindNextLayer(c, apiKey, h.gatewayService.ResolveGroupByID) {
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", pricingPlanNoLayersMessage)
+		return
+	}
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
@@ -153,6 +165,28 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	ccPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(ccPricingCtx)
 
+	// 套餐分层：层内选号耗尽或可重试 failover 耗尽（均未写出任何响应字节）
+	// 时推进到下一层。推进成功后整层重置失败状态（排除集/切换预算/否决
+	// 计数/同账号重试/OAuth 429 预算），并按新层分组重解渠道映射、重装
+	// 利润门与定价上下文；legacy 无套餐路径恒返回 false，行为保持不变。
+	// 是否已写出响应由 advanceLayer 内部校验（streamStarted / Writer.Size）。
+	advancePlanLayer := func() bool {
+		if !planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+			return false
+		}
+		switchCount = 0
+		profitVetoCount = 0
+		failedAccountIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		lastFailoverErr = nil
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+		ccPricingCtx, pricingAt = h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+		c.Request = c.Request.WithContext(ccPricingCtx)
+		reqLog.Info("openai_chat_completions.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+		return true
+	}
+
 	for {
 		if failoverClientGone(c) {
 			return
@@ -187,9 +221,18 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
+				// 套餐分层：层内首轮选号即无可用账号时推进到下一层
+				// （未提交响应前）。
+				if advancePlanLayer() {
+					continue
+				}
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 				return
 			} else {
+				// 套餐分层：层内选号耗尽且未提交响应时推进到下一层。
+				if advancePlanLayer() {
+					continue
+				}
 				if lastFailoverErr != nil {
 					h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 				} else {
@@ -203,6 +246,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
 			}
+			// 套餐分层：层内选号未返回账号（未提交响应前）时推进到下一层。
+			if advancePlanLayer() {
+				continue
+			}
 			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 			return
 		}
@@ -211,6 +258,18 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+
+		// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时释放并排除，
+		// 在本层内重新选号。
+		if !planState.accountPlanProtocolAllowed(account) {
+			if selection.Acquired && selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+				selection.ReleaseFunc = nil
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("openai_chat_completions.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+			continue
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -353,11 +412,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						// 套餐分层：层内可重试 failover 耗尽且未提交响应时
+						// 推进到下一层。
+						if advancePlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
+						// 套餐分层：层内 OAuth 429 failover 预算耗尽且未提交
+						// 响应时推进到下一层。
+						if advancePlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

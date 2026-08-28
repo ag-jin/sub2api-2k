@@ -18,9 +18,10 @@ import (
 )
 
 type authRepoStub struct {
-	getByKeyForAuth   func(ctx context.Context, key string) (*APIKey, error)
-	listKeysByUserID  func(ctx context.Context, userID int64) ([]string, error)
-	listKeysByGroupID func(ctx context.Context, groupID int64) ([]string, error)
+	getByKeyForAuth         func(ctx context.Context, key string) (*APIKey, error)
+	listKeysByUserID        func(ctx context.Context, userID int64) ([]string, error)
+	listKeysByGroupID       func(ctx context.Context, groupID int64) ([]string, error)
+	listKeysByPricingPlanID func(ctx context.Context, planID int64) ([]string, error)
 }
 
 func (s *authRepoStub) Create(ctx context.Context, key *APIKey) error {
@@ -105,6 +106,13 @@ func (s *authRepoStub) ListKeysByGroupID(ctx context.Context, groupID int64) ([]
 		panic("unexpected ListKeysByGroupID call")
 	}
 	return s.listKeysByGroupID(ctx, groupID)
+}
+
+func (s *authRepoStub) ListKeysByPricingPlanID(ctx context.Context, planID int64) ([]string, error) {
+	if s.listKeysByPricingPlanID == nil {
+		panic("unexpected ListKeysByPricingPlanID call")
+	}
+	return s.listKeysByPricingPlanID(ctx, planID)
 }
 
 func (s *authRepoStub) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error) {
@@ -269,7 +277,8 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 		},
 	}
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
 	roundTrip := svc.snapshotToAPIKey(apiKey.Key, snapshot)
 
 	require.NotNil(t, roundTrip)
@@ -308,7 +317,8 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesReasoningEffortPolicy(t *testi
 		},
 	}
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
 	roundTrip := svc.snapshotToAPIKey(apiKey.Key, snapshot)
 
 	require.NotNil(t, roundTrip)
@@ -528,6 +538,24 @@ func TestAPIKeyService_InvalidateAuthCacheByGroupID(t *testing.T) {
 	svc := NewAPIKeyService(repo, nil, nil, nil, nil, cache, cfg)
 
 	svc.InvalidateAuthCacheByGroupID(context.Background(), 9)
+	require.Len(t, cache.deleteAuthKeys, 2)
+}
+
+func TestAPIKeyService_InvalidateAuthCacheByPricingPlanID(t *testing.T) {
+	cache := &authCacheStub{}
+	repo := &authRepoStub{
+		listKeysByPricingPlanID: func(ctx context.Context, planID int64) ([]string, error) {
+			require.Equal(t, int64(42), planID)
+			return []string{"plan-key-1", "plan-key-2"}, nil
+		},
+	}
+	cfg := &config.Config{
+		APIKeyAuth: config.APIKeyAuthCacheConfig{L2TTLSeconds: 60},
+	}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, cache, cfg)
+
+	svc.InvalidateAuthCacheByPricingPlanID(context.Background(), 42)
+
 	require.Len(t, cache.deleteAuthKeys, 2)
 }
 

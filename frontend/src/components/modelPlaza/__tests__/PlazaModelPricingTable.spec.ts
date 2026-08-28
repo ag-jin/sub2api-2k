@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PlazaModelPricingTable from '../PlazaModelPricingTable.vue'
-import type { PlazaModel } from '@/api/modelPlaza'
+import type { CatalogModel, CatalogProtocol } from '@/api/modelPlaza'
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
@@ -13,12 +13,12 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-function tokenModel(overrides: Partial<PlazaModel> = {}): PlazaModel {
+function protocol(overrides: Partial<CatalogProtocol> = {}): CatalogProtocol {
   return {
-    name: 'claude-sonnet',
-    platform: 'anthropic',
+    protocol: 'anthropic',
+    direct: true,
+    billing_mode: 'token',
     pricing: {
-      billing_mode: 'token',
       input_price: 3e-6,
       output_price: 1.5e-5,
       cache_write_price: 3.75e-6,
@@ -28,380 +28,171 @@ function tokenModel(overrides: Partial<PlazaModel> = {}): PlazaModel {
       per_request_price: null,
       intervals: []
     },
-    official_pricing: {
-      input_price: 3e-6,
-      output_price: 1.5e-5,
-      cache_write_price: 3.75e-6,
-      cache_write_1h_price: 6e-6,
-      cache_read_price: 3e-7
-    },
     ...overrides
   }
 }
 
-function mountTable(
-  models: PlazaModel[],
-  rateMultiplier: number,
-  userRateMultiplier?: number | null,
-  extraProps?: { imageRateIndependent?: boolean; imageRateMultiplier?: number | null }
-) {
-  return mount(PlazaModelPricingTable, {
-    props: { models, rateMultiplier, userRateMultiplier: userRateMultiplier ?? null, ...extraProps }
-  })
+function model(overrides: Partial<CatalogModel> = {}): CatalogModel {
+  return {
+    id: 'claude-sonnet-4-5',
+    display_name: 'Claude Sonnet 4.5',
+    protocols: [protocol()],
+    ...overrides
+  }
 }
 
-describe('PlazaModelPricingTable', () => {
-  it('倍率为 1 时展示渠道单价原值($/1M),价格保底 2 位小数', () => {
-    const wrapper = mountTable([tokenModel()], 1)
+function mountTable(models: CatalogModel[]) {
+  return mount(PlazaModelPricingTable, { props: { models } })
+}
+
+describe('PlazaModelPricingTable (PricingPlan 目录表)', () => {
+  it('按协议行渲染:展示名 + 模型标识 + 输入/输出/缓存价($/1M,保底 2 位小数)', () => {
+    const wrapper = mountTable([model()])
     const text = wrapper.text()
+    expect(text).toContain('Claude Sonnet 4.5')
+    expect(text).toContain('claude-sonnet-4-5')
     expect(text).toContain('$3.00')
     expect(text).toContain('$15.00')
     // 缓存写 / 读(超过 2 位小数原样保留)
     expect(text).toContain('$3.75')
     expect(text).toContain('$0.30')
-    // 倍率列
-    expect(text).toContain('1x')
   })
 
-  it('倍率 ≠ 1 时价格列为折后实付价,官方价列保持原价', () => {
-    const wrapper = mountTable([tokenModel()], 0.5)
-    const text = wrapper.text()
-    // 实付 = 3 × 0.5 / 15 × 0.5
-    expect(text).toContain('$1.50')
-    expect(text).toContain('$7.50')
-    // 官方价原值仍在(官方列不乘倍率)
-    expect(text).toContain('$3.00')
-    expect(text).toContain('$15.00')
-    expect(text).toContain('0.5x')
+  it('协议行包含协议名/计费模式/直连徽章;direct=false 展示中转', () => {
+    const direct = mountTable([model()])
+    expect(direct.text()).toContain('anthropic')
+    expect(direct.text()).toContain('modelPlaza.table.billingToken')
+    // 表头也有 Direct 列名,断言行内末列徽章
+    const lastCell = direct.findAll('tbody tr td').at(-1)!
+    expect(lastCell.text()).toBe('modelPlaza.table.direct')
+
+    const relay = mountTable([model({ protocols: [protocol({ direct: false })] })])
+    const relayCell = relay.findAll('tbody tr td').at(-1)!
+    expect(relayCell.text()).toBe('modelPlaza.table.relay')
   })
 
-  it('用户专属倍率覆盖分组倍率,并划线展示原倍率', () => {
-    const wrapper = mountTable([tokenModel()], 1, 0.8)
-    const text = wrapper.text()
-    // 实付按 0.8:3 × 0.8 = 2.4
-    expect(text).toContain('$2.40')
-    expect(text).toContain('$12.00')
-    // 倍率列:原倍率划线 + 专属倍率
-    const struck = wrapper.find('td .line-through')
-    expect(struck.exists()).toBe(true)
-    expect(struck.text()).toBe('1x')
-    expect(text).toContain('0.8x')
-  })
-
-  it('模型按官方输出价从高到低排序,无官方价的排最后', () => {
-    const expensive = tokenModel({
-      name: 'model-expensive',
-      official_pricing: {
-        input_price: 1e-5,
-        output_price: 7.5e-5,
-        cache_write_price: null,
-        cache_write_1h_price: null,
-        cache_read_price: null
-      }
+  it('多协议模型:每个协议各占一行,模型单元格跨协议行合并', () => {
+    const m = model({
+      protocols: [protocol({ protocol: 'openai', direct: true }), protocol({ protocol: 'anthropic', direct: false })]
     })
-    const cheap = tokenModel({
-      name: 'model-cheap',
-      official_pricing: {
-        input_price: 1e-6,
-        output_price: 5e-6,
-        cache_write_price: null,
-        cache_write_1h_price: null,
-        cache_read_price: null
-      }
+    const wrapper = mountTable([m])
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows).toHaveLength(2)
+    // 协议行按协议名排序:anthropic 在前;模型名 + 标识只在首行(合并单元格)
+    expect(rows[0].text()).toContain('Claude Sonnet 4.5')
+    expect(rows[0].text()).toContain('anthropic')
+    expect(rows[1].text()).not.toContain('Claude Sonnet 4.5')
+    expect(rows[1].text()).toContain('openai')
+    expect(rows[0].find('td').attributes('rowspan')).toBe('2')
+  })
+
+  it('token 协议行排前,按次/按图沉底;同组按输出价降序,同价按展示名降序', () => {
+    const tokenExpensive = model({
+      id: 'gpt-5.6',
+      display_name: 'GPT-5.6',
+      protocols: [protocol({ protocol: 'openai', pricing: { ...protocol().pricing, input_price: 1e-5, output_price: 7.5e-5 } })]
     })
-    const noOfficial = tokenModel({ name: 'model-no-official', official_pricing: null })
-
-    const wrapper = mountTable([cheap, noOfficial, expensive], 1)
-    const names = wrapper.findAll('tbody tr').map((tr) => tr.find('td').text())
-    expect(names).toEqual(['model-expensive', 'model-cheap', 'model-no-official'])
-  })
-
-  it('官方输出价相同时按模型名降序(新版本号在前)', () => {
-    const older = tokenModel({ name: 'gpt-5.5' })
-    const newer = tokenModel({ name: 'gpt-5.6-sol' })
-
-    const wrapper = mountTable([older, newer], 1)
-    const names = wrapper.findAll('tbody tr').map((tr) => tr.find('td').text())
-    expect(names).toEqual(['gpt-5.6-sol', 'gpt-5.5'])
-  })
-
-  it('按图片/按次计费的模型沉到末尾,不与 token 模型按官方价混排', () => {
-    // 官方输出价 $10,介于下面两个 token 模型之间,但因计费模式不同应排最后
-    const image = tokenModel({
-      name: 'gpt-image-2',
-      pricing: {
-        billing_mode: 'image',
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: 0.002,
-        intervals: []
-      },
-      official_pricing: {
-        input_price: 5e-6,
-        output_price: 1e-5,
-        cache_write_price: null,
-        cache_write_1h_price: null,
-        cache_read_price: 1.25e-6
-      }
+    const tokenCheap = model({
+      id: 'gpt-5.6-luna',
+      display_name: 'GPT-5.6 Luna',
+      protocols: [protocol({ protocol: 'openai', pricing: { ...protocol().pricing, input_price: 1e-6, output_price: 5e-6 } })]
     })
-    const pricier = tokenModel({
-      name: 'gpt-5.6-terra',
-      official_pricing: {
-        input_price: 2.5e-6,
-        output_price: 1.5e-5,
-        cache_write_price: null,
-        cache_write_1h_price: null,
-        cache_read_price: null
-      }
-    })
-    const cheaper = tokenModel({
-      name: 'gpt-5.6-luna',
-      official_pricing: {
-        input_price: 1e-6,
-        output_price: 6e-6,
-        cache_write_price: null,
-        cache_write_1h_price: null,
-        cache_read_price: null
-      }
-    })
-
-    const wrapper = mountTable([pricier, image, cheaper], 1)
-    const names = wrapper.findAll('tbody tr').map((tr) => tr.find('td').text())
-    expect(names[0]).toBe('gpt-5.6-terra')
-    expect(names[1]).toBe('gpt-5.6-luna')
-    // 首列含「按图片计费」徽章文本,只断言模型名
-    expect(names[2]).toContain('gpt-image-2')
-  })
-
-  it('两级表头:实付区与官方区各拆输入/输出/缓存列', () => {
-    const wrapper = mountTable([tokenModel()], 1)
-    const text = wrapper.text()
-    expect(text).toContain('modelPlaza.table.paidPrice')
-    expect(text).toContain('modelPlaza.table.officialPrice')
-    // token 行:模型 + 实付 3 列 + 官方 3 列 + 倍率
-    expect(wrapper.findAll('tbody td')).toHaveLength(8)
-  })
-
-  it('官方价包含 1h 缓存写入价;official_pricing 为 null 时官方三列显示 -', () => {
-    const withOfficial = mountTable([tokenModel()], 1)
-    expect(withOfficial.text()).toContain('$6.00')
-    expect(withOfficial.text()).toContain('(1h')
-
-    const withoutOfficial = mountTable([tokenModel({ official_pricing: null })], 1)
-    const cells = withoutOfficial.findAll('tbody td')
-    // 官方 输入/输出/缓存 三列均为 -
-    expect(cells[4].text().trim()).toBe('-')
-    expect(cells[5].text().trim()).toBe('-')
-    expect(cells[6].text().trim()).toBe('-')
-  })
-
-  it('per_request 模型按单次价 × 倍率展示,官方价列显示 -', () => {
-    const model = tokenModel({
-      name: 'search-tool',
-      pricing: {
+    const perRequest = model({
+      id: 'search-tool',
+      display_name: 'Search Tool',
+      protocols: [protocol({
+        protocol: 'openai',
         billing_mode: 'per_request',
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: 0.04,
-        intervals: []
-      },
-      official_pricing: null
+        pricing: { ...protocol().pricing, input_price: null, output_price: null, cache_write_price: null, cache_read_price: null, per_request_price: 0.04 }
+      })]
     })
-    const wrapper = mountTable([model], 0.5)
-    const text = wrapper.text()
-    // 0.04 × 0.5 = 0.02,scale=1
-    expect(text).toContain('$0.02')
+
+    const wrapper = mountTable([perRequest, tokenCheap, tokenExpensive])
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows[0].find('td').text()).toContain('GPT-5.6')
+    expect(rows[1].find('td').text()).toContain('GPT-5.6 Luna')
+    expect(rows[2].find('td').text()).toContain('Search Tool')
+  })
+
+  it('按次计费协议行展示单次价 + / 次后缀,缓存列为 -', () => {
+    const m = model({
+      protocols: [protocol({
+        protocol: 'openai',
+        billing_mode: 'per_request',
+        pricing: { ...protocol().pricing, input_price: null, output_price: null, cache_write_price: null, cache_read_price: null, per_request_price: 0.04 }
+      })]
+    })
+    const text = mountTable([m]).text()
+    expect(text).toContain('$0.04')
     expect(text).toContain('modelPlaza.table.perRequest')
-    // 单位后缀跟在价格后(按次 → / 次)
     expect(text).toContain('modelPlaza.table.perUnitRequest')
   })
 
-  it('token 模型阶梯定价内联进输入/输出列,按倍率折算', () => {
-    const model = tokenModel({
-      pricing: {
-        billing_mode: 'token',
-        input_price: 3e-6,
-        output_price: 1.5e-5,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: null,
-        intervals: [
-          {
-            min_tokens: 0,
-            max_tokens: 200000,
-            tier_label: '',
-            input_price: 3e-6,
-            output_price: 1.5e-5,
-            cache_write_price: null,
-            cache_read_price: null,
-            per_request_price: null
-          },
-          {
-            min_tokens: 200000,
-            max_tokens: null,
-            tier_label: '',
-            input_price: 6e-6,
-            output_price: 3e-5,
-            cache_write_price: null,
-            cache_read_price: null,
-            per_request_price: null
-          }
-        ]
-      }
+  it('token 阶梯定价内联进输入/输出列;按次阶梯以芯片展示', () => {
+    const tiered = model({
+      protocols: [protocol({
+        pricing: {
+          ...protocol().pricing,
+          cache_write_price: null,
+          cache_read_price: null,
+          intervals: [
+            { min_tokens: 0, max_tokens: 200000, tier_label: '', input_price: 3e-6, output_price: 1.5e-5, cache_write_price: null, cache_read_price: null, per_request_price: null },
+            { min_tokens: 200000, max_tokens: null, tier_label: '', input_price: 6e-6, output_price: 3e-5, cache_write_price: null, cache_read_price: null, per_request_price: null }
+          ]
+        }
+      })]
     })
-    const wrapper = mountTable([model], 0.5)
-    const text = wrapper.text()
-    // 区间标签按 token 数生成
+    const text = mountTable([tiered]).text()
     expect(text).toContain('≤200K')
     expect(text).toContain('>200K')
-    // 折后:输入 1.5 / 3,输出 7.5 / 15
-    expect(text).toContain('$1.50')
-    expect(text).toContain('$7.50')
-    expect(text).toContain('$15.00')
-  })
+    expect(text).toContain('$3.00')
+    expect(text).toContain('$6.00')
+    expect(text).toContain('$30.00')
 
-  it('生图独立倍率开启时,按图价格 × 独立倍率,不乘分组倍率;倍率列展示独立倍率', () => {
-    const model = tokenModel({
-      name: 'gpt-image-2',
-      pricing: {
+    const chip = model({
+      id: 'gpt-image-2',
+      display_name: 'GPT Image 2',
+      protocols: [protocol({
+        protocol: 'openai',
         billing_mode: 'image',
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: null,
-        intervals: [
-          {
-            min_tokens: 0,
-            max_tokens: null,
-            tier_label: '1K',
-            input_price: null,
-            output_price: null,
-            cache_write_price: null,
-            cache_read_price: null,
-            per_request_price: 0.02
-          }
-        ]
-      },
-      official_pricing: null
+        pricing: {
+          ...protocol().pricing,
+          input_price: null,
+          output_price: null,
+          per_request_price: null,
+          intervals: [
+            { min_tokens: 0, max_tokens: null, tier_label: '1K', input_price: null, output_price: null, cache_write_price: null, cache_read_price: null, per_request_price: 0.01 }
+          ]
+        }
+      })]
     })
-    const wrapper = mountTable([model], 0.1, null, {
-      imageRateIndependent: true,
-      imageRateMultiplier: 1
-    })
-    const text = wrapper.text()
-    // 0.02 × 1(独立倍率),而非 0.02 × 0.1
-    expect(text).toContain('$0.02')
-    expect(text).not.toContain('$0.002')
-    // 倍率列展示独立倍率 1x,而非分组倍率 0.1x
-    const rateCell = wrapper.findAll('tbody tr td').at(-1)!
-    expect(rateCell.text()).toBe('1x')
+    const chipText = mountTable([chip]).text()
+    expect(chipText).toContain('modelPlaza.table.perImage')
+    expect(chipText).toContain('1K')
+    expect(chipText).toContain('$0.01')
+    expect(chipText).toContain('modelPlaza.table.perUnitImage')
+    // 非 token:缓存列无价
+    expect(chipText).not.toContain('modelPlaza.table.cacheWrite')
   })
 
-  it('生图独立倍率关闭时,按图价格仍乘分组/专属生效倍率', () => {
-    const model = tokenModel({
-      name: 'gpt-image-2',
-      pricing: {
-        billing_mode: 'image',
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: 0.2,
-        intervals: []
-      },
-      official_pricing: null
-    })
-    const wrapper = mountTable([model], 0.1, null, { imageRateIndependent: false })
-    const text = wrapper.text()
-    expect(text).toContain('$0.02')
-    const rateCell = wrapper.findAll('tbody tr td').at(-1)!
-    expect(rateCell.text()).toBe('0.1x')
+  it('无协议的模型不渲染任何行', () => {
+    const wrapper = mountTable([model({ protocols: [] })])
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
   })
 
-  it('按图模型主行展示阶梯芯片,不把 image_output_price(每 token)当按次价', () => {
-    const model = tokenModel({
-      name: 'gpt-image-2',
-      pricing: {
-        billing_mode: 'image',
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        // 每 token 图片输出价:不应被当作按次单价展示
-        image_output_price: 3e-5,
-        per_request_price: null,
-        intervals: [
-          {
-            min_tokens: 0,
-            max_tokens: null,
-            tier_label: '1K',
-            input_price: null,
-            output_price: null,
-            cache_write_price: null,
-            cache_read_price: null,
-            per_request_price: 0.01
-          },
-          {
-            min_tokens: 0,
-            max_tokens: null,
-            tier_label: '2K',
-            input_price: null,
-            output_price: null,
-            cache_write_price: null,
-            cache_read_price: null,
-            per_request_price: 0.02
-          }
-        ]
-      },
-      official_pricing: null
+  it('无输入/输出价时展示 -', () => {
+    const m = model({
+      protocols: [protocol({
+        pricing: { ...protocol().pricing, input_price: null, output_price: null, cache_write_price: null, cache_read_price: null }
+      })]
     })
-    const wrapper = mountTable([model], 0.1)
-    const text = wrapper.text()
-    expect(text).toContain('modelPlaza.table.perImage')
-    // 芯片:1K $0.001 / 2K $0.002,单位后缀内嵌(按图 → / 张)
-    expect(text).toContain('1K')
-    expect(text).toContain('$0.001')
-    expect(text).toContain('2K')
-    expect(text).toContain('$0.002')
-    expect(text).toContain('modelPlaza.table.perUnitImage')
-    // 旧 bug:image_output_price × 0.1 = 0.000003 被当按次价
-    expect(text).not.toContain('$0.000003')
-  })
-
-  it('Composite 分组中相同模型名按具体平台分别展示徽章', () => {
-    const anthropic = tokenModel({ name: 'shared-model', platform: 'anthropic' })
-    const openai = tokenModel({ name: 'shared-model', platform: 'openai' })
-    const wrapper = mount(PlazaModelPricingTable, {
-      props: {
-        models: [anthropic, openai],
-        platform: 'composite',
-        rateMultiplier: 1
-      }
-    })
-
-    const rows = wrapper.findAll('tbody tr')
-    expect(rows).toHaveLength(2)
-    expect(rows.map((row) => row.find('td').text())).toEqual([
-      'shared-modelAnthropic',
-      'shared-modelOpenAI'
-    ])
-    expect(wrapper.text()).toContain('Anthropic')
-    expect(wrapper.text()).toContain('OpenAI')
+    const wrapper = mountTable([m])
+    const priceCell = wrapper.findAll('tbody tr td')[3]
+    expect(priceCell.text()).toContain('modelPlaza.table.input')
+    expect(priceCell.text()).toContain('modelPlaza.table.output')
+    expect(priceCell.text()).toContain('-')
+    // 缓存列同样为 -
+    const cacheCell = wrapper.findAll('tbody tr td')[4]
+    expect(cacheCell.text()).toBe('-')
   })
 })

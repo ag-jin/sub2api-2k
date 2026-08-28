@@ -285,6 +285,42 @@ func (f PendingAuthSessionFunc) Mutate(ctx context.Context, m ent.Mutation) (ent
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PendingAuthSessionMutation", m)
 }
 
+// The PricingPlanFunc type is an adapter to allow the use of ordinary
+// function as PricingPlan mutator.
+type PricingPlanFunc func(context.Context, *ent.PricingPlanMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PricingPlanFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PricingPlanMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PricingPlanMutation", m)
+}
+
+// The PricingPlanModelFunc type is an adapter to allow the use of ordinary
+// function as PricingPlanModel mutator.
+type PricingPlanModelFunc func(context.Context, *ent.PricingPlanModelMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PricingPlanModelFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PricingPlanModelMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PricingPlanModelMutation", m)
+}
+
+// The PricingPlanRouteFunc type is an adapter to allow the use of ordinary
+// function as PricingPlanRoute mutator.
+type PricingPlanRouteFunc func(context.Context, *ent.PricingPlanRouteMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PricingPlanRouteFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PricingPlanRouteMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PricingPlanRouteMutation", m)
+}
+
 // The PromoCodeFunc type is an adapter to allow the use of ordinary
 // function as PromoCode mutator.
 type PromoCodeFunc func(context.Context, *ent.PromoCodeMutation) (ent.Value, error)

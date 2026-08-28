@@ -382,6 +382,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// 定价套餐准入（模型解析后）：绑定套餐的 Key 必须命中启用的
+	// model×responses 条目；未命中直接走本端点协议错误路径，不进入选号。
+	planState, rStatus, rType, rMsg := resolvePricingPlanGatewayState(apiKey, reqModel, service.PricingPlanProtocolResponses)
+	if rType != "" {
+		h.errorResponse(c, rStatus, rType, rMsg)
+		return
+	}
+	if planState.active && !planState.bindNextLayer(c, apiKey, h.gatewayService.ResolveGroupByID) {
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", pricingPlanNoLayersMessage, streamStarted)
+		return
+	}
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
@@ -529,7 +540,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	var passthroughFailoverState openAIPassthroughFailoverState
-
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
 	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
 	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
@@ -544,6 +554,41 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// token 计费部分仍受利润门保护，独立图片/视频端点才在门外。
 	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(pricingCtx)
+
+	// 套餐分层：层内选号无可选账号或 failover 耗尽且未提交响应字节（未到
+	// response commit）时推进到下一路由层。advanceLayer 内部守卫保证一旦写出
+	// 任何字节/开始 SSE 就不再跨层（No switching after bytes/SSE）；换层即重置
+	// 本请求的层内失败状态（排除表/切换预算/重试计数），并按新层分组重算渠道
+	// 模型映射、forward body/model 上下文与请求级利润门（pricingAt 一并刷新）。
+	advanceOpenAIResponsesPlanLayer := func() bool {
+		if !planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+			return false
+		}
+		failedAccountIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		switchCount = 0
+		firstOutputTimeoutSwitchCount = 0
+		profitVetoCount = 0
+		lastFailoverErr = nil
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		passthroughFailoverState = openAIPassthroughFailoverState{}
+		channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+		forwardBody = openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+		seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
+		forwardModel = reqModel
+		if channelMapping.Mapped {
+			forwardModel = channelMapping.MappedModel
+		}
+		c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(
+			c.Request.Context(),
+			forwardModel,
+			legacyCompact,
+		))
+		pricingCtx, pricingAt = h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+		c.Request = c.Request.WithContext(pricingCtx)
+		reqLog.Info("openai.responses.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+		return true
+	}
 
 	for {
 		// Streaming Forward intentionally detaches the upstream request so usage can
@@ -580,6 +625,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if len(failedAccountIDs) == 0 {
 				if legacyCompact && errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					// 套餐分层：层内无 compact 账号同样属于无可选账号，推进下一层。
+					if advanceOpenAIResponsesPlanLayer() {
+						continue
+					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available accounts support /responses/compact", streamStarted)
 					return
 				}
@@ -588,8 +637,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
+				// 套餐分层：层内首轮选号即无可用账号时推进到下一层（未提交响应前）。
+				if advanceOpenAIResponsesPlanLayer() {
+					continue
+				}
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 				return
+			}
+			// 套餐分层：层内选号耗尽（failover 已排除全部账号）时推进下一层。
+			if advanceOpenAIResponsesPlanLayer() {
+				continue
 			}
 			if lastFailoverErr != nil {
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
@@ -602,6 +659,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
+			}
+			// 套餐分层：选号结果为空等同无可选账号，推进下一层。
+			if advanceOpenAIResponsesPlanLayer() {
+				continue
 			}
 			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 			return
@@ -619,6 +680,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时排除重选，
+		// 全池耗尽由下一轮选号报错并按层推进。
+		if !planState.accountPlanProtocolAllowed(account) {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+				selection.ReleaseFunc = nil
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("openai.responses.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+			continue
+		}
 		if previousResponseID != "" && requestPlatform == service.PlatformOpenAI && !account.IsOpenAIApiKey() {
 			// The public Responses HTTP API supports previous_response_id on API-key
 			// accounts. OAuth/SetupToken upstreams do not, so keep searching instead
@@ -768,10 +840,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), false, nil, err)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
+						// 套餐分层：层内 failover 无法继续且未提交响应时推进下一层。
+						if advanceOpenAIResponsesPlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
+						// 套餐分层：首拍超时耗尽换号预算且未提交响应时推进下一层。
+						if advanceOpenAIResponsesPlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -800,11 +880,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						// 套餐分层：层内切换预算耗尽且未提交响应时推进下一层。
+						if advanceOpenAIResponsesPlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
+						// 套餐分层：OAuth 429 兜底预算耗尽且未提交响应时推进下一层。
+						if advanceOpenAIResponsesPlanLayer() {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -1075,6 +1163,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// 定价套餐准入（模型解析后）：绑定套餐的 Key 必须命中启用的
+	// model×messages 条目；未命中直接走本端点协议错误路径，不进入选号。
+	planState, rStatus, rType, rMsg := resolvePricingPlanGatewayState(apiKey, reqModel, service.PricingPlanProtocolMessages)
+	if rType != "" {
+		h.anthropicErrorResponse(c, rStatus, rType, rMsg)
+		return
+	}
+	if planState.active && !planState.bindNextLayer(c, apiKey, h.gatewayService.ResolveGroupByID) {
+		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", pricingPlanNoLayersMessage, streamStarted)
+		return
+	}
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
@@ -1148,6 +1247,29 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	msgPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(msgPricingCtx)
 
+	// 套餐分层推进：层内选号失败/耗尽或 failover 耗尽且未提交响应时，把路由
+	// 推进到下一优先层并重置本请求的失败状态（排除集/重试计数/换号预算），
+	// 同时按新层分组重新解析渠道模型映射、dispatch 映射与定价上下文
+	// （pricingAt 供本次尝试的用量入账使用）。返回 false 表示无后续层或
+	// 响应已提交，调用方按既有耗尽路径收尾。
+	advancePlanLayer := func() bool {
+		if !planState.active || !planState.advanceLayer(c, apiKey, h.gatewayService.ResolveGroupByID, streamStarted) {
+			return false
+		}
+		switchCount = 0
+		profitVetoCount = 0
+		failedAccountIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		lastFailoverErr = nil
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		effectiveMappedModel = resolveOpenAIMessagesDispatchMappedModel(c, apiKey, reqModel)
+		channelMappingMsg, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+		msgPricingCtx, pricingAt = h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+		c.Request = c.Request.WithContext(msgPricingCtx)
+		reqLog.Info("openai_messages.plan_layer_advanced", zap.Int64p("group_id", apiKey.GroupID))
+		return true
+	}
+
 	for {
 		if failoverClientGone(c) {
 			return
@@ -1186,10 +1308,18 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					}
+					// 套餐分层：层内首轮选号即无可用账号时推进到下一层。
+					if advancePlanLayer() {
+						continue
+					}
 					h.anthropicStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 					return
 				}
 			} else {
+				// 套餐分层：层内选号失败已耗尽且未提交响应时推进到下一层。
+				if advancePlanLayer() {
+					continue
+				}
 				if lastFailoverErr != nil {
 					h.handleAnthropicFailoverExhausted(c, lastFailoverErr, streamStarted)
 				} else {
@@ -1203,10 +1333,24 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
 			}
+			// 套餐分层：层内选号无结果时推进到下一层。
+			if advancePlanLayer() {
+				continue
+			}
 			h.anthropicStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 			return
 		}
 		account := selection.Account
+		// 套餐原生协议筛选：层内选出的账号协议不满足套餐条目时排除重选。
+		if !planState.accountPlanProtocolAllowed(account) {
+			if selection.Acquired && selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+				selection.ReleaseFunc = nil
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("openai_messages.plan_protocol_filtered_account", zap.Int64("account_id", account.ID))
+			continue
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
@@ -1327,6 +1471,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, nil), false, nil, err)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
+						// 套餐分层：未提交输出的 failover 直接耗尽时推进到下一层。
+						if advancePlanLayer() {
+							continue
+						}
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -1355,11 +1503,19 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						// 套餐分层：层内换号预算耗尽且未提交输出时推进到下一层。
+						if advancePlanLayer() {
+							continue
+						}
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
+						// 套餐分层：OAuth 429 failover 停止且未提交输出时推进到下一层。
+						if advancePlanLayer() {
+							continue
+						}
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

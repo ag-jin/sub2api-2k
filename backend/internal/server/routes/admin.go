@@ -124,6 +124,20 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+
+		// 定价套餐管理
+		registerPricingPlanRoutes(admin, h)
+	}
+}
+
+func registerPricingPlanRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	pricingPlans := admin.Group("/pricing-plans")
+	{
+		pricingPlans.GET("", h.Admin.PricingPlan.List)
+		pricingPlans.POST("", h.Admin.PricingPlan.Create)
+		pricingPlans.GET("/:id", h.Admin.PricingPlan.GetByID)
+		pricingPlans.PUT("/:id", h.Admin.PricingPlan.Update)
+		pricingPlans.DELETE("/:id", h.Admin.PricingPlan.Delete)
 	}
 }
 

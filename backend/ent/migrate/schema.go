@@ -34,6 +34,7 @@ var (
 		{Name: "window_1d_start", Type: field.TypeTime, Nullable: true},
 		{Name: "window_7d_start", Type: field.TypeTime, Nullable: true},
 		{Name: "group_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "pricing_plan_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "user_id", Type: field.TypeInt64},
 	}
 	// APIKeysTable holds the schema information for the "api_keys" table.
@@ -49,8 +50,14 @@ var (
 				OnDelete:   schema.SetNull,
 			},
 			{
-				Symbol:     "api_keys_users_api_keys",
+				Symbol:     "api_keys_pricing_plans_api_keys",
 				Columns:    []*schema.Column{APIKeysColumns[23]},
+				RefColumns: []*schema.Column{PricingPlansColumns[0]},
+				OnDelete:   schema.SetNull,
+			},
+			{
+				Symbol:     "api_keys_users_api_keys",
+				Columns:    []*schema.Column{APIKeysColumns[24]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -59,12 +66,17 @@ var (
 			{
 				Name:    "apikey_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[23]},
+				Columns: []*schema.Column{APIKeysColumns[24]},
 			},
 			{
 				Name:    "apikey_group_id",
 				Unique:  false,
 				Columns: []*schema.Column{APIKeysColumns[22]},
+			},
+			{
+				Name:    "apikey_pricing_plan_id",
+				Unique:  false,
+				Columns: []*schema.Column{APIKeysColumns[23]},
 			},
 			{
 				Name:    "apikey_status",
@@ -1317,6 +1329,168 @@ var (
 			},
 		},
 	}
+	// PricingPlansColumns holds the columns for the "pricing_plans" table.
+	PricingPlansColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "title", Type: field.TypeString, Size: 100, Default: ""},
+		{Name: "description", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "is_public", Type: field.TypeBool, Default: false},
+		{Name: "sort_order", Type: field.TypeInt, Default: 0},
+	}
+	// PricingPlansTable holds the schema information for the "pricing_plans" table.
+	PricingPlansTable = &schema.Table{
+		Name:       "pricing_plans",
+		Columns:    PricingPlansColumns,
+		PrimaryKey: []*schema.Column{PricingPlansColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "pricingplan_name",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlansColumns[4]},
+			},
+			{
+				Name:    "pricingplan_status",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlansColumns[7]},
+			},
+			{
+				Name:    "pricingplan_is_public_status",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlansColumns[8], PricingPlansColumns[7]},
+			},
+			{
+				Name:    "pricingplan_sort_order",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlansColumns[9]},
+			},
+			{
+				Name:    "pricingplan_deleted_at",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlansColumns[3]},
+			},
+		},
+	}
+	// PricingPlanModelsColumns holds the columns for the "pricing_plan_models" table.
+	PricingPlanModelsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "public_model", Type: field.TypeString, Size: 200},
+		{Name: "protocol", Type: field.TypeString, Size: 20, Default: "chat_completions"},
+		{Name: "upstream_model", Type: field.TypeString, Size: 200, Default: ""},
+		{Name: "direct", Type: field.TypeBool, Default: true},
+		{Name: "allow_compatibility_fallback", Type: field.TypeBool, Default: false},
+		{Name: "priority", Type: field.TypeInt, Default: 100},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "notes", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "pricing", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "plan_id", Type: field.TypeInt64},
+	}
+	// PricingPlanModelsTable holds the schema information for the "pricing_plan_models" table.
+	PricingPlanModelsTable = &schema.Table{
+		Name:       "pricing_plan_models",
+		Columns:    PricingPlanModelsColumns,
+		PrimaryKey: []*schema.Column{PricingPlanModelsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "pricing_plan_models_pricing_plans_plan",
+				Columns:    []*schema.Column{PricingPlanModelsColumns[13]},
+				RefColumns: []*schema.Column{PricingPlansColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "pricingplanmodel_plan_id",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanModelsColumns[13]},
+			},
+			{
+				Name:    "pricingplanmodel_plan_id_public_model_protocol",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanModelsColumns[13], PricingPlanModelsColumns[4], PricingPlanModelsColumns[5]},
+			},
+			{
+				Name:    "pricingplanmodel_plan_id_enabled",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanModelsColumns[13], PricingPlanModelsColumns[10]},
+			},
+			{
+				Name:    "pricingplanmodel_deleted_at",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanModelsColumns[3]},
+			},
+			{
+				Name:    "pricingplanmodel_priority",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanModelsColumns[9]},
+			},
+		},
+	}
+	// PricingPlanRoutesColumns holds the columns for the "pricing_plan_routes" table.
+	PricingPlanRoutesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "priority", Type: field.TypeInt, Default: 100},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "plan_id", Type: field.TypeInt64},
+		{Name: "group_id", Type: field.TypeInt64},
+	}
+	// PricingPlanRoutesTable holds the schema information for the "pricing_plan_routes" table.
+	PricingPlanRoutesTable = &schema.Table{
+		Name:       "pricing_plan_routes",
+		Columns:    PricingPlanRoutesColumns,
+		PrimaryKey: []*schema.Column{PricingPlanRoutesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "pricing_plan_routes_pricing_plans_plan",
+				Columns:    []*schema.Column{PricingPlanRoutesColumns[6]},
+				RefColumns: []*schema.Column{PricingPlansColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+			{
+				Symbol:     "pricing_plan_routes_groups_group",
+				Columns:    []*schema.Column{PricingPlanRoutesColumns[7]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.Restrict,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "pricingplanroute_plan_id",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanRoutesColumns[6]},
+			},
+			{
+				Name:    "pricingplanroute_plan_id_enabled",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanRoutesColumns[6], PricingPlanRoutesColumns[5]},
+			},
+			{
+				Name:    "pricingplanroute_group_id",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanRoutesColumns[7]},
+			},
+			{
+				Name:    "pricingplanroute_deleted_at",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanRoutesColumns[3]},
+			},
+			{
+				Name:    "pricingplanroute_priority",
+				Unique:  false,
+				Columns: []*schema.Column{PricingPlanRoutesColumns[4]},
+			},
+		},
+	}
 	// PromoCodesColumns holds the columns for the "promo_codes" table.
 	PromoCodesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -2106,6 +2280,9 @@ var (
 		PaymentOrdersTable,
 		PaymentProviderInstancesTable,
 		PendingAuthSessionsTable,
+		PricingPlansTable,
+		PricingPlanModelsTable,
+		PricingPlanRoutesTable,
 		PromoCodesTable,
 		PromoCodeUsagesTable,
 		ProxiesTable,
@@ -2127,7 +2304,8 @@ var (
 
 func init() {
 	APIKeysTable.ForeignKeys[0].RefTable = GroupsTable
-	APIKeysTable.ForeignKeys[1].RefTable = UsersTable
+	APIKeysTable.ForeignKeys[1].RefTable = PricingPlansTable
+	APIKeysTable.ForeignKeys[2].RefTable = UsersTable
 	APIKeysTable.Annotation = &entsql.Annotation{
 		Table: "api_keys",
 	}
@@ -2212,6 +2390,18 @@ func init() {
 	PendingAuthSessionsTable.ForeignKeys[0].RefTable = UsersTable
 	PendingAuthSessionsTable.Annotation = &entsql.Annotation{
 		Table: "pending_auth_sessions",
+	}
+	PricingPlansTable.Annotation = &entsql.Annotation{
+		Table: "pricing_plans",
+	}
+	PricingPlanModelsTable.ForeignKeys[0].RefTable = PricingPlansTable
+	PricingPlanModelsTable.Annotation = &entsql.Annotation{
+		Table: "pricing_plan_models",
+	}
+	PricingPlanRoutesTable.ForeignKeys[0].RefTable = PricingPlansTable
+	PricingPlanRoutesTable.ForeignKeys[1].RefTable = GroupsTable
+	PricingPlanRoutesTable.Annotation = &entsql.Annotation{
+		Table: "pricing_plan_routes",
 	}
 	PromoCodesTable.Annotation = &entsql.Annotation{
 		Table: "promo_codes",
