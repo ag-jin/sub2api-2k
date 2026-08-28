@@ -1481,13 +1481,6 @@ func cloneOpenCodeUsage(source *UsageInfo) *UsageInfo {
 	return &clone
 }
 
-func opencodeUsageCacheTTL(usage *UsageInfo) time.Duration {
-	if usage == nil || usage.Opencode == nil || usage.Opencode.Error != "" {
-		return apiErrorCacheTTL
-	}
-	return apiCacheTTL
-}
-
 func (s *AccountUsageService) getUpstreamBalance(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
 	if s == nil || account == nil || s.upstreamBalanceFetcher == nil {
 		return nil, fmt.Errorf("upstream balance fetcher unavailable")

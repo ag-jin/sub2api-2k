@@ -220,7 +220,8 @@ func TestPricingPlanHandlerCreateReturnsFullDetail(t *testing.T) {
 	models, ok := data["models"].([]any)
 	require.True(t, ok)
 	require.Len(t, models, 1)
-	model := models[0].(map[string]any)
+	model, ok := models[0].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "gpt-5", model["public_model"])
 	require.Equal(t, service.PricingPlanProtocolResponses, model["protocol"])
 	pricing, ok := model["pricing"].(map[string]any)
@@ -235,7 +236,8 @@ func TestPricingPlanHandlerCreateReturnsFullDetail(t *testing.T) {
 	routes, ok := data["routes"].([]any)
 	require.True(t, ok)
 	require.Len(t, routes, 1)
-	route := routes[0].(map[string]any)
+	route, ok := routes[0].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, float64(42), route["group_id"])
 
 	// 已落库，可经 GetByID 回读。

@@ -58,11 +58,6 @@ func resolvePricingPlanGatewayState(apiKey *service.APIKey, model, inboundProtoc
 	}, 0, "", ""
 }
 
-// bound 报告是否已绑定某一层（供循环顶部幂等检查）。
-func (s *pricingPlanGatewayState) bound() bool {
-	return s != nil && s.active && s.current >= 0
-}
-
 // hasNextLayer 报告是否还有后续层可绑定。
 func (s *pricingPlanGatewayState) hasNextLayer() bool {
 	return s != nil && s.active && s.current+1 < len(s.layers)

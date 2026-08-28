@@ -1174,7 +1174,7 @@ func (s *GatewayService) calculateTokenCost(
 		ImageOutputTokens:     result.Usage.ImageOutputTokens,
 	}
 
-// Explicit group/channel/plan pricing wins（resolveChannelPricing 内部做来源过滤）。
+	// Explicit group/channel/plan pricing wins（resolveChannelPricing 内部做来源过滤）。
 	// Built-in pricing also uses the unified resolver so the group long-context
 	// toggle can veto model-native tiers.
 	var resolved *ResolvedPricing

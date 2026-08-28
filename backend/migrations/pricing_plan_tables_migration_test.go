@@ -8,7 +8,7 @@ import (
 )
 
 func TestPricingPlanTablesMigration(t *testing.T) {
-	content, err := FS.ReadFile("229_pricing_plan_tables.sql")
+	content, err := FS.ReadFile("231_pricing_plan_tables.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

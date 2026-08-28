@@ -128,7 +128,7 @@ func TestHandle429_OpenCodeUsesUsageWindowReset(t *testing.T) {
 	require.Equal(t, "http://proxy.internal:8080", upstream.lastProxyURL)
 	require.Equal(t, account.ID, upstream.lastAccountID)
 	require.Equal(t, account.Concurrency, upstream.lastConcurrency)
-	require.Equal(t, []string{"primary"}, upstream.lastHeader["x-runtime-route"])
+	require.Equal(t, []string{"primary"}, upstream.lastHeader["X-Runtime-Route"])
 	require.Same(t, account, blocker.account)
 	require.WithinDuration(t, resetAt, blocker.until, time.Second)
 	require.Equal(t, "opencode_usage", blocker.reason)
@@ -190,7 +190,8 @@ func TestAccountUsageService_OpenCodeSnapshotPersistsRateLimit(t *testing.T) {
 	upstream := &opencodeUsageTestUpstream{body: `{"usage":{"rolling":{"status":"ok","percent":2},"weekly":{"status":"ok","percent":3},"monthly":{"status":"rate-limited","percent":100,"resetsAt":"` + resetAt.Format(time.RFC3339) + `"}}}`}
 	account := openCodeUsageTestAccount(33)
 	svc := newOpenCodeUsageTestService(upstream, account)
-	repo := svc.accountRepo.(*opencodeUsageTestAccountRepo)
+	repo, ok := svc.accountRepo.(*opencodeUsageTestAccountRepo)
+	require.True(t, ok)
 	blocker := &openCodeRuntimeBlockRecorder{}
 	svc.SetAccountRuntimeBlocker(blocker)
 
