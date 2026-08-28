@@ -112,10 +112,25 @@
               </template>
             </td>
 
-            <!-- 缓存(仅 token;写/读) -->
+            <!-- 缓存(仅 token;写/读),多档时每档一行与输入/输出列对齐 -->
             <td class="px-3 py-2.5 align-middle">
+              <template v-if="p.billing_mode === BILLING_MODE_TOKEN && hasTierCachePricing(p)">
+                <div
+                  v-for="(iv, idx) in tokenIntervals(p)"
+                  :key="idx"
+                  class="whitespace-nowrap font-mono text-xs leading-5 text-gray-800 dark:text-gray-200"
+                >
+                  <template v-if="iv.cache_write_price != null || iv.cache_read_price != null">
+                    <span class="font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheWriteShort') }}</span>
+                    {{ perMillion(iv.cache_write_price) }}
+                    <span class="ml-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheReadShort') }}</span>
+                    {{ perMillion(iv.cache_read_price) }}
+                  </template>
+                  <span v-else class="text-gray-400 dark:text-dark-500">-</span>
+                </div>
+              </template>
               <div
-                v-if="p.billing_mode === BILLING_MODE_TOKEN && hasCachePricing(p)"
+                v-else-if="p.billing_mode === BILLING_MODE_TOKEN && hasCachePricing(p)"
                 class="space-y-0.5 font-mono text-xs text-gray-800 dark:text-gray-200"
               >
                 <div>
@@ -254,14 +269,24 @@ function hasCachePricing(p: CatalogProtocol): boolean {
   return p.pricing?.cache_write_price != null || p.pricing?.cache_read_price != null
 }
 
+/** 任一档带缓存价才按档渲染缓存列;否则沿用平价的写入/读取两行。 */
+function hasTierCachePricing(p: CatalogProtocol): boolean {
+  return tokenIntervals(p).some((iv) => iv.cache_write_price != null || iv.cache_read_price != null)
+}
+
+/** 上下文档位按下限升序展示(后端已升序,此处兜底)。 */
+function sortByContext(intervals: CatalogPricingInterval[]): CatalogPricingInterval[] {
+  return [...intervals].sort((a, b) => a.min_tokens - b.min_tokens)
+}
+
 /** token 模式的阶梯定价(内联进输入/输出列)。 */
 function tokenIntervals(p: CatalogProtocol): CatalogPricingInterval[] {
-  return p.pricing?.intervals ?? []
+  return sortByContext(p.pricing?.intervals ?? [])
 }
 
 /** 按次/按图模式的阶梯定价(仅保留配了按单位价的档位)。 */
 function requestIntervals(p: CatalogProtocol): CatalogPricingInterval[] {
-  return (p.pricing?.intervals ?? []).filter((iv) => iv.per_request_price != null)
+  return sortByContext(p.pricing?.intervals ?? []).filter((iv) => iv.per_request_price != null)
 }
 
 /** 档位标签:优先管理员配置的 tier_label,否则按 token 区间生成(≤200K / >200K / 200K–1M)。 */

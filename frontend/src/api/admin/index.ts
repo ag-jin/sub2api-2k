@@ -36,6 +36,7 @@ import riskControlAPI from './riskControl'
 import adminComplianceAPI from './compliance'
 import auditAPI from './audit'
 import pricingPlansAPI from './pricingPlans'
+import pluginsAPI from './plugins'
 
 /**
  * Unified admin API object for convenient access
@@ -73,7 +74,8 @@ export const adminAPI = {
   riskControl: riskControlAPI,
   compliance: adminComplianceAPI,
   audit: auditAPI,
-  pricingPlans: pricingPlansAPI
+  pricingPlans: pricingPlansAPI,
+  plugins: pluginsAPI
 }
 
 export {
@@ -109,7 +111,8 @@ export {
   riskControlAPI,
   adminComplianceAPI,
   auditAPI,
-  pricingPlansAPI
+  pricingPlansAPI,
+  pluginsAPI
 }
 
 export default adminAPI
@@ -134,3 +137,9 @@ export type {
   PricingPlanRouteInput,
   PricingPlanUpsertRequest
 } from './pricingPlans'
+export type {
+  PluginInstallation,
+  PluginCompatibility,
+  PluginUISession,
+  PluginTestResult
+} from './plugins'

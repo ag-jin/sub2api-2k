@@ -195,4 +195,76 @@ describe('PlazaModelPricingTable (PricingPlan 目录表)', () => {
     const cacheCell = wrapper.findAll('tbody tr td')[4]
     expect(cacheCell.text()).toBe('-')
   })
+
+  it('多档乱序时按下限升序展示(兜底排序)', () => {
+    const m = model({
+      protocols: [protocol({
+        pricing: {
+          ...protocol().pricing,
+          cache_write_price: null,
+          cache_read_price: null,
+          intervals: [
+            { min_tokens: 200000, max_tokens: null, tier_label: '', input_price: 6e-6, output_price: 3e-5, cache_write_price: null, cache_read_price: null, per_request_price: null },
+            { min_tokens: 0, max_tokens: 200000, tier_label: '', input_price: 3e-6, output_price: 1.5e-5, cache_write_price: null, cache_read_price: null, per_request_price: null }
+          ]
+        }
+      })]
+    })
+    const text = mountTable([m]).text()
+    const firstTier = text.indexOf('≤200K')
+    const secondTier = text.indexOf('>200K')
+    expect(firstTier).toBeGreaterThanOrEqual(0)
+    expect(secondTier).toBeGreaterThan(firstTier)
+  })
+
+  it('多档缓存价按档分行,每档一行与输入/输出列对齐;无档缓存价时沿用平价两行', () => {
+    const tiered = model({
+      protocols: [protocol({
+        pricing: {
+          ...protocol().pricing,
+          cache_write_price: null,
+          cache_read_price: null,
+          intervals: [
+            { min_tokens: 0, max_tokens: 200000, tier_label: '', input_price: 3e-6, output_price: 1.5e-5, cache_write_price: 3.75e-6, cache_read_price: 3e-7, per_request_price: null },
+            { min_tokens: 200000, max_tokens: null, tier_label: '', input_price: 6e-6, output_price: 3e-5, cache_write_price: 7.5e-6, cache_read_price: 6e-7, per_request_price: null }
+          ]
+        }
+      })]
+    })
+    const cacheCell = mountTable([tiered]).findAll('tbody tr td')[4]
+    const tierRows = cacheCell.findAll('.leading-5')
+    expect(tierRows).toHaveLength(2)
+    expect(tierRows[0].text()).toContain('modelPlaza.table.cacheWriteShort')
+    expect(tierRows[0].text()).toContain('$3.75')
+    expect(tierRows[0].text()).toContain('$0.30')
+    expect(tierRows[1].text()).toContain('$7.50')
+    expect(tierRows[1].text()).toContain('$0.60')
+    // 档位无缓存价的档渲染 -,输入/输出列仍按档
+    const partial = model({
+      protocols: [protocol({
+        pricing: {
+          ...protocol().pricing,
+          cache_write_price: null,
+          cache_read_price: null,
+          intervals: [
+            { min_tokens: 0, max_tokens: 200000, tier_label: '', input_price: 3e-6, output_price: 1.5e-5, cache_write_price: null, cache_read_price: null, per_request_price: null },
+            { min_tokens: 200000, max_tokens: null, tier_label: '', input_price: 6e-6, output_price: 3e-5, cache_write_price: 7.5e-6, cache_read_price: 6e-7, per_request_price: null }
+          ]
+        }
+      })]
+    })
+    const partialRows = mountTable([partial]).findAll('tbody tr td')[4].findAll('.leading-5')
+    expect(partialRows).toHaveLength(2)
+    expect(partialRows[0].text()).toBe('-')
+    expect(partialRows[1].text()).toContain('$7.50')
+  })
+
+  it('无阶梯但有平价缓存价时沿用写入/读取两行', () => {
+    const wrapper = mountTable([model()])
+    const cacheCell = wrapper.findAll('tbody tr td')[4]
+    expect(cacheCell.findAll('.leading-5')).toHaveLength(0)
+    expect(cacheCell.text()).toContain('modelPlaza.table.cacheWrite')
+    expect(cacheCell.text()).toContain('modelPlaza.table.cacheRead')
+    expect(cacheCell.text()).toContain('$3.75')
+  })
 })
