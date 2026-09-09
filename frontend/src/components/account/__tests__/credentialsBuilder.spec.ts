@@ -381,6 +381,9 @@ describe('validateHeaderOverrideRows session isolation headers', () => {
     expect(validateHeaderOverrideRows([{ name: 'x-client-request-id', value: '' }])).toBe(
       'blockedName'
     )
+    expect(validateHeaderOverrideRows([{ name: 'X-OpenCode-Session', value: '' }])).toBe(
+      'blockedName'
+    )
   })
 
   it('allows tab inside value', () => {
