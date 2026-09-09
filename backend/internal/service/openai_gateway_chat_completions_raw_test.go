@@ -791,6 +791,150 @@ func rawChatCompletionsTestAccount() *Account {
 	}
 }
 
+func opencodeRawChatCompletionsTestAccount() *Account {
+	account := rawChatCompletionsTestAccount()
+	account.Platform = PlatformOpenCode
+	account.Name = "opencode-go-apikey"
+	return account
+}
+
+func TestForwardAsRawChatCompletions_OpenCodeSendsSessionHeaderAndAgentUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hello opencode"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"oc_1","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, opencodeRawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	session := upstream.lastReq.Header.Get("x-opencode-session")
+	require.NotEmpty(t, session, "opencode GO rejects requests without x-opencode-session")
+	require.Len(t, session, 36, "session id should be a UUID")
+	require.Equal(t, openCodeUpstreamUserAgent, upstream.lastReq.Header.Get("user-agent"))
+}
+
+func TestForwardAsRawChatCompletions_OpenCodeSessionStableWithinConversation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 同一对话跨轮：首条 user 消息不变，尾部追加 assistant/user 轮次。
+	turn1 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"}],"stream":false}`)
+	turn2 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"},{"role":"assistant","content":"reply"},{"role":"user","content":"follow up"}],"stream":false}`)
+
+	newUpstream := func() *httpUpstreamRecorder {
+		return &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"oc_s","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			)),
+		}}
+	}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+
+	up1 := newUpstream()
+	svc.httpUpstream = up1
+	c1, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c1.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(turn1))
+	_, err := svc.forwardAsRawChatCompletions(context.Background(), c1, opencodeRawChatCompletionsTestAccount(), turn1, "")
+	require.NoError(t, err)
+
+	up2 := newUpstream()
+	svc.httpUpstream = up2
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(turn2))
+	_, err = svc.forwardAsRawChatCompletions(context.Background(), c2, opencodeRawChatCompletionsTestAccount(), turn2, "")
+	require.NoError(t, err)
+
+	require.Equal(t,
+		up1.lastReq.Header.Get("x-opencode-session"),
+		up2.lastReq.Header.Get("x-opencode-session"),
+		"same conversation must keep a stable session id",
+	)
+}
+
+func TestForwardAsRawChatCompletions_OpenCodeSessionDistinctAcrossConversationsAndKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"oc_d","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		)),
+	}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+
+	send := func(reqBody []byte, ginAPIKeyID int64) string {
+		upstream := &httpUpstreamRecorder{resp: resp}
+		svc.httpUpstream = upstream
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
+		if ginAPIKeyID > 0 {
+			c.Set("api_key", &APIKey{ID: ginAPIKeyID})
+		}
+		_, err := svc.forwardAsRawChatCompletions(context.Background(), c, opencodeRawChatCompletionsTestAccount(), reqBody, "")
+		require.NoError(t, err)
+		return upstream.lastReq.Header.Get("x-opencode-session")
+	}
+
+	a := send([]byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"conversation A"}],"stream":false}`), 1)
+	b := send([]byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"conversation B"}],"stream":false}`), 1)
+	d := send([]byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"conversation A"}],"stream":false}`), 2)
+
+	require.NotEqual(t, a, b, "different conversations must get different session ids")
+	require.NotEqual(t, a, d, "different API keys must get different session ids")
+}
+
+func TestForwardAsRawChatCompletions_NonOpenCodeHasNoSessionHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"oai_1","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	_, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.Empty(t, upstream.lastReq.Header.Get("x-opencode-session"))
+}
+
+func TestHeaderOverrideCannotSetOpenCodeSession(t *testing.T) {
+	err := NormalizeHeaderOverrideCredentials(map[string]any{
+		"header_override_enabled": true,
+		"header_overrides": map[string]any{
+			"x-opencode-session": "fixed-value",
+		},
+	})
+	require.Error(t, err, "fixed x-opencode-session would cross-contaminate conversations")
+}
+
 func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +
