@@ -173,6 +173,20 @@
             <PlatformIcon platform="opencode" size="sm" />
             OpenCode
           </button>
+          <button
+            type="button"
+            data-testid="codebuddy-platform-button"
+            @click="form.platform = 'codebuddy'; accountCategory = 'apikey'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'codebuddy'
+                ? 'bg-white text-sky-600 shadow-sm dark:bg-dark-600 dark:text-sky-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="codebuddy" size="sm" />
+            CodeBuddy
+          </button>
         </div>
         <!-- CN providers row: Kimi / Zhipu GLM / DeepSeek -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
@@ -1308,14 +1322,39 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
+          <textarea
+            v-if="form.platform === 'codebuddy'"
+            v-model="apiKeyValue"
+            required
+            rows="6"
+            data-testid="codebuddy-auth-json"
+            class="input font-mono"
+            :placeholder="apiKeyValuePlaceholder"
+          />
           <input
+            v-else
             v-model="apiKeyValue"
             type="password"
             required
             class="input font-mono"
             :placeholder="apiKeyValuePlaceholder"
           />
-          <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
+          <p v-if="form.platform === 'codebuddy'" class="input-hint">
+            {{ t('admin.accounts.codebuddy.pasteTip') }}
+          </p>
+          <p v-else-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
+        </div>
+
+        <!-- CodeBuddy: optional enterprise ID（不做强制校验） -->
+        <div v-if="form.platform === 'codebuddy'">
+          <label class="input-label">{{ t('admin.accounts.codebuddy.enterpriseIdLabel') }}</label>
+          <input
+            v-model="codebuddyEnterpriseId"
+            type="text"
+            data-testid="codebuddy-enterprise-id"
+            class="input font-mono"
+          />
+          <p class="input-hint">{{ t('admin.accounts.codebuddy.enterpriseIdHint') }}</p>
         </div>
 
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
@@ -3845,6 +3884,7 @@ const oauthStepTitle = computed(() => {
 
 // Platform-specific hints for API Key type
 const baseUrlHint = computed(() => {
+  if (form.platform === 'codebuddy') return t('admin.accounts.codebuddy.baseUrlHint')
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
@@ -3852,11 +3892,52 @@ const baseUrlHint = computed(() => {
 })
 
 const apiKeyHint = computed(() => {
+  if (form.platform === 'codebuddy') return t('admin.accounts.codebuddy.authJsonHint')
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
   return t('admin.accounts.apiKeyHint')
 })
+
+// CodeBuddy: 校验并展开粘贴的 auth JSON（对齐凭据 normalize 白名单）。
+// 返回 null 表示校验失败（已提示）；enterpriseId 不做强制校验。
+function buildCodebuddyCredentials(defaultBaseUrl: string): Record<string, unknown> | null {
+  const raw = apiKeyValue.value.trim()
+  if (!raw) {
+    appStore.showError(t('admin.accounts.codebuddy.authJsonRequired'))
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    appStore.showError(t('admin.accounts.codebuddy.authJsonInvalid'))
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    appStore.showError(t('admin.accounts.codebuddy.authJsonInvalid'))
+    return null
+  }
+  const obj = parsed as Record<string, unknown>
+  const auth = (obj.auth && typeof obj.auth === 'object' && !Array.isArray(obj.auth))
+    ? obj.auth as Record<string, unknown>
+    : undefined
+  if (!auth || typeof auth.accessToken !== 'string' || !auth.accessToken.trim()) {
+    appStore.showError(t('admin.accounts.codebuddy.authJsonInvalid'))
+    return null
+  }
+  const account = (obj.account && typeof obj.account === 'object' && !Array.isArray(obj.account))
+    ? obj.account as Record<string, unknown>
+    : undefined
+  const enterpriseId = codebuddyEnterpriseId.value.trim()
+  if (enterpriseId) {
+    obj.account = { ...(account || {}), enterpriseId }
+  }
+  return {
+    base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
+    ...obj
+  }
+}
 
 // Base URL / API Key 占位符：国产供应商随账号类型变化。
 const apiKeyBaseUrlPlaceholder = computed(() => {
@@ -3872,6 +3953,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://api.x.ai/v1'
     case 'opencode':
       return 'https://opencode.ai/zen/go/v1'
+    case 'codebuddy':
+      return 'https://copilot.tencent.com'
     default:
       return 'https://api.anthropic.com'
   }
@@ -3893,6 +3976,8 @@ const apiKeyValuePlaceholder = computed(() => {
       return 'sk-...'
     case 'opencode':
       return 'sk-opencode-...'
+    case 'codebuddy':
+      return '{"auth":{"accessToken":"...","refreshToken":"..."},"account":{"uid":"..."}}'
     default:
       return 'sk-ant-...'
   }
@@ -3979,6 +4064,7 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const codebuddyEnterpriseId = ref('')
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -4616,6 +4702,8 @@ watch(
               ? 'https://api.x.ai/v1'
               : newPlatform === 'opencode'
                 ? 'https://opencode.ai/zen/go/v1'
+              : newPlatform === 'codebuddy'
+                ? 'https://copilot.tencent.com'
               : 'https://api.anthropic.com'
     }
     // Clear model-related settings
@@ -5081,6 +5169,7 @@ const resetForm = () => {
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  codebuddyEnterpriseId.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
@@ -5533,13 +5622,22 @@ const handleSubmit = async () => {
             ? 'https://api.x.ai/v1'
             : form.platform === 'opencode'
               ? 'https://opencode.ai/zen/go/v1'
+            : form.platform === 'codebuddy'
+              ? 'https://copilot.tencent.com'
             : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
-  const credentials: Record<string, unknown> = {
-    base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
-    api_key: apiKeyValue.value.trim()
-  }
+  // CodeBuddy 校验失败（buildCodebuddyCredentials 返回 null）时直接终止提交流程。
+  const codebuddyCredentials =
+    form.platform === 'codebuddy' ? buildCodebuddyCredentials(defaultBaseUrl) : null
+  if (form.platform === 'codebuddy' && !codebuddyCredentials) return
+  const credentials: Record<string, unknown> =
+    form.platform === 'codebuddy'
+      ? codebuddyCredentials as Record<string, unknown>
+      : {
+          base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
+          api_key: apiKeyValue.value.trim()
+        }
   if (form.platform === 'gemini') {
     credentials.tier_id = geminiTierAIStudio.value
   }

@@ -341,6 +341,8 @@ const defaultClientTab = computed(() => {
       return 'gemini'
     case 'antigravity':
       return 'claude'
+    case 'codebuddy':
+      return 'codebuddy'
     default:
       return 'claude'
   }
@@ -475,6 +477,8 @@ const clientTabs = computed((): TabConfig[] => {
         { id: 'codex', label: t('keys.useKeyModal.cliTabs.codexCli'), icon: TerminalIcon },
         { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
       ]
+    case 'codebuddy':
+      return [{ id: 'codebuddy', label: t('keys.useKeyModal.cliTabs.codebuddy'), icon: TerminalIcon }]
     default:
       return [
         { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
@@ -497,7 +501,7 @@ const openaiTabs: TabConfig[] = [
   { id: 'windows', label: 'Windows', icon: WindowsIcon }
 ]
 
-const showShellTabs = computed(() => activeClientTab.value !== 'opencode')
+const showShellTabs = computed(() => activeClientTab.value !== 'opencode' && activeClientTab.value !== 'codebuddy')
 
 const showCodexAuthMode = computed(() =>
   props.platform === 'openai' &&
@@ -546,6 +550,8 @@ const platformDescription = computed(() => {
       return activeClientTab.value === 'codex'
         ? t('keys.useKeyModal.composite.codexDescription')
         : t('keys.useKeyModal.composite.description')
+    case 'codebuddy':
+      return t('keys.useKeyModal.codebuddy.hint')
     default:
       return t('keys.useKeyModal.description')
   }
@@ -603,7 +609,7 @@ const platformNote = computed(() => {
   }
 })
 
-const showPlatformNote = computed(() => activeClientTab.value !== 'opencode')
+const showPlatformNote = computed(() => activeClientTab.value !== 'opencode' && activeClientTab.value !== 'codebuddy')
 
 function resetCodexModelManifest() {
   codexModelManifestController?.abort()
@@ -702,6 +708,9 @@ const currentFiles = computed((): FileConfig[] => {
     return trimmed.endsWith('/v1beta') ? trimmed : `${trimmed}/v1beta`
   })()
 
+  if (activeClientTab.value === 'codebuddy') {
+    return generateCodebuddyFiles(baseRoot, apiKey)
+  }
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
       case 'anthropic':
@@ -1229,6 +1238,7 @@ function generateRoutedCodexFiles(
     zhipu: 'Zhipu',
     deepseek: 'DeepSeek',
     opencode: 'OpenCode',
+    codebuddy: 'CodeBuddy',
     composite: 'Composite'
   }
   const label = labels[platform]
@@ -1305,6 +1315,57 @@ goals = true`
     {
       path: `${configDir}/auth.json`,
       content: authContent
+    }
+  ]
+}
+
+function generateCodebuddyFiles(baseRoot: string, apiKey: string): FileConfig[] {
+  const messagesUrl = `${baseRoot}/v1/messages`
+  const chatUrl = `${baseRoot}/v1/chat/completions`
+
+  const anthropicCurl = `# CodeBuddy group — Anthropic-compatible endpoint
+curl -sS ${messagesUrl} \
+  -H "Authorization: Bearer ${apiKey}" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "auto",
+    "max_tokens": 1024,
+    "stream": true,
+    "messages": [{ "role": "user", "content": "Hello" }]
+  }'`
+
+  const openaiCurl = `# CodeBuddy group — OpenAI-compatible endpoint
+curl -sS ${chatUrl} \
+  -H "Authorization: Bearer ${apiKey}" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "auto",
+    "stream": true,
+    "messages": [{ "role": "user", "content": "Hello" }]
+  }'
+
+# OpenAI SDK (Python) example
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="${chatUrl.replace('/chat/completions', '')}",
+    api_key="${apiKey}"
+)
+
+resp = client.chat.completions.create(model="auto", messages=[{"role": "user", "content": "Hello"}])
+print(resp.choices[0].message.content)`
+
+  return [
+    {
+      path: 'anthropic-messages.sh',
+      content: anthropicCurl,
+      hint: t('keys.useKeyModal.codebuddy.hint')
+    },
+    {
+      path: 'openai-chat-completions.sh',
+      content: openaiCurl,
+      hint: t('keys.useKeyModal.codebuddy.hint')
     }
   ]
 }

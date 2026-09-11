@@ -521,3 +521,55 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
 })
+
+describe('CreateAccountModal CodeBuddy', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 77, platform: 'codebuddy', type: 'apikey' })
+  })
+
+  it('shows the CodeBuddy platform button with the Tencent copilot default base URL', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+
+    const baseUrlInput = wrapper
+      .findAll('input')
+      .find((input) => (input.attributes('placeholder') || '').includes('copilot.tencent.com'))
+    expect(baseUrlInput).toBeDefined()
+  })
+
+  it('submits the pasted auth JSON with the default base URL when it is left empty', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('CodeBuddy account')
+    await wrapper.get('[data-testid="codebuddy-auth-json"]').setValue(
+      JSON.stringify({
+        auth: { accessToken: 'tok', refreshToken: 'rt', expiresAt: 1700000000000, domain: 'example.com' },
+        account: { uid: 'u1', enterpriseId: 'e1' },
+      })
+    )
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+    expect(credentials.base_url).toBe('https://copilot.tencent.com')
+    expect(credentials.auth).toEqual({ accessToken: 'tok', refreshToken: 'rt', expiresAt: 1700000000000, domain: 'example.com' })
+    expect(credentials.account).toEqual({ uid: 'u1', enterpriseId: 'e1' })
+  })
+
+  it('prefers the optional enterprise ID input over the pasted value and skips required checks', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('CodeBuddy override')
+    await wrapper.get('[data-testid="codebuddy-auth-json"]').setValue(
+      JSON.stringify({ auth: { accessToken: 'tok' }, account: { uid: 'u1', enterpriseId: 'from-json' } })
+    )
+    await wrapper.get('[data-testid="codebuddy-enterprise-id"]').setValue('manual-id')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+    expect(credentials.account).toEqual({ uid: 'u1', enterpriseId: 'manual-id' })
+  })
+})

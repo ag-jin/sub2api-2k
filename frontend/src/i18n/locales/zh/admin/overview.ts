@@ -887,6 +887,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy',
         composite: 'Composite',
       },
       saving: '保存中...',
