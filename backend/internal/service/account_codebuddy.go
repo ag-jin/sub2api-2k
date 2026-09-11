@@ -27,6 +27,32 @@ const codeBuddyTokenRefreshPath = "/v2/plugin/auth/token/refresh"
 // auto → deepseek-v4.1-flash），响应中的 model 为回显实值。
 const CodeBuddyAutoModel = "auto"
 
+// codeBuddyStaticModels CodeBuddy 平台的静态模型清单。上游 copilot.tencent.com
+// 不提供模型列表端点（/v1/models、/v2/models、/models 实测均 404；参考实现
+// codebuddy2api 的清单同样由本机静态文件反推），故"同步上游模型"探测直接
+// 返回该清单，不发 HTTP。与前端 useModelWhitelist.ts 的 codebuddyModels
+// 保持一致；deepseek-v4.1-flash 为上游 auto 实测解析出的模型。
+var codeBuddyStaticModels = []string{
+	"auto",
+	"deepseek-v4-flash",
+	"deepseek-v4-pro",
+	"deepseek-v4.1-flash",
+	"glm-5.1",
+	"glm-5.2",
+	"glm-5v-turbo",
+	"hy3-preview-agent",
+	"kimi-k2.5",
+	"kimi-k2.6",
+	"kimi-k2.7",
+	"minimax-m3-pay",
+}
+
+// codeBuddyStaticModelIDs 返回静态清单的去重排序副本（与既有探测路径的
+// 返回形态一致），避免调用方修改包级变量。
+func codeBuddyStaticModelIDs() []string {
+	return dedupeAndSortModelIDs(codeBuddyStaticModels)
+}
+
 // codeBuddyPreservableConfigKeys 非 token 类、允许保留的管理员配置键。
 var codeBuddyPreservableConfigKeys = []string{
 	"base_url", "model_mapping",

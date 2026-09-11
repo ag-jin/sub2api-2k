@@ -85,6 +85,12 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
 	}
 
+	if account.IsCodeBuddy() {
+		// CodeBuddy 上游无模型列表端点（/v1/models、/v2/models、/models 实测
+		// 均 404），探测直接返回平台静态清单，不发 HTTP。
+		return codeBuddyStaticModelIDs(), nil, nil
+	}
+
 	if s.httpUpstream == nil {
 		return nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}

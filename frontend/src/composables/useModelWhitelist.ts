@@ -16,11 +16,12 @@ const opencodeModels = [
   'muse-spark-1.2', 'muse-spark-1.2-contributor'
 ]
 
-// CodeBuddy（来源：codebuddy2api converter.py 回退清单 @ f717db6f；auto 为兜底别名，豁免白名单校验）
+// CodeBuddy（来源：codebuddy2api converter.py 回退清单 @ f717db6f；auto 为兜底别名，豁免白名单校验。
+// 与后端静态清单 codeBuddyStaticModels 保持一致；deepseek-v4.1-flash 为上游 auto 实测解析出的模型）
 const codebuddyModels = [
   'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
   'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
-  'deepseek-v4-pro', 'deepseek-v4-flash',
+  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4.1-flash',
   'minimax-m3-pay',
   'hy3-preview-agent',
   'auto'
