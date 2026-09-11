@@ -2,15 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode, showErrorMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
-  authIsSimpleMode: { value: true }
+  authIsSimpleMode: { value: true },
+  showErrorMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
+    showError: showErrorMock,
     showSuccess: vi.fn(),
     showInfo: vi.fn()
   })
@@ -1493,11 +1494,43 @@ describe('EditAccountModal CodeBuddy', () => {
     account.credentials_status = undefined
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    showErrorMock.mockReset()
 
     const wrapper = mountModal(account)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).not.toHaveBeenCalled()
+    // CodeBuddy 走专用文案命名空间，不落通用 apiKeyIsRequired。
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.codebuddy.credentialsRequired')
+    expect(showErrorMock).not.toHaveBeenCalledWith('admin.accounts.apiKeyIsRequired')
+    wrapper.unmount()
+  })
+
+  it('hides the upstream billing probe and rate-sync toggles for CodeBuddy', async () => {
+    const account = buildCodeBuddyAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+
+    // 后端 IsUpstreamBillingProbeIdentity 不含 codebuddy：编辑弹窗不显示探针/倍率同步开关。
+    expect(wrapper.find('[data-testid="upstream-billing-auto-probe"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="upstream-billing-rate-sync"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('omits the upstream probe and rate-sync fields from the CodeBuddy update payload', async () => {
+    const account = buildCodeBuddyAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.upstream_billing_probe_enabled).toBeUndefined()
+    expect(payload?.upstream_billing_rate_sync_enabled).toBeUndefined()
     wrapper.unmount()
   })
 

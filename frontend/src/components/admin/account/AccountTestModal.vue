@@ -774,6 +774,10 @@ const loadAvailableModels = async () => {
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {
         selectedModelId.value = availableModels.value[0].id
+      } else if (props.account.platform === 'codebuddy') {
+        // CodeBuddy 清单来自后端静态分支（含 auto），不按 claude sonnet 命名挑默认。
+        const autoModel = availableModels.value.find((m) => m.id === 'auto')
+        selectedModelId.value = autoModel?.id || availableModels.value[0].id
       } else {
         // Try to select Sonnet as default, otherwise use first model
         const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))

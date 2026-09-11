@@ -590,4 +590,29 @@ describe('CreateAccountModal CodeBuddy', () => {
     const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
     expect(credentials.account).toEqual({ uid: 'u1', enterpriseId: 'manual-id' })
   })
+
+  it('hides the upstream billing probe toggle for CodeBuddy', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+
+    // 后端 IsUpstreamBillingProbeIdentity 不含 codebuddy：探针开关不显示。
+    expect(wrapper.find('[data-testid="upstream-billing-auto-probe"]').exists()).toBe(false)
+  })
+
+  it('does not send the upstream probe field or run the first probe for CodeBuddy', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('CodeBuddy account')
+    await wrapper.get('[data-testid="codebuddy-auth-json"]').setValue(
+      JSON.stringify({ auth: { accessToken: 'tok' }, account: { uid: 'u1' } })
+    )
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    // 后端以 UPSTREAM_BILLING_PROBE_ACCOUNT_INVALID 拒绝 codebuddy 探针：字段不发送。
+    expect(payload?.upstream_billing_probe_enabled).toBeUndefined()
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
 })
