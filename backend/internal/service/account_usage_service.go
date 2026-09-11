@@ -469,6 +469,13 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return s.getOpenCodeUsage(ctx, account, forceProbe)
 	}
 
+	// CodeBuddy 平台：上游仅提供 chat 与 token refresh 端点，无用量/余额查询，
+	// 复用既有 "不支持用量查询" 语义显式短路，避免落入 getUpstreamBalance
+	// 用空 api_key 向 {base}/usage 发无意义请求。
+	if account.IsCodeBuddy() {
+		return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
+	}
+
 	// API Key accounts with a base_url: fetch upstream balance from {base_url}/usage.
 	// This covers sub2api-compatible upstreams that expose /v1/usage.
 	if account.Type == AccountTypeAPIKey && strings.TrimSpace(account.GetCredential("base_url")) != "" && account.Platform != PlatformOpenCode {

@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
@@ -187,5 +190,60 @@ func TestAccountUsageService_GetUsageBatch_BestEffortByAccount(t *testing.T) {
 
 	if !strings.Contains(strings.ToLower(errorsByAccount[7003]), "does not support usage query") {
 		t.Fatalf("expected API key account error to be preserved, got %q", errorsByAccount[7003])
+	}
+}
+
+// recordingUsageUpstream 记录每一次上游 HTTP 调用；CodeBuddy 用量短路用例据此
+// 断言"不发上游请求"。
+type recordingUsageUpstream struct {
+	calls int
+}
+
+func (u *recordingUsageUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.calls++
+	return nil, errors.New("upstream must not be contacted for codebuddy usage")
+}
+
+func (u *recordingUsageUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+// Scenario: CodeBuddy 账号用量查询显式短路，返回既有 "不支持用量查询" 语义
+// （与 API Key 账号 fallback 同形态），而不是落入 getUpstreamBalance 用空
+// api_key 向 {base}/usage 发无意义请求。
+func TestAccountUsageService_GetUsage_CodeBuddyShortCircuitsWithoutUpstreamCall(t *testing.T) {
+	t.Parallel()
+
+	repo := &stubOpenAIAccountRepo{
+		accounts: []Account{
+			{
+				ID:       7100,
+				Platform: PlatformCodeBuddy,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"access_token": "at",
+					"base_url":     "https://copilot.tencent.com",
+				},
+			},
+		},
+	}
+	upstream := &recordingUsageUpstream{}
+	svc := &AccountUsageService{
+		accountRepo:            repo,
+		usageLogRepo:           &usageBatchLogRepoStub{},
+		cache:                  NewUsageCache(),
+		upstreamBalanceFetcher: NewUpstreamBalanceFetcher(upstream),
+	}
+
+	usage, err := svc.GetUsage(context.Background(), 7100)
+
+	if usage != nil {
+		t.Fatalf("expected nil usage for codebuddy (unsupported), got %#v", usage)
+	}
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "does not support usage query") {
+		t.Fatalf("expected unsupported-usage error, got %v", err)
+	}
+	if upstream.calls != 0 {
+		t.Fatalf("expected no upstream HTTP calls, got %d", upstream.calls)
 	}
 }

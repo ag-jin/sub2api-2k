@@ -88,7 +88,7 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	if account.IsCodeBuddy() {
 		// CodeBuddy 上游无模型列表端点（/v1/models、/v2/models、/models 实测
 		// 均 404），探测直接返回平台静态清单，不发 HTTP。
-		return codeBuddyStaticModelIDs(), nil, nil
+		return codeBuddyStaticModelIDs(), nil
 	}
 
 	if s.httpUpstream == nil {

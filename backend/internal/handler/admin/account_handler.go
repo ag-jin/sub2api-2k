@@ -2707,6 +2707,22 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	// Handle CodeBuddy accounts: 上游无模型列表端点（/v1/models 等实测 404），
+	// 与同步探测一致返回平台静态清单，避免兜底落到 claude.DefaultModels。
+	if account.IsCodeBuddy() {
+		staticIDs := service.CodeBuddyStaticModelIDs()
+		models := make([]claude.Model, 0, len(staticIDs))
+		for _, id := range staticIDs {
+			models = append(models, claude.Model{
+				ID:          id,
+				Type:        "model",
+				DisplayName: id,
+			})
+		}
+		response.Success(c, models)
+		return
+	}
+
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {

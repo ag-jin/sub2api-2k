@@ -119,6 +119,51 @@ func TestNormalizeCodeBuddyCredentials_FlatPassthrough(t *testing.T) {
 	assert.Equal(t, "glm-5.2", out["model_mapping"].(map[string]any)["glm-5.2"])
 }
 
+// Scenario: 输入已是 RFC3339 字符串的 expires_at 必须原样保留，即使 expires_in
+// 仍在场（旧值）——否则每次编辑保存都会用过期 expiresIn 重算，expires_at 持续漂移。
+// 仅 expires_at 缺失时才由 expires_in 换算（flat 与嵌套 auth 两条路径一致）。
+func TestNormalizeCodeBuddyCredentials_RFC3339ExpiresAtWinsOverStaleExpiresIn(t *testing.T) {
+	fixed := "2026-10-01T00:00:00Z"
+
+	out := NormalizeCodeBuddyCredentials(map[string]any{
+		"access_token": "at",
+		"expires_at":   fixed,
+		"expires_in":   60, // 过期秒数，不得参与重算
+	})
+	require.NotNil(t, out)
+	assert.Equal(t, fixed, out["expires_at"], "flat path must keep RFC3339 expires_at as-is")
+
+	out = NormalizeCodeBuddyCredentials(map[string]any{
+		"auth": map[string]any{
+			"accessToken": "at",
+			"expiresAt":   fixed,
+			"expiresIn":   60,
+		},
+	})
+	require.NotNil(t, out)
+	assert.Equal(t, fixed, out["expires_at"], "nested auth path must keep RFC3339 expiresAt as-is")
+
+	// expires_at 缺失时 expires_in 兜底换算仍有效（now+60s）。
+	out = NormalizeCodeBuddyCredentials(map[string]any{
+		"access_token": "at",
+		"expires_in":   60,
+	})
+	require.NotNil(t, out)
+	parsed, err := time.Parse(time.RFC3339, out["expires_at"].(string))
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(60*time.Second), parsed, 5*time.Second)
+}
+
+// Scenario: refresh_expires_in 在编辑保存往返中不得丢失（白名单保留键）。
+func TestNormalizeCodeBuddyCredentials_PreservesRefreshExpiresIn(t *testing.T) {
+	out := NormalizeCodeBuddyCredentials(map[string]any{
+		"access_token":       "at",
+		"refresh_expires_in": 86400,
+	})
+	require.NotNil(t, out)
+	assert.Equal(t, 86400, out["refresh_expires_in"])
+}
+
 // --- Refresh: expiresIn boundary handling ---
 
 func TestBuildCodeBuddyRefreshedCredentials_ExpiresInBoundaries(t *testing.T) {
