@@ -1321,7 +1321,13 @@
           </p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
+          <label class="input-label">
+            {{
+              form.platform === 'codebuddy'
+                ? t('admin.accounts.codebuddy.authJsonLabel')
+                : t('admin.accounts.apiKeyRequired')
+            }}
+          </label>
           <textarea
             v-if="form.platform === 'codebuddy'"
             v-model="apiKeyValue"
@@ -1342,6 +1348,22 @@
           <p v-if="form.platform === 'codebuddy'" class="input-hint">
             {{ t('admin.accounts.codebuddy.pasteTip') }}
           </p>
+          <details
+            v-if="form.platform === 'codebuddy'"
+            data-testid="codebuddy-credential-guide"
+            class="input-hint"
+          >
+            <summary class="cursor-pointer">
+              {{ t('admin.accounts.codebuddy.credentialGuide.summary') }}
+            </summary>
+            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.intro') }}</p>
+            <ul class="mt-1 list-disc pl-4">
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.macos') }}</li>
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.windows') }}</li>
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.linux') }}</li>
+            </ul>
+            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.openAndPaste') }}</p>
+          </details>
           <p v-else-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
@@ -5607,7 +5629,9 @@ const handleSubmit = async () => {
   }
 
   // For apikey type, create directly
-  if (!apiKeyValue.value.trim()) {
+  // CodeBuddy 账号模式：凭据=auth JSON（auth.accessToken 即凭证），不走通用
+  // "API Key 必填" 校验；缺失时由 buildCodebuddyCredentials 以 codebuddy 文案提示。
+  if (form.platform !== 'codebuddy' && !apiKeyValue.value.trim()) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
     return
   }

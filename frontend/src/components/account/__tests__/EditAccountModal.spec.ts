@@ -1429,6 +1429,90 @@ describe('EditAccountModal CodeBuddy', () => {
     authIsSimpleMode.value = true
   })
 
+  function buildCodeBuddyAccount() {
+    const account = buildAccount()
+    account.platform = 'codebuddy'
+    // 生产形态：后端响应已脱敏（access_token 等敏感键不出现在 credentials 里），
+    // 存量凭据存在性通过 credentials_status.has_access_token 暴露。
+    account.credentials = { base_url: 'https://copilot.tencent.com' }
+    account.credentials_status = { has_access_token: true, has_refresh_token: true }
+    return account
+  }
+
+  it('saves without api_key when stored credentials are reported via credentials_status', async () => {
+    const account = buildCodeBuddyAccount()
+    // 生产响应还带派生值 expires_in / refresh_expires_in：回传会让后端扁平 normalize
+    // 用过期 expiresIn 重算 expires_at，前端必须丢弃派生键、保留 expires_at。
+    account.credentials = {
+      base_url: 'https://copilot.tencent.com',
+      expires_at: '2026-11-10T12:30:36Z',
+      expires_in: 5184000,
+      refresh_expires_in: 7776000,
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials.base_url).toBe('https://copilot.tencent.com')
+    expect(credentials.expires_at).toBe('2026-11-10T12:30:36Z')
+    expect(credentials).not.toHaveProperty('expires_in')
+    expect(credentials).not.toHaveProperty('refresh_expires_in')
+    expect(credentials).not.toHaveProperty('api_key')
+    wrapper.unmount()
+  })
+
+  it('rotates credentials by submitting a pasted auth JSON nested as-is', async () => {
+    const account = buildCodeBuddyAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="codebuddy-auth-json-edit"]').setValue(
+      JSON.stringify({
+        auth: { accessToken: 'tok2', refreshToken: 'rt2', expiresAt: 1700000000000 },
+        account: { uid: 'u2' },
+      })
+    )
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials.auth).toEqual({ accessToken: 'tok2', refreshToken: 'rt2', expiresAt: 1700000000000 })
+    expect(credentials.account).toEqual({ uid: 'u2' })
+    expect(credentials.base_url).toBe('https://copilot.tencent.com')
+    expect(credentials).not.toHaveProperty('api_key')
+    wrapper.unmount()
+  })
+
+  it('blocks saving when CodeBuddy credentials are absent and nothing is pasted', async () => {
+    const account = buildCodeBuddyAccount()
+    account.credentials_status = undefined
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows the CodeBuddy credential state hint and acquisition guide', async () => {
+    const account = buildCodeBuddyAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="codebuddy-credentials-configured"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="codebuddy-credential-guide"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('shows the CodeBuddy default base URL and rehydrates keep-default behavior', async () => {
     const account = buildAccount()
     account.platform = 'codebuddy'

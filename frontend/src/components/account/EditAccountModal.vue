@@ -123,8 +123,23 @@
           <p class="input-hint">{{ t(`admin.accounts.cnProviders.apiProtocol.${cnProtocolDescKey}Desc`) }}</p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
+          <label class="input-label">
+            {{
+              account.platform === 'codebuddy'
+                ? t('admin.accounts.codebuddy.authJsonLabel')
+                : t('admin.accounts.apiKey')
+            }}
+          </label>
+          <textarea
+            v-if="account.platform === 'codebuddy'"
+            v-model="editApiKey"
+            rows="6"
+            data-testid="codebuddy-auth-json-edit"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.codebuddy.authJsonEditPlaceholder')"
+          />
           <input
+            v-else
             v-model="editApiKey"
             type="password"
             class="input font-mono"
@@ -143,12 +158,43 @@
                       ? 'xai-...'
                       : account.platform === 'opencode'
                         ? 'sk-opencode-...'
-                      : account.platform === 'codebuddy'
-                        ? 'CodeBuddy auth JSON'
                       : 'sk-ant-...'
             "
           />
-          <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+          <p
+            v-if="account.platform === 'codebuddy' && codebuddyCredentialsConfigured"
+            data-testid="codebuddy-credentials-configured"
+            class="input-hint"
+          >
+            {{ t('admin.accounts.codebuddy.credentialsConfigured') }}
+          </p>
+          <p
+            v-if="account.platform === 'codebuddy' && !codebuddyCredentialsConfigured"
+            data-testid="codebuddy-credentials-missing"
+            class="input-hint"
+          >
+            {{ t('admin.accounts.codebuddy.credentialsRequired') }}
+          </p>
+          <p v-if="account.platform !== 'codebuddy'" class="input-hint">
+            {{ t('admin.accounts.leaveEmptyToKeep') }}
+          </p>
+          <details
+            v-if="account.platform === 'codebuddy'"
+            data-testid="codebuddy-credential-guide"
+            class="input-hint"
+          >
+            <summary class="cursor-pointer">
+              {{ t('admin.accounts.codebuddy.credentialGuide.summary') }}
+            </summary>
+            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.intro') }}</p>
+            <ul class="mt-1 list-disc pl-4">
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.macos') }}</li>
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.windows') }}</li>
+              <li>{{ t('admin.accounts.codebuddy.credentialGuide.linux') }}</li>
+            </ul>
+            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.openAndPaste') }}</p>
+            <p class="mt-1">{{ t('admin.accounts.codebuddy.pasteTip') }}</p>
+          </details>
         </div>
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
@@ -2955,6 +3001,20 @@ const baseUrlHint = computed(() => {
   return t('admin.accounts.baseUrlHint')
 })
 
+// CodeBuddy 凭据（auth JSON 语义，auth.accessToken 即凭证）的已配置态。
+// 后端响应脱敏不回显 token 原文（也拿不到可展示的 sha 摘要），存在性以
+// credentials_status.has_access_token 判定；旧数据回退嵌套 auth.accessToken /
+// 扁平 access_token 结构。
+const codebuddyCredentialsConfigured = computed(() => {
+  if (props.account?.platform !== 'codebuddy') return false
+  const credentials = (props.account.credentials as Record<string, unknown> | undefined) || {}
+  return (
+    props.account.credentials_status?.has_access_token === true ||
+    Boolean((credentials.auth as Record<string, unknown> | undefined)?.accessToken) ||
+    Boolean(credentials.access_token)
+  )
+})
+
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
@@ -4675,18 +4735,47 @@ const handleSubmit = async () => {
       // 用户填入新值则覆盖；留空时优先看 credentials_status.has_api_key；
       // 若后端尚未升级（无 credentials_status），回退读旧结构 currentCredentials.api_key。
       // 两者都无才报错。
-      // CodeBuddy 凭据存于 auth.accessToken：视为已有 API 凭据（auth-JSON 语义）。
-      const codebuddyAuthHasToken =
-        props.account.platform === 'codebuddy' &&
-        Boolean((currentCredentials.auth as Record<string, unknown> | undefined)?.accessToken)
-      const hasExistingApiKey =
-        codebuddyAuthHasToken ||
-        (props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key))
-      if (editApiKey.value.trim()) {
-        newCredentials.api_key = editApiKey.value.trim()
-      } else if (!hasExistingApiKey) {
-        appStore.showError(t('admin.accounts.apiKeyIsRequired'))
-        return
+      // CodeBuddy 账号模式：凭据=auth JSON（auth.accessToken 即凭证），不走 api_key
+      // 必填校验；存量凭据存在性以 credentials_status.has_access_token 判定（后端
+      // normalize 存储为扁平 access_token，响应脱敏后不回显原文）。粘贴新 auth JSON
+      // 则原样嵌套提交（{auth:{...},account:{...}}）整框替换，后端 normalize 白名单
+      // 抽取并与存量敏感键合并（缺键保留旧值）。
+      if (props.account.platform === 'codebuddy') {
+        // expires_in / refresh_expires_in 是原粘贴 expiresIn 的派生值；原样回传会让
+        // 后端扁平 normalize 用过期 expiresIn 重算 expires_at（每次保存造成漂移）。
+        // 不回传，合并层保留存量原值；真实的过期基准 expires_at 继续随对象回传。
+        delete newCredentials.expires_in
+        delete newCredentials.refresh_expires_in
+        const pastedAuthJson = editApiKey.value.trim()
+        if (pastedAuthJson) {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(pastedAuthJson)
+          } catch {
+            appStore.showError(t('admin.accounts.codebuddy.authJsonInvalid'))
+            return
+          }
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            appStore.showError(t('admin.accounts.codebuddy.authJsonInvalid'))
+            return
+          }
+          const authJson = { ...(parsed as Record<string, unknown>) }
+          // base_url 由编辑框的 Base URL 字段决定，不采纳粘贴 JSON 内的值。
+          delete authJson.base_url
+          Object.assign(newCredentials, authJson)
+        } else if (!codebuddyCredentialsConfigured.value) {
+          appStore.showError(t('admin.accounts.codebuddy.credentialsRequired'))
+          return
+        }
+      } else {
+        const hasExistingApiKey =
+          props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
+        if (editApiKey.value.trim()) {
+          newCredentials.api_key = editApiKey.value.trim()
+        } else if (!hasExistingApiKey) {
+          appStore.showError(t('admin.accounts.apiKeyIsRequired'))
+          return
+        }
       }
 
       // Add model mapping if configured（OpenAI 开启自动透传时保留现有映射，不再编辑）
