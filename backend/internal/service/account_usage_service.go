@@ -14,6 +14,7 @@ import (
 	"time"
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	opencodepkg "github.com/Wei-Shaw/sub2api/internal/pkg/opencode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -473,7 +474,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	// 复用既有 "不支持用量查询" 语义显式短路，避免落入 getUpstreamBalance
 	// 用空 api_key 向 {base}/usage 发无意义请求。
 	if account.IsCodeBuddy() {
-		return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
+		return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", fmt.Sprintf("account type %s does not support usage query", account.Type))
 	}
 
 	// API Key accounts with a base_url: fetch upstream balance from {base_url}/usage.
@@ -576,7 +577,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	}
 
 	// API Key账号不支持usage查询
-	return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
+	return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", fmt.Sprintf("account type %s does not support usage query", account.Type))
 }
 
 // GetUsage 获取账号使用量
