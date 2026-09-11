@@ -478,6 +478,48 @@ func TestAccountHandlerSyncUpstreamModels_UpstreamErrorDoesNotExposeBody(t *test
 	require.NotContains(t, rec.Body.String(), "SECRET_TOKEN")
 }
 
+// Scenario: CodeBuddy 账号查询可用模型时返回平台静态清单（含上游 auto 实测解析出的
+// deepseek-v4.1-flash），而不是兜底落到 claude.DefaultModels（"模型测试显示不对"根因）。
+func TestAccountHandlerGetAvailableModels_CodeBuddyReturnsStaticCatalog(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       47,
+			Name:     "codebuddy-apikey",
+			Platform: service.PlatformCodeBuddy,
+			Type:     service.AccountTypeAPIKey,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"access_token": "at",
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/47/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Data)
+
+	var ids []string
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+		require.NotContains(t, strings.ToLower(model.ID), "claude", "codebuddy must not return claude models")
+	}
+	require.Contains(t, ids, "deepseek-v4.1-flash")
+	require.Contains(t, ids, "auto")
+	require.Len(t, ids, len(service.CodeBuddyStaticModelIDs()))
+}
+
 // Scenario: 能力补全失败显示部分成功。
 func TestAccountHandlerSyncUpstreamModels_MetadataEnrichmentFailureReturnsWarning(t *testing.T) {
 	svc := &availableModelsAdminService{

@@ -53,11 +53,17 @@ func codeBuddyStaticModelIDs() []string {
 	return dedupeAndSortModelIDs(codeBuddyStaticModels)
 }
 
+// CodeBuddyStaticModelIDs 导出版本：管理员"账号可用模型"接口与本包外调用方
+// 使用同一份平台静态清单。
+func CodeBuddyStaticModelIDs() []string {
+	return codeBuddyStaticModelIDs()
+}
+
 // codeBuddyPreservableConfigKeys 非 token 类、允许保留的管理员配置键。
 var codeBuddyPreservableConfigKeys = []string{
 	"base_url", "model_mapping",
 	"header_override_enabled", "header_overrides",
-	"expires_in", "refresh_expires_at", "last_refresh_time",
+	"expires_in", "refresh_expires_in", "refresh_expires_at", "last_refresh_time",
 }
 
 // NormalizeCodeBuddyCredentials 把用户粘贴的 CodeBuddy auth JSON 归一化为
@@ -149,9 +155,19 @@ func NormalizeCodeBuddyCredentials(raw map[string]any) map[string]any {
 }
 
 // codeBuddyExpiresAtRFC3339 把 CodeBuddy 的毫秒 expiresAt（或 expiresIn 秒兜底）
-// 归一化为 RFC3339 UTC 字符串。expiresIn 边界（60s / 0 / 负值）全部如实换算：
-// 60s → now+60s；0/负 → now / 过去时间（ NeedsRefresh 会立即判定需要刷新）。
+// 归一化为 RFC3339 UTC 字符串。已是 RFC3339 字符串的 expiresAt 原样保留——
+// 此时在场（往往是过期的）expiresIn 不得参与重算，否则每次编辑保存都会
+// 令 expires_at 漂移到 now+expiresIn。仅 expiresAt 缺失时才由 expiresIn
+// 换算，边界（60s / 0 / 负值）全部如实换算：60s → now+60s；
+// 0/负 → now / 过去时间（ NeedsRefresh 会立即判定需要刷新）。
 func codeBuddyExpiresAtRFC3339(expiresAt, expiresIn any) string {
+	if s, ok := expiresAt.(string); ok {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			if _, err := time.Parse(time.RFC3339, trimmed); err == nil {
+				return trimmed
+			}
+		}
+	}
 	if ms, ok := codeBuddyMillis(expiresAt); ok && ms > 0 {
 		return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 	}
