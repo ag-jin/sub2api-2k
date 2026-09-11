@@ -320,6 +320,13 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
 
+	if account.IsCodeBuddy() {
+		if account.Type != AccountTypeAPIKey {
+			return s.sendErrorAndEnd(c, "CodeBuddy accounts require an API key (type=apikey)")
+		}
+		return s.testCodeBuddyConnection(c, account, modelID, prompt)
+	}
+
 	if account.IsGemini() {
 		return s.testGeminiAccountConnection(c, account, modelID, prompt)
 	}
@@ -354,6 +361,88 @@ func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Cont
 	}
 
 	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
+}
+
+// testCodeBuddyConnection 用 CodeBuddy 上游链路同款请求（POST {base}/v2/chat/completions，
+// 强制 stream=true + developer→system + 专用身份头）向真实上游发一个最小流式请求，
+// 断言 200 即视为连通；非 200 时错误信息透出上游 code/msg。与真实转发
+// openai_gateway_cc_pipeline.go（IsCodeBuddy 分支）保持同一端点/头/体约束。
+func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	ctx := c.Request.Context()
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		// CodeBuddy "auto" 由上游服务端路由解析（原型实证），连通测试优先使用。
+		testModelID = CodeBuddyAutoModel
+	}
+	testModelID = account.GetMappedModel(testModelID)
+
+	authToken := account.GetCodeBuddyAccessToken()
+	if authToken == "" {
+		return s.sendErrorAndEnd(c, "No CodeBuddy access token available")
+	}
+
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = DefaultCodeBuddyBaseURL
+	}
+	apiURL, err := s.validateUpstreamBaseURL(strings.TrimRight(baseURL, "/") + CodeBuddyChatCompletionsPath)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	payloadBytes, _ := json.Marshal(createOpenAIChatCompletionsTestPayload(testModelID, prompt))
+	// CodeBuddy 上游约束与网关链路一致（openai_gateway_codebuddy.go）。
+	transformed, terr := transformCodeBuddyRequestBody(payloadBytes)
+	if terr != nil {
+		return s.sendErrorAndEnd(c, "Failed to build CodeBuddy test payload")
+	}
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过 /v2/chat/completions 测试连接"})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(transformed))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create CodeBuddy request")
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	applyCodeBuddyUpstreamHeaders(req.Header, account)
+	account.ApplyHeaderOverrides(req.Header)
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/v2/chat/completions) request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		detail := strings.TrimSpace(string(body))
+		// 上游错误响应为 {code, msg} 结构，优先透出 code/msg。
+		if msg := gjson.Get(detail, "msg").String(); msg != "" {
+			detail = fmt.Sprintf("code=%d msg=%s", gjson.Get(detail, "code").Int(), msg)
+		}
+		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+			errMsg := fmt.Sprintf("CodeBuddy authentication failed (401): %s", detail)
+			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+		}
+		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/v2/chat/completions) returned %d: %s", resp.StatusCode, detail))
+	}
+
+	return s.processOpenAIChatCompletionsStream(c, resp.Body)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection

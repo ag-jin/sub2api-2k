@@ -505,6 +505,17 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
+	// CodeBuddy（腾讯 Copilot）仅有 accessToken 型静态凭据：accessToken 存于
+	// credentials.access_token，type=oauth 时网关 GetAccessToken 会走 openAITokenProvider
+	// 并因缺 OpenAI OAuth 结构而失败。对齐 opencode 的账号类别语义：platform=codebuddy
+	// 必须 type=apikey。
+	if input.Platform == PlatformCodeBuddy && input.Type != AccountTypeAPIKey {
+		return nil, infraerrors.BadRequest(
+			"CODEBUDDY_ACCOUNT_TYPE_UNSUPPORTED",
+			"CodeBuddy accounts must be created with type=apikey (the auth JSON accessToken is the apikey credential)",
+		)
+	}
+
 	account, err := buildAccountForCreate(input, accountExtra)
 	if err != nil {
 		return nil, err
@@ -608,6 +619,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	if input.Type != "" {
 		account.Type = input.Type
+		// CodeBuddy 账号类别锁定 apikey（同 Create；错误的 type 会在网关凭据分派处失败）。
+		if account.IsCodeBuddy() && account.Type != AccountTypeAPIKey {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "CODEBUDDY_ACCOUNT_TYPE_UNSUPPORTED",
+				"CodeBuddy accounts must use type=apikey")
+		}
 	}
 	if input.Notes != nil {
 		account.Notes = normalizeAccountNotes(input.Notes)

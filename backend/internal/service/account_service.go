@@ -223,6 +223,12 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
+	// CodeBuddy（腾讯 Copilot）账号类别锁定 apikey（同 AdminService.CreateAccount：
+	// 网关凭据分派按 Type 路由，oauth 会走 openAITokenProvider 而失败）。
+	if req.Platform == PlatformCodeBuddy && req.Type != AccountTypeAPIKey {
+		return nil, fmt.Errorf("CodeBuddy accounts must be created with type=apikey")
+	}
+
 	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
 		if err := s.validateGroupIDsExist(ctx, req.GroupIDs); err != nil {
