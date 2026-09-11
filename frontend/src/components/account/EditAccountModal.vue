@@ -1599,7 +1599,7 @@
             }}
           </p>
           <div
-            v-if="account?.type === 'apikey'"
+            v-if="account?.type === 'apikey' && account?.platform !== 'codebuddy'"
             class="mt-3 flex items-center justify-between gap-3"
           >
             <div class="min-w-0">
@@ -1824,7 +1824,7 @@
       </div>
 
       <div
-        v-if="account?.type === 'apikey'"
+        v-if="account?.type === 'apikey' && account?.platform !== 'codebuddy'"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
@@ -4514,7 +4514,9 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
-    if (props.account.type === 'apikey') {
+    // CodeBuddy 不在后端探测白名单内：不发送探针/倍率同步字段（后端 update 路径
+    // 会以 UPSTREAM_BILLING_PROBE_ACCOUNT_INVALID 拒绝 true），倍率随表单原样保留。
+    if (props.account.type === 'apikey' && props.account.platform !== 'codebuddy') {
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
       if (upstreamBillingRateSyncEnabled.value) {

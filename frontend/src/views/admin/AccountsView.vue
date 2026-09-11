@@ -835,7 +835,7 @@ const accountSupportsBatchUsage = (account: Account) => {
   if (account.platform === 'openai') return account.type === 'oauth' || account.type === 'apikey'
   if (account.platform === 'grok') return account.type === 'oauth'
   if (account.platform === 'opencode') return account.type === 'apikey'
-  if (account.platform === 'codebuddy') return account.type === 'apikey'
+  // codebuddy：后端批量取数无对应路径（显式 unsupported），不进入批量用量请求。
   return false
 }
 
