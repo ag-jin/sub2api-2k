@@ -289,6 +289,13 @@ func (a *Account) IsOpenCode() bool {
 	return a != nil && a.Platform == PlatformOpenCode
 }
 
+// IsCodeBuddy 报告账号是否为 CodeBuddy（腾讯 Copilot）平台。该平台仅粘贴
+// auth JSON 静态凭证（AccountTypeAPIKey），由后台 refresher 负责 token 轮换，
+// 不参与任何 OpenAI OAuth 状态机。
+func (a *Account) IsCodeBuddy() bool {
+	return a != nil && a.Platform == PlatformCodeBuddy
+}
+
 func (a *Account) IsOpenCodeAPIKey() bool {
 	return a.IsOpenCode() && a.Type == AccountTypeAPIKey
 }
@@ -311,7 +318,7 @@ func (a *Account) IsCNProvider() bool {
 func (a *Account) IsOpenAICompatible() bool {
 	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok ||
 		a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepseek ||
-		a.IsOpenCodeAPIKey())
+		a.IsOpenCodeAPIKey() || a.IsCodeBuddy())
 }
 
 func (a *Account) GeminiOAuthType() string {
@@ -866,6 +873,11 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		}
 		return true // 无映射 = 允许所有
 	}
+	// CodeBuddy 的 auto 是上游特殊模型（服务端自动路由到具体模型）：
+	// 即使账号配置了 model_mapping 白名单也永远放行，不要求管理员记得补录。
+	if a.IsCodeBuddy() && requestedModel == CodeBuddyAutoModel {
+		return true
+	}
 	if mappingSupportsRequestedModel(mapping, requestedModel) {
 		return true
 	}
@@ -1349,7 +1361,7 @@ func (a *Account) IsOpenAIApiKey() bool {
 // 适用 openai 与国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）；grok 走 GetGrokBaseURL，
 // 此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsOpenCode() {
+	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsOpenCode() && !a.IsCodeBuddy() {
 		return ""
 	}
 	if a.IsCNProvider() && a.IsAdaptiveAPIProtocol() {
@@ -1380,6 +1392,8 @@ func (a *Account) GetOpenAIBaseURL() string {
 		return DefaultDeepseekBaseURL
 	case PlatformOpenCode:
 		return DefaultOpenCodeBaseURL
+	case PlatformCodeBuddy:
+		return DefaultCodeBuddyBaseURL
 	default:
 		return "https://api.openai.com"
 	}
@@ -1703,6 +1717,9 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a.IsOpenCodeAPIKey() {
 		return a.GetCredential("api_key")
 	}
+	if a.IsCodeBuddy() && a.Type == AccountTypeAPIKey {
+		return a.GetCredential("access_token")
+	}
 	return a.GetOpenAIApiKey()
 }
 
@@ -1788,6 +1805,10 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		}
 	}
 	if a.IsOpenCode() && capability != OpenAIEndpointCapabilityChatCompletions {
+		return false
+	}
+	// CodeBuddy 仅支持 Chat Completions 端点（上游为 /v2/chat/completions）。
+	if a.IsCodeBuddy() && capability != OpenAIEndpointCapabilityChatCompletions {
 		return false
 	}
 	switch capability {

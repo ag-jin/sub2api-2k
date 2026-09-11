@@ -63,6 +63,12 @@ var headerOverrideBlockedNames = map[string]struct{}{
 	"x-claude-code-session-id": {},
 	"x-client-request-id":      {},
 	"x-grok-conv-id":           {},
+	// CodeBuddy 专用身份头（X-User-Id / X-Enterprise-Id / X-Tenant-Id / X-Domain）：
+	// 由账号凭据统一注入，固定覆写会造成身份串扰。
+	"x-user-id":       {},
+	"x-enterprise-id": {},
+	"x-tenant-id":     {},
+	"x-domain":        {},
 }
 
 func isHeaderOverrideBlockedName(lowerName string) bool {
@@ -79,7 +85,7 @@ func (a *Account) IsHeaderOverrideEligible() bool {
 		return false
 	}
 	switch a.Platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformOpenCode, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	case PlatformAnthropic, PlatformOpenAI, PlatformOpenCode, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformCodeBuddy:
 		return a.Type == AccountTypeAPIKey
 	case PlatformGrok:
 		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeOAuth

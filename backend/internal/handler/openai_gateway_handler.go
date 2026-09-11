@@ -228,7 +228,7 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 	if service.IsCNProvider(apiKey.Group.Platform) {
 		return true
 	}
-	if apiKey.Group.Platform == service.PlatformOpenCode {
+	if apiKey.Group.Platform == service.PlatformOpenCode || apiKey.Group.Platform == service.PlatformCodeBuddy {
 		return true
 	}
 	// composite 分组解析到 grok/CN 目标时与对应独立分组同语义豁免；

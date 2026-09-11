@@ -12,6 +12,10 @@ var SensitiveCredentialKeys = []string{
 	// 云服务凭据
 	"aws_secret_access_key", "aws_session_token",
 	"service_account_json", "service_account", "private_key",
+	// CodeBuddy（auth JSON）：token/refresh_token 走 OAuth 键；uid、enterprise_id、
+	// domain 为账号身份映射键，按 R3-M4 不落日志/不回显。expires_at 只是过期时间戳
+	// （非凭据），且既有前端编辑流按普通字段回显，保持非敏感。
+	"domain", "uid", "enterprise_id",
 }
 
 var sensitiveCredentialKeySet = func() map[string]struct{} {

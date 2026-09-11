@@ -959,3 +959,55 @@ func ccFinishReasonToAnthropicStopReason(reason string, hasToolCall bool) string
 		return "end_turn"
 	}
 }
+
+// ChatCompletionsResponseFinishReason 返回第一个 choice 的 finish_reason（缺省为空）。
+func ChatCompletionsResponseFinishReason(resp *ChatCompletionsResponse) string {
+	if resp == nil || len(resp.Choices) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(resp.Choices[0].FinishReason)
+}
+
+// ApplyAnthropicContentFilterRefusal 把 Chat Completions 的 finish_reason
+// "content_filter" 显式映射为 Anthropic stop_reason "refusal"（R1-D3b：
+// 内容审核拦截是可辨识信号，不静默回退 end_turn）。仅当转换产物为
+// end_turn（即未携带 tool_use、也非 length）时才重映射。
+func ApplyAnthropicContentFilterRefusal(resp *AnthropicResponse, ccFinishReason string) {
+	if resp == nil || !strings.EqualFold(strings.TrimSpace(ccFinishReason), "content_filter") {
+		return
+	}
+	if AnthropicStopReasonString(resp.StopReason) != "end_turn" {
+		return
+	}
+	resp.StopReason = AnthropicStopReasonPtr("refusal")
+}
+
+// ApplyAnthropicStreamRefusal 在 finalize 事件集上应用 refusal 重映射：
+// finish_reason=content_filter 且 message_delta 的 stop_reason 为 end_turn 时
+// 改写为 "refusal"，提供可辨识的内容审核信号（对应非流式路径的
+// ApplyAnthropicContentFilterRefusal）。
+func ApplyAnthropicStreamRefusal(events []AnthropicStreamEvent, ccFinishReason string) []AnthropicStreamEvent {
+	if !strings.EqualFold(strings.TrimSpace(ccFinishReason), "content_filter") {
+		return events
+	}
+	for _, evt := range events {
+		if evt.Type != "message_delta" || evt.Delta == nil {
+			continue
+		}
+		if evt.Delta.StopReason != "end_turn" {
+			continue
+		}
+		evt.Delta.StopReason = "refusal"
+	}
+	return events
+}
+
+// ChatCompletionsAnthropicStreamFinishReason returns the tracked upstream
+// finish_reason of a direct-bridge Anthropic stream state (exported so service
+// layers can post-process terminal stop reasons without duplicating parser).
+func ChatCompletionsAnthropicStreamFinishReason(state *ChatCompletionsToAnthropicStreamState) string {
+	if state == nil {
+		return ""
+	}
+	return strings.TrimSpace(state.FinishReason)
+}

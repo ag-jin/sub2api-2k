@@ -43,6 +43,14 @@ type tokenRefreshRegistration struct {
 	executor  OAuthRefreshExecutor
 }
 
+// CodeBuddyOAuthRefreshMutationRepository protects background refresh failure
+// mutations for CodeBuddy auth-JSON accounts with the exact credential document
+// used by the upstream attempt (mirror of the Grok conditional mutations).
+type CodeBuddyOAuthRefreshMutationRepository interface {
+	SetCodeBuddyRefreshErrorIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, errorMsg string) (bool, error)
+	SetCodeBuddyRefreshTempUnschedulableIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, until time.Time, reason string) (bool, error)
+}
+
 // GrokOAuthRefreshMutationRepository protects background refresh failure
 // mutations with the exact credential document used by the upstream attempt.
 // This contract is intentionally Grok-only; existing provider behavior remains
@@ -128,6 +136,7 @@ func NewTokenRefreshService(
 		grokOAuthService = grokOAuthServices[0]
 	}
 	grokRefresher := NewGrokTokenRefresher(grokOAuthService)
+	codeBuddyRefresher := NewCodeBuddyTokenRefresher()
 
 	// Each provider is registered exactly once. The same registry supplies both
 	// execution and repository eligibility, preventing future platform drift.
@@ -137,6 +146,7 @@ func NewTokenRefreshService(
 		{platform: PlatformGemini, refresher: geminiRefresher, executor: geminiRefresher},
 		{platform: PlatformAntigravity, refresher: agRefresher, executor: agRefresher},
 		{platform: PlatformGrok, refresher: grokRefresher, executor: grokRefresher},
+		{platform: PlatformCodeBuddy, refresher: codeBuddyRefresher, executor: codeBuddyRefresher},
 	}
 
 	return s
@@ -531,6 +541,7 @@ func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
 			Limit:                pageSize,
 			ActiveOnly:           true,
 			IncludeSetupToken:    true,
+			IncludeCodeBuddyAuth: true,
 			RequireRefreshToken:  true,
 			ExcludeRetryCooldown: true,
 		})
@@ -986,6 +997,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
+			isCodeBuddyAuth := account.IsCodeBuddy()
 			isGrokOAuth := account.IsGrokOAuth()
 			if !isGrokOAuth {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
@@ -993,7 +1005,25 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
 			persistentlyBlocked := false
 			var setErr error
-			if isGrokOAuth {
+			if isCodeBuddyAuth {
+				conditionalRepo, ok := s.accountRepo.(CodeBuddyOAuthRefreshMutationRepository)
+				if !ok {
+					return &providerConfigurationRefreshError{
+						err: errors.New("codebuddy OAuth conditional refresh mutation repository is not configured"),
+					}
+				}
+				persistentlyBlocked, setErr = conditionalRepo.SetCodeBuddyRefreshErrorIfCredentialsUnchanged(
+					ctx,
+					account.ID,
+					account.Credentials,
+					account.ProxyID,
+					errorMsg,
+				)
+				if setErr == nil && !persistentlyBlocked {
+					slog.Info("token_refresh.codebuddy_error_status_skipped_stale_credentials", "account_id", account.ID)
+					return errRefreshSkipped
+				}
+			} else if isGrokOAuth {
 				conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
 				if !ok {
 					return &providerConfigurationRefreshError{
@@ -1088,6 +1118,42 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	if lastErr != nil {
 		reason += ": " + logredact.RedactText(lastErr.Error())
 	}
+	if account.IsCodeBuddy() {
+		conditionalRepo, ok := s.accountRepo.(CodeBuddyOAuthRefreshMutationRepository)
+		if !ok {
+			return &providerConfigurationRefreshError{
+				err: errors.New("codebuddy OAuth conditional refresh mutation repository is not configured"),
+			}
+		}
+		applied, setErr := conditionalRepo.SetCodeBuddyRefreshTempUnschedulableIfCredentialsUnchanged(
+			ctx,
+			account.ID,
+			account.Credentials,
+			account.ProxyID,
+			until,
+			reason,
+		)
+		if setErr != nil {
+			slog.Warn("token_refresh.set_temp_unschedulable_failed",
+				"account_id", account.ID,
+				"error", setErr,
+			)
+			return &providerCycleContainmentRefreshError{
+				err: fmt.Errorf("failed to conditionally persist CodeBuddy refresh cooldown: %w", setErr),
+			}
+		} else if !applied {
+			slog.Info("token_refresh.codebuddy_temp_unschedulable_skipped_stale_credentials", "account_id", account.ID)
+			return errRefreshSkipped
+		} else {
+			s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
+			slog.Info("token_refresh.temp_unschedulable_set",
+				"account_id", account.ID,
+				"until", until.Format(time.RFC3339),
+			)
+		}
+		return lastErr
+	}
+
 	if account.IsGrokOAuth() {
 		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
 		if !ok {
@@ -1420,6 +1486,12 @@ func isSharedProviderRefreshError(err error) bool {
 func isNonRetryableRefreshError(err error) bool {
 	if err == nil {
 		return false
+	}
+	// CodeBuddy：401/403 / grant 失效类确认性拒绝单独归类（单列错误分支，
+	// 不并入 invalid_grant 文本匹配），直接进 StatusError 提示重录。
+	var codeBuddyRejected *codeBuddyRefreshAuthError
+	if errors.As(err, &codeBuddyRejected) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	nonRetryable := []string{

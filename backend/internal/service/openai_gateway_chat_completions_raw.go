@@ -68,6 +68,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := gjson.GetBytes(body, "stream").Bool()
+	// CodeBuddy 上游仅支持流式（11101 实证）：sendCCUpstreamRequest 一律
+	// 强制 stream=true 上传；客户端要非流式响应时由网关聚合（见下方分支）。
+	isCodeBuddy := account.IsCodeBuddy()
 
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
@@ -140,9 +143,14 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 
-	if clientStream {
+	if clientStream || isCodeBuddy {
 		var usageErr error
-		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
+		if isCodeBuddy {
+			// codebuddy：developer→system + 强制流式 + include_usage。
+			upstreamBody, usageErr = transformCodeBuddyRequestBody(upstreamBody)
+		} else {
+			upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
+		}
 		if usageErr != nil {
 			return nil, fmt.Errorf("enable stream usage: %w", usageErr)
 		}
@@ -178,10 +186,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		customUA = defaultGrokUpstreamUserAgent()
 	}
 	firstTokenTimeout := time.Duration(0)
-	if clientStream {
+	if clientStream || isCodeBuddy {
 		firstTokenTimeout = s.chatCompletionsFirstTokenTimeout()
 	}
-	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity, firstTokenTimeout)
+	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream || isCodeBuddy, token, customUA, grokCacheIdentity, firstTokenTimeout)
 	if err != nil {
 		// 请求在首 token 截止前就挂起（连接/响应头阶段被守卫取消）：
 		// 归类为超时 failover，而非传输错误。守卫已在 sendCCUpstreamRequest
@@ -253,6 +261,48 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 8. Forward response
 	var result *OpenAIForwardResult
 	var forwardErr error
+	if isCodeBuddy && !clientStream {
+		// CodeBuddy 非流式本地聚合：消费上游 SSE，拼接为单个 chat.completion JSON。
+		aggBody, aggUsage, upstreamEcho, aggErr := aggregateCodeBuddyCCResponse(resp.Body)
+		if aggErr != nil {
+			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
+			return nil, fmt.Errorf("aggregate codebuddy stream: %w", aggErr)
+		}
+		if aggUsage.InputTokens == 0 && aggUsage.OutputTokens == 0 {
+			// usage 全 0 兜底：不阻塞主链路（上游 usage 偶发缺失，design 已知限制）。
+			logger.L().Debug("codebuddy chat_completions aggregate: upstream usage missing",
+				zap.Int64("account_id", account.ID),
+				zap.String("model", originalModel),
+			)
+		}
+		observer := upstreamResponseModelObserverFromContext(c)
+		if observer == nil {
+			observer = beginUpstreamResponseModelObservation(c)
+		}
+		observer.ObserveOpenAI(aggBody, "chat.completion")
+		if s.responseHeaderFilter != nil {
+			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		}
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "application/json") {
+			c.Writer.Header().Set("Content-Type", ct)
+		} else {
+			c.Writer.Header().Set("Content-Type", "application/json")
+		}
+		c.Writer.WriteHeader(http.StatusOK)
+		_, _ = c.Writer.Write(aggBody)
+		return &OpenAIForwardResult{
+			RequestID:             resp.Header.Get("x-request-id"),
+			Usage:                 aggUsage,
+			Model:                 originalModel,
+			BillingModel:          billingModel,
+			UpstreamModel:         upstreamModel,
+			UpstreamResponseModel: upstreamEcho, // 上游回显实值 model（auto → deepseek-v4.1-flash）
+			ReasoningEffort:       reasoningEffort,
+			ServiceTier:           resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+			Stream:                false,
+			Duration:              time.Since(startTime),
+		}, nil
+	}
 	if clientStream {
 		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), firstTokenGuard)
 	} else {

@@ -1267,8 +1267,9 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return false
 	}
-	// OpenCode 永远不支持 Responses API，必须无条件走 CC 直转。
-	if account.IsOpenCode() {
+	// OpenCode / CodeBuddy 上游都只支持 CC 直转：CodeBuddy 的对话端点为
+	// /v2/chat/completions（原生 Chat 协议、仅流式），无 Responses 端点。
+	if account.IsOpenCode() || account.IsCodeBuddy() {
 		return true
 	}
 	if account.IsCNProvider() {
