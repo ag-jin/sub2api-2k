@@ -48,6 +48,10 @@
   <svg v-else-if="platform === 'opencode'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M12 2.5a9.5 9.5 0 1 0 0 19 9.5 9.5 0 0 0 0-19Zm0 3a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 2.5a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
   </svg>
+  <!-- CodeBuddy logo mark (angular speech-bubble / co-pilot mark) -->
+  <svg v-else-if="platform === 'codebuddy'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2C6.48 2 2 6.02 2 11c0 2.9 1.57 5.47 4 7.14V22l3.6-2.03c.78.15 1.58.23 2.4.23 5.52 0 10-4.02 10-9S17.52 2 12 2Zm4.2 6.2-2.43 6.03a1.4 1.4 0 0 1-1.3.87h-1.44l1.03-4.6H9.53c.9-.96 1.9-1.78 3.5-1.78h3.17v-.52Zm.14 1.04v.5h-2.02l1.06 3.7a2.12 2.12 0 0 1-1.66 2.75l-.13.02h-2.7l.26-1.1h1.83c.53 0 .99-.37 1.11-.89l-1.5-.05c-.62-.02-1.15-.46-1.28-1.07l-.42-1.98c-.07-.35.2-.68.56-.68h4.24l.65-1.2Z" />
+  </svg>
   <!-- Composite group icon -->
   <svg v-else-if="platform === 'composite'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <circle cx="6" cy="12" r="3" />

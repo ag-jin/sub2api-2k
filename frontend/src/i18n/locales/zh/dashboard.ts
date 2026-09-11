@@ -155,7 +155,8 @@ export default {
         codexCli: 'Codex CLI',
         codexCliWs: 'Codex CLI (WebSocket)',
         grokCli: 'Grok CLI',
-        opencode: 'OpenCode'
+        opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy API'
       },
       antigravity: {
         description: '为 Antigravity 分组配置 API 访问。请根据您使用的客户端选择对应的配置方式。',
@@ -196,6 +197,11 @@ export default {
         title: 'OpenCode 配置示例',
         subtitle: 'opencode.json',
         hint: '配置文件路径：~/.config/opencode/opencode.json（或 opencode.jsonc），不存在需手动创建。可使用默认 provider（openai/anthropic/google）或自定义 provider_id。API Key 支持直接配置或通过客户端 /connect 命令配置。示例仅供参考，模型与选项可按需调整。'
+      },
+      codebuddy: {
+        title: 'CodeBuddy API 配置示例',
+        subtitle: 'Messages + Chat Completions',
+        hint: '面向通用 API 客户端的 CodeBuddy 分组示例：Anthropic 兼容 /v1/messages 与 OpenAI 兼容 /v1/chat/completions。将客户端指向网关 base URL，并使用分组 API Key 鉴权。示例仅供参考，模型可按需调整。'
       }
     },
     customKeyLabel: '自定义密钥',

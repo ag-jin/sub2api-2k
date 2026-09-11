@@ -109,6 +109,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy',
       },
       opencode: {
         baseUrlHint: 'OpenCode Go API base URL. OpenCode supports Messages and Chat Completions, not Responses.',
@@ -119,6 +120,16 @@ export default {
           stale: 'Stale usage snapshot',
           error: 'Usage unavailable'
         }
+      },
+      codebuddy: {
+        baseUrlHint: 'CodeBuddy (Tencent Cloud) base URL. Requests are served over Chat Completions and Anthropic Messages; Responses is not supported.',
+        authJsonLabel: 'Auth JSON',
+        authJsonHint: 'Paste the CodeBuddy auth JSON (auth.accessToken / refreshToken / expiresAt / domain plus account.uid / enterpriseId are extracted automatically). Use the Edit dialog to update it after rotation.',
+        authJsonRequired: 'Paste the CodeBuddy auth JSON',
+        authJsonInvalid: 'Invalid CodeBuddy auth JSON: expected an object with auth.accessToken',
+        enterpriseIdLabel: 'Enterprise ID (optional)',
+        enterpriseIdHint: 'Optional. Leave empty to use the value embedded in the auth JSON; no strict validation is applied.',
+        pasteTip: 'Recommended: sign out of the CodeBuddy desktop session before pasting so credentials do not kick each other.'
       },
       cnProviders: {
         accountMode: {

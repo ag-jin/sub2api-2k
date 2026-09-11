@@ -4,7 +4,7 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -153,6 +153,24 @@ describe('useModelWhitelist', () => {
     expect(parsed).toEqual({
       allowedModels: ['gpt-5.4'],
       modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
+    })
+  })
+
+  describe('codebuddy platform whitelist', () => {
+    it('exposes the codebuddy fallback model list', () => {
+      const models = getModelsByPlatform('codebuddy')
+      for (const model of [
+        'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
+        'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
+        'deepseek-v4-pro', 'deepseek-v4-flash',
+        'minimax-m3-pay', 'hy3-preview-agent', 'auto'
+      ]) {
+        expect(models).toContain(model)
+      }
+    })
+
+    it('has no preset mappings for codebuddy', () => {
+      expect(getPresetMappingsByPlatform('codebuddy')).toEqual([])
     })
   })
 })

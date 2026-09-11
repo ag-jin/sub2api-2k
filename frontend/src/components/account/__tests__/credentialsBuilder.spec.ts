@@ -379,14 +379,20 @@ describe('validateHeaderOverrideRows session isolation headers', () => {
     )
   })
 
-  it('allows tab inside value', () => {
-    expect(validateHeaderOverrideRows([{ name: 'x-app', value: 'a\tb' }])).toBeNull()
-  })
+    it('rejects CodeBuddy credential headers', () => {
+      for (const name of ['X-User-Id', 'X-Enterprise-Id', 'X-Tenant-Id', 'x-domain']) {
+        expect(validateHeaderOverrideRows([{ name, value: '' }])).toBe('blockedName')
+      }
+    })
 
-  it('rejects oversized names', () => {
-    expect(validateHeaderOverrideRows([{ name: 'x'.repeat(201), value: 'v' }])).toBe('invalidName')
-  })
-})
+      it('allows tab inside value', () => {
+        expect(validateHeaderOverrideRows([{ name: 'x-app', value: 'a\tb' }])).toBeNull()
+      })
+
+      it('rejects oversized names', () => {
+        expect(validateHeaderOverrideRows([{ name: 'x'.repeat(201), value: 'v' }])).toBe('invalidName')
+      })
+    })
 
 describe('plan_type helpers', () => {
   describe('planTypeDisplayLabel', () => {

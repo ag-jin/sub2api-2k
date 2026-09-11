@@ -155,6 +155,7 @@ export default {
         codexCliWs: 'Codex CLI (WebSocket)',
         grokCli: 'Grok CLI',
         opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy API',
       },
       antigravity: {
         description: 'Configure API access for Antigravity group. Select the configuration method based on your client.',
@@ -192,6 +193,11 @@ export default {
         title: 'OpenCode Example',
         subtitle: 'opencode.json',
         hint: 'Config path: ~/.config/opencode/opencode.json (or opencode.jsonc), create if not exists. Use default providers (openai/anthropic/google) or custom provider_id. API Key can be configured directly or via /connect command. This is an example, adjust models and options as needed.',
+      },
+      codebuddy: {
+        title: 'CodeBuddy API Examples',
+        subtitle: 'Messages + Chat Completions',
+        hint: 'Generic API client examples for the CodeBuddy group: Anthropic-compatible /v1/messages and OpenAI-compatible /v1/chat/completions. Point your client at the gateway base URL and authenticate with the group API key. Adjust models as needed.'
       },
     },
     customKeyLabel: 'Custom Key',

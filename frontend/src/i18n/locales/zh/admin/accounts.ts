@@ -312,6 +312,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy',
       },
       opencode: {
         baseUrlHint: 'OpenCode Go API 地址。OpenCode 支持 Messages 和 Chat Completions，不支持 Responses。',
@@ -322,6 +323,16 @@ export default {
           stale: '用量快照已过期',
           error: '用量不可用'
         }
+      },
+      codebuddy: {
+        baseUrlHint: 'CodeBuddy（腾讯云）地址。请求走 Chat Completions 与 Anthropic Messages，不支持 Responses。',
+        authJsonLabel: 'Auth JSON',
+        authJsonHint: '粘贴 CodeBuddy auth JSON（自动抽取 auth.accessToken / refreshToken / expiresAt / domain 及 account.uid / enterpriseId）。轮换后请在编辑弹窗更新。',
+        authJsonRequired: '请粘贴 CodeBuddy auth JSON',
+        authJsonInvalid: 'CodeBuddy auth JSON 无效：需要包含 auth.accessToken 的对象',
+        enterpriseIdLabel: 'Enterprise ID（可选）',
+        enterpriseIdHint: '选填。留空则使用 auth JSON 内的值，不做强制校验。',
+        pasteTip: '建议先退出 CodeBuddy 桌面端会话再粘贴，避免凭证互踢。'
       },
       cnProviders: {
         accountMode: {
