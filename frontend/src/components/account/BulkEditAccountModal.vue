@@ -1592,10 +1592,14 @@ const allOpenAIAPIKey = computed(() => {
 
 // 上游倍率自动探测已放宽到全部 API-key 平台：只要求所选类型全为 apikey，
 // 平台不限（sub2api 上游即可应答 /v1/sub2api/billing）。
+// 例外：codebuddy 不在后端探针白名单内（IsUpstreamBillingProbeIdentity），
+// 混选含 codebuddy 时发送探针字段会被 UPSTREAM_BILLING_PROBE_ACCOUNT_INVALID 拒绝，
+// 因此与单条编辑一致，整个区块按平台隐藏、字段按平台跳过。
 const allBillingProbeCapable = computed(() => {
   return (
     targetSelectedTypes.value.length > 0 &&
-    targetSelectedTypes.value.every(t => t === 'apikey')
+    targetSelectedTypes.value.every(t => t === 'apikey') &&
+    targetSelectedPlatforms.value.every(p => p !== 'codebuddy')
   )
 })
 
@@ -2067,7 +2071,9 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     )
   }
 
-  if (enableUpstreamBillingAutoProbe.value) {
+  // 同时校验可见性：勾选后又改了目标筛选条件（如混入 codebuddy）时，
+  // 不应把探针字段写到后端白名单外的账号上
+  if (enableUpstreamBillingAutoProbe.value && allBillingProbeCapable.value) {
     updates.upstream_billing_probe_enabled = upstreamBillingAutoProbeMode.value === 'enabled'
   }
 
@@ -2207,7 +2213,7 @@ const handleSubmit = async () => {
     enableGroups.value ||
     enableOpenAIWSMode.value ||
     enableOpenAIAPIKeyWSMode.value ||
-    enableUpstreamBillingAutoProbe.value ||
+    (enableUpstreamBillingAutoProbe.value && allBillingProbeCapable.value) ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAppServer.value ||
     enableCodexFingerprintMode.value ||

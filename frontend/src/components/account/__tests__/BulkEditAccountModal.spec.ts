@@ -763,6 +763,37 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-upstream-billing-auto-probe-enabled').exists()).toBe(false)
   })
 
+  it('混选含 codebuddy 时不显示上游倍率自动探测批量开关', () => {
+    // codebuddy 不在后端探针白名单内，混选时该字段发送即被拒。
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai', 'codebuddy'],
+      selectedTypes: ['apikey']
+    })
+
+    expect(wrapper.find('#bulk-edit-upstream-billing-auto-probe-enabled').exists()).toBe(false)
+  })
+
+  it('勾选探针后目标混入 codebuddy 时提交不携带探针字段', async () => {
+    // 模拟“先勾选、后改目标筛选混入 codebuddy”：开关状态残留但不得写入 payload。
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-upstream-billing-auto-probe-enabled').setValue(true)
+    await wrapper.setProps({ selectedPlatforms: ['openai', 'codebuddy'] })
+    await wrapper.get('#bulk-edit-rate-multiplier-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    // 精确匹配：payload 中不得出现 upstream_billing_probe_enabled
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      rate_multiplier: 1
+    })
+    expect(showError).not.toHaveBeenCalled()
+  })
+
   it('筛选结果批量编辑可统一开启上游倍率自动探测', async () => {
     const wrapper = mountModal({
       accountIds: [],
