@@ -330,9 +330,20 @@ export default {
         authJsonHint: '粘贴 CodeBuddy auth JSON（自动抽取 auth.accessToken / refreshToken / expiresAt / domain 及 account.uid / enterpriseId）。轮换后请在编辑弹窗更新。',
         authJsonRequired: '请粘贴 CodeBuddy auth JSON',
         authJsonInvalid: 'CodeBuddy auth JSON 无效：需要包含 auth.accessToken 的对象',
+        authJsonEditPlaceholder: '粘贴新的 auth JSON 以整框替换；留空保留现有凭据',
         enterpriseIdLabel: 'Enterprise ID（可选）',
         enterpriseIdHint: '选填。留空则使用 auth JSON 内的值，不做强制校验。',
-        pasteTip: '建议先退出 CodeBuddy 桌面端会话再粘贴，避免凭证互踢。'
+        pasteTip: '建议先退出 CodeBuddy 桌面端会话再粘贴，避免凭证互踢。',
+        credentialsConfigured: 'CodeBuddy 凭据已配置（token 不回显）。留空保存则保留现有凭据，粘贴新的 auth JSON 可整框替换。',
+        credentialsRequired: 'CodeBuddy 凭据未配置：请粘贴包含 auth.accessToken 的 auth JSON',
+        credentialGuide: {
+          summary: '如何获取 auth JSON？',
+          intro: '桌面端 CodeBuddy / WorkBuddy 登录后，凭据保存在以下 auth 文件（*.info）：',
+          macos: 'macOS：~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info',
+          windows: 'Windows：%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info',
+          linux: 'Linux：~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info',
+          openAndPaste: '用文本编辑器打开 .info 文件，复制完整 JSON 内容，粘贴到上方 Auth JSON 输入框。'
+        }
       },
       cnProviders: {
         accountMode: {

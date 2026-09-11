@@ -187,6 +187,42 @@ describe('AccountTestModal', () => {
     })
   })
 
+  it('codebuddy 账号测试默认选择 auto 模型而不是 sonnet', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' },
+      { id: 'auto', display_name: 'Auto' }
+    ])
+    global.fetch = vi.fn().mockResolvedValue(
+      createStreamResponse([
+        'data: {"type":"content","text":"ok"}\n',
+        'data: {"type":"test_complete","success":true}\n'
+      ])
+    ) as any
+
+    const wrapper = mountModal({
+      id: 9,
+      name: 'CodeBuddy Account',
+      platform: 'codebuddy',
+      type: 'apikey',
+      status: 'active'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+
+    await startButton!.trigger('click')
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toMatchObject({
+      model_id: 'auto'
+    })
+  })
+
   it('OpenAI Compact 探测会携带 compact 测试模式', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }
