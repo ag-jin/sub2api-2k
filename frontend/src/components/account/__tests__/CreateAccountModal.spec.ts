@@ -376,6 +376,24 @@ describe('CreateAccountModal CodeBuddy', () => {
     expect(credentials.account).toEqual({ uid: 'u1', enterpriseId: 'e1' })
   })
 
+  it('blocks submission through the CodeBuddy path when no auth JSON is pasted', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('CodeBuddy account')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // CodeBuddy 不走通用 "API Key 必填" 校验：空提交由 codebuddy 校验路径拦截。
+    expect(createAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('renders the credential acquisition guide for CodeBuddy', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'CodeBuddy')
+
+    expect(wrapper.find('[data-testid="codebuddy-credential-guide"]').exists()).toBe(true)
+  })
+
   it('prefers the optional enterprise ID input over the pasted value and skips required checks', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'CodeBuddy')

@@ -127,9 +127,20 @@ export default {
         authJsonHint: 'Paste the CodeBuddy auth JSON (auth.accessToken / refreshToken / expiresAt / domain plus account.uid / enterpriseId are extracted automatically). Use the Edit dialog to update it after rotation.',
         authJsonRequired: 'Paste the CodeBuddy auth JSON',
         authJsonInvalid: 'Invalid CodeBuddy auth JSON: expected an object with auth.accessToken',
+        authJsonEditPlaceholder: 'Paste a new auth JSON to replace the credentials; leave empty to keep the current ones',
         enterpriseIdLabel: 'Enterprise ID (optional)',
         enterpriseIdHint: 'Optional. Leave empty to use the value embedded in the auth JSON; no strict validation is applied.',
-        pasteTip: 'Recommended: sign out of the CodeBuddy desktop session before pasting so credentials do not kick each other.'
+        pasteTip: 'Recommended: sign out of the CodeBuddy desktop session before pasting so credentials do not kick each other.',
+        credentialsConfigured: 'CodeBuddy credentials are configured (the token is never echoed back). Save with the field empty to keep them, or paste a new auth JSON to replace them.',
+        credentialsRequired: 'CodeBuddy credentials are missing: paste an auth JSON containing auth.accessToken',
+        credentialGuide: {
+          summary: 'How do I get the auth JSON?',
+          intro: 'After signing in to the CodeBuddy / WorkBuddy desktop app, credentials are stored in these auth files (*.info):',
+          macos: 'macOS: ~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info',
+          windows: 'Windows: %LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info',
+          linux: 'Linux: ~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info',
+          openAndPaste: 'Open the .info file with a text editor, copy the full JSON content, and paste it into the Auth JSON field above.'
+        }
       },
       cnProviders: {
         accountMode: {
