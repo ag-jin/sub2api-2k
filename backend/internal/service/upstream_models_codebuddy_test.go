@@ -1,0 +1,64 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// CodeBuddy 上游 copilot.tencent.com 不提供模型列表端点（/v1/models、
+// /v2/models、/models 实测均 404），"同步上游模型"探测必须走平台静态清单，
+// 不发任何 HTTP。deepseek-v4.1-flash 为上游 auto 实测解析出的模型。
+
+func codeBuddyModelSyncTestAccount(id int64) *Account {
+	return &Account{
+		ID:          id,
+		Platform:    PlatformCodeBuddy,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://copilot.tencent.com"},
+	}
+}
+
+// Scenario: 探测直接返回静态清单且零 HTTP 请求。
+func TestFetchUpstreamSupportedModelsCodeBuddyStatic(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{err: errors.New("codebuddy probe must not issue HTTP")}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), codeBuddyModelSyncTestAccount(81))
+	require.NoError(t, err)
+	require.Contains(t, models, "deepseek-v4.1-flash")
+	require.Contains(t, models, CodeBuddyAutoModel)
+	require.Empty(t, upstream.requests, "codebuddy 探测不得发出任何 HTTP 请求")
+}
+
+// Scenario: 同步 catalog 返回同一静态清单；除共享的 models.dev 元数据补齐外
+// 不探测账号上游；无元数据时不落快照（incomplete 警告如实透出）。
+func TestSyncUpstreamModelCatalogCodeBuddyStatic(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{err: errors.New("codebuddy probe must not issue HTTP")}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+	account := codeBuddyModelSyncTestAccount(82)
+
+	catalog, err := svc.SyncUpstreamModelCatalog(context.Background(), account)
+	require.NoError(t, err)
+	require.Contains(t, catalog.Models, "deepseek-v4.1-flash")
+	for _, req := range upstream.requests {
+		assert.Equal(t, modelsDevRegistryURL, req.URL.String(),
+			"仅允许共享的 models.dev 元数据补齐请求,不得探测账号上游")
+	}
+	assert.Nil(t, repo.updates, "静态清单无能力元数据,不应落账号快照")
+}
