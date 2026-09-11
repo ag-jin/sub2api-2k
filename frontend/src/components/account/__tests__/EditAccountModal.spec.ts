@@ -1423,3 +1423,37 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     wrapper.unmount()
   })
 })
+
+describe('EditAccountModal CodeBuddy', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+  })
+
+  it('shows the CodeBuddy default base URL and rehydrates keep-default behavior', async () => {
+    const account = buildAccount()
+    account.platform = 'codebuddy'
+    account.credentials = {
+      base_url: 'https://copilot.tencent.com',
+      auth: { accessToken: 'tok', refreshToken: 'rt' },
+      account: { uid: 'u1' }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+
+    const baseUrlInput = wrapper
+      .findAll('input')
+      .find((input) => (input.attributes('placeholder') || '').includes('copilot.tencent.com'))
+    expect(baseUrlInput).toBeDefined()
+
+    // Clear base URL and submit: platform default is sent unchanged.
+    baseUrlInput?.setValue('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      base_url: 'https://copilot.tencent.com'
+    })
+  })
+})

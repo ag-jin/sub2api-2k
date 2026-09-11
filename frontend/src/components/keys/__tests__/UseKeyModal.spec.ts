@@ -844,3 +844,55 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('model_reasoning_effort')
   })
 })
+
+describe('UseKeyModal CodeBuddy group', () => {
+  function mountCodebuddy(baseUrl = 'https://example.com/v1') {
+    return mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-codebuddy-test',
+        baseUrl,
+        platform: 'codebuddy'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+  }
+
+  it('single tab defaults to the CodeBuddy API client view with both endpoints', async () => {
+    const wrapper = mountCodebuddy()
+    await nextTick()
+
+    const tab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.codebuddy')
+    )
+    expect(tab).toBeDefined()
+    expect(wrapper.text()).not.toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(wrapper.text()).not.toContain('keys.useKeyModal.cliTabs.claudeCode')
+
+    const allCode = wrapper.findAll('pre code').map((code) => code.text()).join('\n')
+    expect(allCode).toContain('https://example.com/v1/messages')
+    expect(allCode).toContain('https://example.com/v1/chat/completions')
+    expect(allCode).toContain('openai import OpenAI')
+    expect(allCode).toContain('Authorization: Bearer sk-codebuddy-test')
+    // 通用 API 客户端形态：无 shell 环境变量视图
+    expect(allCode).not.toContain('export ANTHROPIC_BASE_URL')
+  })
+
+  it('uses the base URL root without trimming /v1 suffix', async () => {
+    const wrapper = mountCodebuddy('https://gw.example.com')
+    await nextTick()
+
+    const allCode = wrapper.findAll('pre code').map((code) => code.text()).join('\n')
+    expect(allCode).toContain('https://gw.example.com/v1/messages')
+    expect(allCode).toContain('https://gw.example.com/v1/chat/completions')
+  })
+})

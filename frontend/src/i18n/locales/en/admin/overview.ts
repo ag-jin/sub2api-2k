@@ -954,6 +954,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         opencode: 'OpenCode',
+        codebuddy: 'CodeBuddy',
         composite: 'Composite',
       },
       deleteConfirm:

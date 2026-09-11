@@ -835,6 +835,7 @@ const accountSupportsBatchUsage = (account: Account) => {
   if (account.platform === 'openai') return account.type === 'oauth' || account.type === 'apikey'
   if (account.platform === 'grok') return account.type === 'oauth'
   if (account.platform === 'opencode') return account.type === 'apikey'
+  if (account.platform === 'codebuddy') return account.type === 'apikey'
   return false
 }
 

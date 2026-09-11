@@ -16,6 +16,16 @@ const opencodeModels = [
   'muse-spark-1.2', 'muse-spark-1.2-contributor'
 ]
 
+// CodeBuddy（来源：codebuddy2api converter.py 回退清单 @ f717db6f；auto 为兜底别名，豁免白名单校验）
+const codebuddyModels = [
+  'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
+  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
+  'deepseek-v4-pro', 'deepseek-v4-flash',
+  'minimax-m3-pay',
+  'hy3-preview-agent',
+  'auto'
+]
+
 // OpenAI
 const openaiModels = [
   // GPT-5.2 系列
@@ -249,6 +259,7 @@ const perplexityModels = [
 
 const allModelsList: string[] = [
   ...opencodeModels,
+  ...codebuddyModels,
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
@@ -431,6 +442,7 @@ export const commonErrorCodes = [
 export function getModelsByPlatform(platform: string): string[] {
   switch (platform) {
     case 'opencode': return opencodeModels
+    case 'codebuddy': return codebuddyModels
     case 'openai': return openaiModels
     case 'anthropic':
     case 'claude': return claudeModels
@@ -460,6 +472,7 @@ export function getModelsByPlatform(platform: string): string[] {
 // 按平台获取预设映射
 export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'opencode') return []
+  if (platform === 'codebuddy') return []
   if (platform === 'openai') return openaiPresetMappings
   if (platform === 'gemini') return geminiPresetMappings
   if (platform === 'grok' || platform === 'xai') return grokPresetMappings
