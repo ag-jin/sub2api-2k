@@ -48,6 +48,7 @@ const (
 	PlatformKimi      = domain.PlatformKimi
 	PlatformZhipu     = domain.PlatformZhipu
 	PlatformDeepseek  = domain.PlatformDeepseek
+	PlatformCodeBuddy = domain.PlatformCodeBuddy
 	PlatformComposite = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
@@ -76,6 +77,8 @@ const (
 	DefaultZhipuCodingBaseURL = "https://open.bigmodel.cn/api/coding/paas/v4"
 	DefaultDeepseekBaseURL    = "https://api.deepseek.com"
 	DefaultOpenCodeBaseURL    = "https://opencode.ai/zen/go/v1"
+	// CodeBuddy 的对话端点为 /v2/chat/completions（非 /v1），见 account_codebuddy.go。
+	DefaultCodeBuddyBaseURL = "https://copilot.tencent.com"
 )
 
 // 国产供应商 Anthropic 协议端点的默认 base_url（上游路径为 {base}/v1/messages）。

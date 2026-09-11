@@ -137,6 +137,17 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 // openAIChatCompletionsTargetURL 解析账号的（非 Grok）Chat Completions 上游端点。
 func (s *OpenAIGatewayService) openAIChatCompletionsTargetURL(account *Account) (string, error) {
 	baseURL := account.GetOpenAIBaseURL()
+	// CodeBuddy 的对话端点为 /v2/chat/completions（非 /v1），见 account_codebuddy.go。
+	if account != nil && account.IsCodeBuddy() {
+		if baseURL == "" {
+			baseURL = DefaultCodeBuddyBaseURL
+		}
+		validated, err := s.validateUpstreamBaseURL(strings.TrimRight(baseURL, "/") + CodeBuddyChatCompletionsPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		return validated, nil
+	}
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
@@ -175,6 +186,55 @@ const openCodeUpstreamUserAgent = "sub2api/1.0"
 // 截止取消，覆盖响应头等待与首 token 等待两个阶段；守卫随响应返回给调用方，
 // 由调用方在首个数据块到达后停表、在响应体关闭时释放。
 func (s *OpenAIGatewayService) sendCCUpstreamRequest(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	targetURL string,
+	body []byte,
+	stream bool,
+	bearerToken string,
+	userAgent string,
+	grokCacheIdentity string,
+	firstTokenTimeout time.Duration,
+) (*http.Response, *openAIFirstOutputHeaderGuard, error) {
+	resp, guard, err := s.sendCCUpstreamRequestOnce(
+		ctx, c, account, targetURL, body, stream, bearerToken, userAgent, grokCacheIdentity, firstTokenTimeout,
+	)
+	// CodeBuddy 401 兜底语义（R3-H3/R1-D1“重读 DB 凭据→重试一次→仍失败判死”）：
+	// 桌面端 CodeBuddy 客户端可能与后台刷新并存轮换 token（原型实证旧 accessToken
+	// 在刷新后短期仍有效）。上游 401 时重读一次 DB 凭据，token 已变化则用新凭据
+	// 重试一次；token 未变化则原样返回响应，交由 failover 链判死（StatusError）。
+	if account != nil && account.IsCodeBuddy() && resp != nil && resp.StatusCode == http.StatusUnauthorized {
+		// 先缓冲 401 响应体（token 未变化时原样返回给上层错误处理链）。
+		unauthorizedBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(unauthorizedBody))
+			if fresh, rereadErr := s.accountRepo.GetByID(ctx, account.ID); rereadErr == nil && fresh != nil {
+				oldToken := account.GetCodeBuddyAccessToken()
+				newToken := fresh.GetCodeBuddyAccessToken()
+				if newToken != "" && newToken != oldToken {
+					account.Credentials = fresh.Credentials
+					if fresh.ProxyID != nil {
+						account.ProxyID = fresh.ProxyID
+					}
+					if fresh.Proxy != nil {
+						account.Proxy = fresh.Proxy
+					}
+					return s.sendCCUpstreamRequestOnce(
+						ctx, c, account, targetURL, body, stream,
+						fresh.GetOpenAIProtocolAPIKey(), userAgent, grokCacheIdentity, firstTokenTimeout,
+					)
+				}
+			}
+		}
+	}
+	return resp, guard, err
+}
+
+// sendCCUpstreamRequestOnce 执行一次 CC 上游请求（无重试）。sendCCUpstreamRequest
+// 仅对 CodeBuddy 的确认性 401 做一次“凭据重读+重试”包装，其余平台不进入重试。
+func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
@@ -239,6 +299,12 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		)))
 	}
 
+	// CodeBuddy 专用身份头：X-User-Id / X-Enterprise-Id / X-Tenant-Id / X-Domain
+	// (+ UA)。放在账号级覆写之前，并在 account_header_override 不可覆写清单中
+	// 同步禁覆写这几个头名。
+	if account.IsCodeBuddy() {
+		applyCodeBuddyUpstreamHeaders(upstreamReq.Header, account)
+	}
 	if account.Platform == PlatformGrok {
 		if account.IsGrokOAuth() {
 			applyGrokCLIHeaders(upstreamReq.Header)

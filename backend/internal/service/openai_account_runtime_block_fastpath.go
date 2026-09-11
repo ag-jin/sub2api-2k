@@ -51,6 +51,15 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(statusCode, responseBody) {
 		return false
 	}
+	// CodeBuddy 单列错误归类分支：确认性 401/403 → StatusError + 提示重录
+	// auth JSON；其余状态沿用通用 upstream 错误链（temp-unsched / failover）。
+	if account != nil && account.IsCodeBuddy() {
+		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+			s.handleCodeBuddyAccountUpstreamError(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody))
+			return true
+		}
+		return false
+	}
 	// Any non-2xx upstream HTTP response means the model request was actually sent.
 	if s != nil {
 		scheduleOllamaCloudUsageActivity(s.deferredService, account)

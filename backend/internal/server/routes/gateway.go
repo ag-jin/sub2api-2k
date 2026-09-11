@@ -49,7 +49,7 @@ func RegisterGatewayRoutes(
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok,
 			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
-			service.PlatformOpenCode:
+			service.PlatformOpenCode, service.PlatformCodeBuddy:
 			return true
 		default:
 			return false
@@ -73,6 +73,13 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.CountTokens(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokCountTokens(c)
+		case service.PlatformCodeBuddy:
+			// CodeBuddy 上游仅提供 /v2/chat/completions 对话端点，无 token 计数端点。
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"type":    "unsupported-provider",
+				"message": "CodeBuddy does not support the count_tokens API",
+			}})
 		default:
 			h.Gateway.CountTokens(c)
 		}
@@ -183,15 +190,28 @@ func RegisterGatewayRoutes(
 		}
 	}
 
+	// guardOpenCodeResponses opencode 与 codebuddy 均不支持 /v1/responses：
+	// opencode 无该端点；codebuddy 上游仅提供 /v2/chat/completions 对话端点。
+	// 四处合围：POST /responses、POST /responses/*subpath、GET /responses（WS）、
+	// 以及 isOpenAIResponsesCompatibleGatewayPlatform 不含 codebuddy。
 	guardOpenCodeResponses := func(c *gin.Context) bool {
-		return getGroupPlatform(c) == service.PlatformOpenCode
+		switch getGroupPlatform(c) {
+		case service.PlatformOpenCode, service.PlatformCodeBuddy:
+			return true
+		default:
+			return false
+		}
 	}
 	unsupportedOpenCodeResponses := func(c *gin.Context) {
 		if guardOpenCodeResponses(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			message := "OpenCode does not support the Responses API"
+			if getGroupPlatform(c) == service.PlatformCodeBuddy {
+				message = "CodeBuddy does not support the Responses API"
+			}
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
 				"type":    "unsupported-provider",
-				"message": "OpenCode does not support the Responses API",
+				"message": message,
 			}})
 			return
 		}

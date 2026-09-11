@@ -34,6 +34,20 @@ type GrokOAuthRefreshSuccessRepository interface {
 	) (bool, error)
 }
 
+// CodeBuddyOAuthRefreshSuccessRepository is the persistence boundary for a
+// provider-issued CodeBuddy credential rotation (mirror of the Grok success
+// CAS: compare the complete credential document and proxy used by the
+// upstream attempt).
+type CodeBuddyOAuthRefreshSuccessRepository interface {
+	UpdateCodeBuddyCredentialsIfUnchanged(
+		ctx context.Context,
+		id int64,
+		expectedCredentials map[string]any,
+		expectedProxyID *int64,
+		credentials map[string]any,
+	) (bool, error)
+}
+
 const (
 	defaultRefreshLockTTL                   = 60 * time.Second
 	defaultRefreshLockReleaseTimeout        = 2 * time.Second
@@ -350,6 +364,42 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
+		} else if freshAccount.IsCodeBuddy() {
+			// CodeBuddy：凭据 CAS-if-unchanged（桌面端并发重录保护，R3-H2）。
+			conditionalRepo, ok := api.accountRepo.(CodeBuddyOAuthRefreshSuccessRepository)
+			if !ok {
+				return nil, &providerConfigurationRefreshError{
+					err: fmt.Errorf("codebuddy refresh success CAS repository is not configured"),
+				}
+			}
+			applied, updateErr := conditionalRepo.UpdateCodeBuddyCredentialsIfUnchanged(
+				ctx,
+				freshAccount.ID,
+				attemptedAccount.Credentials,
+				attemptedAccount.ProxyID,
+				newCredentials,
+			)
+			if updateErr != nil {
+				return nil, &providerCycleContainmentRefreshError{
+					err: fmt.Errorf("codebuddy refresh succeeded but credential persistence failed: %w", updateErr),
+				}
+			}
+			if !applied {
+				currentAccount, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID)
+				if readErr != nil || currentAccount == nil {
+					return nil, &providerCycleContainmentRefreshError{
+						err: fmt.Errorf("codebuddy success CAS lost and current state is unavailable: %w", readErr),
+					}
+				}
+				slog.Info("oauth_refresh_success_cas_skipped_stale_credentials",
+					"account_id", freshAccount.ID,
+					"platform", freshAccount.Platform,
+				)
+				return &OAuthRefreshResult{Account: currentAccount}, nil
+			}
+			if durableAccount, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID); readErr == nil && durableAccount != nil {
+				freshAccount = durableAccount
+			}
 		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
 			slog.Error("oauth_refresh_update_failed",
 				"account_id", freshAccount.ID,

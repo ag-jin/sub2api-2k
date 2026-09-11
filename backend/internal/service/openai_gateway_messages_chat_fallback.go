@@ -62,8 +62,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	chatReq.Model = upstreamModel
 	chatReq.ReasoningEffort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, chatReq.ReasoningEffort)
-	chatReq.Stream = clientStream
-	if clientStream {
+	isCodeBuddy := account.IsCodeBuddy()
+	// CodeBuddy 上游仅支持流式：无论客户端 stream 与否都强制 stream=true + include_usage。
+	chatReq.Stream = clientStream || isCodeBuddy
+	if chatReq.Stream {
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
 
@@ -105,7 +107,8 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	if err != nil {
 		return nil, err
 	}
-	resp, _, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, clientStream, apiKey, account.GetOpenAIUserAgent(), "", time.Duration(0))
+	// CodeBuddy 的专用身份头由 sendCCUpstreamRequest 统一注入；UA 用平台自有值。
+	resp, _, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, chatReq.Stream, apiKey, account.GetOpenAIUserAgent(), "", time.Duration(0))
 	if err != nil {
 		return nil, err
 	}
@@ -123,10 +126,60 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	}
 
 	// 5. Convert response
+	if isCodeBuddy && !clientStream {
+		// CodeBuddy 非流式：上游恒为流式，消费 SSE 聚合为 CC JSON 后直转 Anthropic。
+		return s.bufferAggregatedCodeBuddyChatAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	}
 	if clientStream {
-		return s.streamChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, isCodeBuddy)
 	}
 	return s.bufferChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+}
+
+// bufferAggregatedCodeBuddyChatAsAnthropic 聚合 CodeBuddy 强制流式 SSE 后，
+// 用直接桥（ChatCompletionsResponseToAnthropic）转换出最终 Anthropic 响应。
+func (s *OpenAIGatewayService) bufferAggregatedCodeBuddyChatAsAnthropic(
+	c *gin.Context,
+	resp *http.Response,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	reasoningEffort *string,
+	serviceTier *string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	requestID := resp.Header.Get("x-request-id")
+	aggBody, usage, _, err := aggregateCodeBuddyCCResponseWithFallback(resp.Body, originalModel)
+	if err != nil {
+		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
+		return nil, fmt.Errorf("aggregate codebuddy anthropic stream: %w", err)
+	}
+	var ccResp apicompat.ChatCompletionsResponse
+	if err := json.Unmarshal(aggBody, &ccResp); err != nil {
+		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Failed to parse aggregated upstream response")
+		return nil, fmt.Errorf("parse aggregated codebuddy response: %w", err)
+	}
+	anthropicResp := apicompat.ChatCompletionsResponseToAnthropic(&ccResp, originalModel)
+	// finish_reason=content_filter → 可辨识 refusal 信号（R1-D3b），
+	// 不静默回退 end_turn；只处理未携带 tool_use 的纯拦截场景。
+	apicompat.ApplyAnthropicContentFilterRefusal(anthropicResp, apicompat.ChatCompletionsResponseFinishReason(&ccResp))
+
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.JSON(http.StatusOK, anthropicResp)
+
+	return &OpenAIForwardResult{
+		RequestID:       requestID,
+		Usage:           usage,
+		Model:           originalModel,
+		BillingModel:    billingModel,
+		UpstreamModel:   upstreamModel,
+		ReasoningEffort: reasoningEffort,
+		ServiceTier:     serviceTier,
+		Stream:          false,
+		Duration:        time.Since(startTime),
+	}, nil
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
@@ -173,6 +226,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	contentFilterRefusal bool,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
@@ -228,6 +282,10 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 
 	// Finalize: close open blocks + emit message_delta/message_stop.
 	finalEvents := apicompat.FinalizeChatCompletionsAnthropicStream(anthropicState)
+	if contentFilterRefusal {
+		// CodeBuddy：finish_reason=content_filter → 可辨识 refusal 信号（R1-D3b）。
+		finalEvents = apicompat.ApplyAnthropicStreamRefusal(finalEvents, apicompat.ChatCompletionsAnthropicStreamFinishReason(anthropicState))
+	}
 	if !clientDisconnected {
 		for _, aEvt := range finalEvents {
 			sse, err := apicompat.ResponsesAnthropicEventToSSE(aEvt)

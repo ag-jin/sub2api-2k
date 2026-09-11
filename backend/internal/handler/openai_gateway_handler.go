@@ -204,7 +204,7 @@ func allowOpenAICompatibleMessagesDispatch(apiKey *service.APIKey) bool {
 	if service.IsCNProvider(apiKey.Group.Platform) {
 		return true
 	}
-	if apiKey.Group.Platform == service.PlatformOpenCode {
+	if apiKey.Group.Platform == service.PlatformOpenCode || apiKey.Group.Platform == service.PlatformCodeBuddy {
 		return true
 	}
 	return apiKey.Group.AllowMessagesDispatch

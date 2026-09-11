@@ -11,7 +11,14 @@ func SanitizeStoredCredentials(platform string, creds map[string]any) map[string
 	if creds == nil {
 		return nil
 	}
-	_ = platform
+	// CodeBuddy：auth JSON 归一化（白名单字段式，丢弃 allAccounts/accounts 等桌面端
+	// 易变键），enterpriseId 为 None 时归一为空串（R3-M1）。
+	if platform == PlatformCodeBuddy {
+		if normalized := NormalizeCodeBuddyCredentials(creds); normalized != nil {
+			return normalized
+		}
+		return creds
+	}
 	for _, key := range []string{
 		"password", "sso_token", "sso", "sso-rw", "clearTextPassword", "cookie",
 	} {

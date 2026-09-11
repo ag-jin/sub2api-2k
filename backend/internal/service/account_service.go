@@ -27,6 +27,7 @@ type OAuthRefreshPageOptions struct {
 	Limit                int
 	ActiveOnly           bool
 	IncludeSetupToken    bool
+	IncludeCodeBuddyAuth bool
 	RequireRefreshToken  bool
 	ExcludeRetryCooldown bool
 }
@@ -519,6 +520,9 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		return nil
 	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
 		// 国产 OpenAI 兼容供应商：凭证为 API Key，实际可用性经余额/额度探测与转发路径验证。
+		return nil
+	case PlatformCodeBuddy:
+		// CodeBuddy：auth JSON 静态凭证，实际可用性经刷新链路与转发路径验证。
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)
