@@ -50,6 +50,14 @@ describe('CodeBuddy account locale copy', () => {
     expect(en.admin.accounts.codebuddy.usage.balanceLabel).toBeTruthy()
   })
 
+  it('exposes the CodeBuddy credits value copy in zh and en with the value placeholder', () => {
+    // 积分形态（unit=credits），不套货币格式（$）
+    expect(zh.admin.accounts.codebuddy.usage.creditsValue).toBe('{value} 积分')
+    expect(en.admin.accounts.codebuddy.usage.creditsValue).toBe('{value} credits')
+    expect(String(zh.admin.accounts.codebuddy.usage.creditsValue)).not.toContain('$')
+    expect(String(en.admin.accounts.codebuddy.usage.creditsValue)).not.toContain('$')
+  })
+
   it('exposes the daily check-in copy in zh and en', () => {
     for (const locale of [zh, en]) {
       const checkin = locale.admin.accounts.codebuddy.checkin

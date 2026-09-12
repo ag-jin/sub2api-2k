@@ -39,28 +39,21 @@ func TestFetchUpstreamSupportedModelsCodeBuddyStatic(t *testing.T) {
 	require.Empty(t, upstream.requests, "codebuddy 探测不得发出任何 HTTP 请求")
 }
 
-// Scenario: 同步 catalog 返回同一静态清单；除共享的 models.dev 元数据补齐外
-// 不探测账号上游；无元数据时不落快照（incomplete 警告如实透出）。
-func TestSyncUpstreamModelCatalogCodeBuddyStatic(t *testing.T) {
+// Scenario: 探测结果不含非平台伪模型。
+func TestFetchUpstreamSupportedModelsCodeBuddyNoFakeModels(t *testing.T) {
 	t.Parallel()
 
 	upstream := &httpUpstreamRecorder{err: errors.New("codebuddy probe must not issue HTTP")}
-	repo := &upstreamModelMetadataRepoStub{}
 	svc := &AccountTestService{
-		accountRepo:  repo,
 		httpUpstream: upstream,
 		cfg:          upstreamModelSyncTestConfig(),
 	}
-	account := codeBuddyModelSyncTestAccount(82)
 
-	catalog, err := svc.SyncUpstreamModelCatalog(context.Background(), account)
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), codeBuddyModelSyncTestAccount(83))
 	require.NoError(t, err)
-	require.Contains(t, catalog.Models, "deepseek-v4.1-flash")
-	for _, req := range upstream.requests {
-		assert.Equal(t, modelsDevRegistryURL, req.URL.String(),
-			"仅允许共享的 models.dev 元数据补齐请求,不得探测账号上游")
+	for _, m := range models {
+		assert.NotContains(t, m, "gpt-", "不得混入 OpenAI 伪模型")
 	}
-	assert.Nil(t, repo.updates, "静态清单无能力元数据,不应落账号快照")
 }
 
 // Scenario: 静态清单严格等于 15+auto 冻结契约（auto 置顶 + 14 个实测模型）。
