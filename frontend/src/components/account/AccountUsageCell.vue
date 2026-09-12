@@ -444,6 +444,76 @@
       </div>
     </template>
 
+    <!-- CodeBuddy API-key accounts: single-value upstream balance (UpstreamBalanceUsage
+         同构), deliberately NOT the opencode multi-bar form. Four states: value / empty /
+         degraded error / needsReauth; refresh uses the existing active-query channel. -->
+    <template v-else-if="account.platform === 'codebuddy'">
+      <div class="space-y-1">
+        <!-- Loading state -->
+        <div v-if="loading" class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+        <!-- Needs reauth (401 值通道语义，不改账号状态) -->
+        <span
+          v-else-if="needsReauth"
+          data-testid="codebuddy-needs-reauth"
+          class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+        >
+          {{ t('admin.accounts.needsReauth') }}
+        </span>
+        <!-- Request-level failure -->
+        <div v-else-if="error" class="text-xs text-red-500">
+          {{ error }}
+        </div>
+        <!-- Balance snapshot (may carry both a stale value and a degraded error) -->
+        <template v-else-if="usageInfo?.upstream_balance">
+          <div
+            v-if="codebuddyBalanceDisplay !== null"
+            data-testid="codebuddy-balance-value"
+            class="flex items-center justify-between gap-2 text-xs"
+          >
+            <span class="text-gray-500 dark:text-gray-400">💳 {{ t('admin.accounts.codebuddy.usage.balanceLabel') }}</span>
+            <strong class="text-emerald-600 dark:text-emerald-400">{{ codebuddyBalanceDisplay }}</strong>
+          </div>
+          <div
+            v-if="codebuddyBalanceErrorLabel"
+            data-testid="codebuddy-balance-error"
+            class="text-[10px] text-amber-600 dark:text-amber-400"
+          >
+            {{ codebuddyBalanceErrorLabel }}
+          </div>
+          <div v-if="codebuddyBalanceDisplay === null && !codebuddyBalanceErrorLabel" class="text-xs text-gray-400">-</div>
+        </template>
+        <!-- No data at all -->
+        <div v-else class="text-xs text-gray-400">-</div>
+        <!-- On-demand refresh (余额按需惰性单查，先例：usageWindow.activeQuery) -->
+        <button
+          type="button"
+          data-testid="codebuddy-balance-refresh"
+          class="inline-flex w-fit items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="activeQueryLoading"
+          @click="loadActiveUsage"
+        >
+          <svg
+            class="h-2.5 w-2.5"
+            :class="{ 'animate-spin': activeQueryLoading }"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+          {{ t('admin.accounts.usageWindow.activeQuery') }}
+        </button>
+      </div>
+    </template>
+
     <!-- Gemini platform: show quota + local usage window -->
     <template v-else-if="account.platform === 'gemini'">
       <!-- Auth Type + Tier Badge (first line) -->
@@ -761,10 +831,12 @@ const showUsageWindows = computed(() => {
   if (props.account.platform === 'gemini') return true
   // CN providers: apikey 账号也有滚动用量窗口（coding plan）或余额（payg），
   // 由 CNProviderQuotaCell / CNProviderBalanceCell 自行探测与展示。
+  // codebuddy: apikey 账号走单值余额展示（UpstreamBalanceUsage 同构）。
   if (
     props.account.platform === 'kimi' ||
     props.account.platform === 'zhipu' ||
     props.account.platform === 'deepseek' ||
+    props.account.platform === 'codebuddy' ||
     (props.account.platform === 'opencode' && props.account.type === 'apikey')
   ) {
     return true
@@ -791,6 +863,10 @@ const shouldFetchUsage = computed(() => {
   if (props.account.platform === 'opencode') {
     return props.account.type === 'apikey'
   }
+  if (props.account.platform === 'codebuddy') {
+    // 批量取数首期不含 codebuddy：余额按需惰性单查（GET /admin/accounts/:id/usage）。
+    return true
+  }
   return false
 })
 
@@ -803,7 +879,12 @@ const cnAccountMode = computed(() => {
 const cnQuotaCellVisible = computed(() => cnQuotaCellVisibleFn(props.account.platform, cnAccountMode.value))
 const cnBalanceCellVisible = computed(() => cnBalanceCellVisibleFn(props.account.platform, cnAccountMode.value))
 
-const isBatchManaged = computed(() => typeof props.requestBatchedUsage === 'function')
+// codebuddy 不在后端批量取数支持列表（AccountsView.accountSupportsBatchUsage 显式排除）：
+// 桌面视口会向所有行下发批量函数，这里必须把 codebuddy 排除在托管模式外，
+// 否则单元格永远不自取、余额列恒空。
+const isBatchManaged = computed(() =>
+  typeof props.requestBatchedUsage === 'function' && props.account.platform !== 'codebuddy'
+)
 
 const showGeminiTodayStats = computed(() => {
   return props.account.platform === 'gemini' && props.account.type === 'service_account'
@@ -839,6 +920,32 @@ const opencodeUsageBars = computed(() => {
 const opencodeUsageStale = computed(() => {
   const snapshot = usageInfo.value?.opencode
   return snapshot?.status === 'stale' || [snapshot?.rolling, snapshot?.weekly, snapshot?.monthly].some(window => window?.status === 'stale')
+})
+
+// ===== CodeBuddy 单值余额（usage 响应复用 UpstreamBalanceUsage 键） =====
+
+const codebuddyBalance = computed(() => {
+  if (props.account.platform !== 'codebuddy') return null
+  const snapshot = usageInfo.value?.upstream_balance
+  if (!snapshot) return null
+  const value = snapshot.balance ?? snapshot.remaining
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+})
+
+const codebuddyBalanceDisplay = computed(() => {
+  const value = codebuddyBalance.value
+  if (value === null) return null
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)
+})
+
+// 降级值通道：error 文本透传，无文本时按 status/stale 回退通用文案。
+const codebuddyBalanceErrorLabel = computed(() => {
+  if (props.account.platform !== 'codebuddy') return null
+  const snapshot = usageInfo.value?.upstream_balance
+  if (!snapshot) return null
+  if (snapshot.error) return snapshot.error
+  if (snapshot.status === 'error' || snapshot.stale) return t('admin.accounts.usageError')
+  return null
 })
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false

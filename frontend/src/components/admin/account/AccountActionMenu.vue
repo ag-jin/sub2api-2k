@@ -45,6 +45,11 @@
               <Icon name="shield" size="sm" />
               {{ t('admin.accounts.setPrivacy') }}
             </button>
+            <!-- CodeBuddy 每日签到（手动显式触发，不做自动）：调用后按结果三态提示 -->
+            <button v-if="isCodebuddy" :disabled="checkinLoading" @click="handleCheckin" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-lime-600 hover:bg-gray-100 dark:hover:bg-dark-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <Icon name="calendar" size="sm" />
+              {{ t('admin.accounts.codebuddy.checkin.action') }}
+            </button>
             <div v-if="hasRecoverableState" class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
             <button v-if="hasRecoverableState" @click="$emit('recover-state', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="sync" size="sm" />
@@ -62,14 +67,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
+import { adminAPI } from '@/api/admin'
+import { useAppStore } from '@/stores/app'
 import type { Account } from '@/types'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
 const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
 const { t } = useI18n()
+const appStore = useAppStore()
 const canDuplicate = computed(() => {
   if (!props.account || props.account.parent_account_id != null) return false
   return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)
@@ -99,6 +107,33 @@ const isShadow = computed(() => props.account?.parent_account_id != null)
 // A "parent" OpenAI OAuth account is one that is NOT itself a shadow (parent_account_id == null)
 const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
 const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
+const isCodebuddy = computed(() => props.account?.platform === 'codebuddy')
+// A3 每日签到：POST /admin/codebuddy/accounts/:id/checkin；响应 {already_checked_in, credit, streak_days}。
+// 成功（code=0）/已签到（10001 幂等成功）/失败 三态 toast；streak>0 时附带连续天数。
+const checkinLoading = ref(false)
+const handleCheckin = async () => {
+  if (!props.account || checkinLoading.value) return
+  checkinLoading.value = true
+  try {
+    const result = await adminAPI.codebuddy.checkin(props.account.id)
+    if (result.already_checked_in) {
+      appStore.showInfo(t('admin.accounts.codebuddy.checkin.already'))
+      return
+    }
+    let message = t('admin.accounts.codebuddy.checkin.success', { credit: result.credit ?? 0 })
+    const streakDays = result.streak_days ?? 0
+    if (streakDays > 0) {
+      message += ' · ' + t('admin.accounts.codebuddy.checkin.streak', { days: streakDays })
+    }
+    appStore.showSuccess(message)
+  } catch (error) {
+    console.error('Failed to check in CodeBuddy account:', error)
+    appStore.showError(t('admin.accounts.codebuddy.checkin.failed'))
+  } finally {
+    checkinLoading.value = false
+    emit('close')
+  }
+}
 const hasQuotaLimit = computed(() => {
   return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
     (props.account?.quota_limit ?? 0) > 0 ||

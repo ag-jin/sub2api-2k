@@ -13,6 +13,24 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
+// 菜单组件引入 useAppStore（CodeBuddy 每日签到 toast）后，无 Pinia 实例的
+// 旧用例需要显式 mock store，本用例的按钮可见性断言保持不变。
+vi.mock('@/stores/app', () => ({
+  useAppStore: () => ({
+    showSuccess: vi.fn(),
+    showInfo: vi.fn(),
+    showError: vi.fn(),
+  }),
+}))
+
+vi.mock('@/api/admin', () => ({
+  adminAPI: {
+    codebuddy: {
+      checkin: vi.fn(),
+    },
+  },
+}))
+
 function makeAccount(overrides: Partial<Account>): Account {
   return {
     id: 1,
