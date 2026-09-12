@@ -151,7 +151,8 @@ export default {
           retry: 'Scan again'
         },
         usage: {
-          balanceLabel: 'Balance'
+          balanceLabel: 'Balance',
+          creditsValue: '{value} credits'
         },
         checkin: {
           action: 'Daily check-in',

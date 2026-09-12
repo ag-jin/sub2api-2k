@@ -474,7 +474,10 @@
             class="flex items-center justify-between gap-2 text-xs"
           >
             <span class="text-gray-500 dark:text-gray-400">💳 {{ t('admin.accounts.codebuddy.usage.balanceLabel') }}</span>
-            <strong class="text-emerald-600 dark:text-emerald-400">{{ codebuddyBalanceDisplay }}</strong>
+            <!-- codebuddy 余额是积分（unit=credits），不套货币格式（$），用 i18n 单位文案 -->
+            <strong class="text-emerald-600 dark:text-emerald-400">{{
+              t('admin.accounts.codebuddy.usage.creditsValue', { value: codebuddyBalanceDisplay })
+            }}</strong>
           </div>
           <div
             v-if="codebuddyBalanceErrorLabel"
@@ -935,7 +938,8 @@ const codebuddyBalance = computed(() => {
 const codebuddyBalanceDisplay = computed(() => {
   const value = codebuddyBalance.value
   if (value === null) return null
-  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)
+  // 整数不带小数；小数最多两位且去掉多余的尾零（积分是数量，不是货币金额）
+  return String(parseFloat(value.toFixed(2)))
 })
 
 // 降级值通道：error 文本透传，无文本时按 status/stale 回退通用文案。

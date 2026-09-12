@@ -70,8 +70,10 @@
         <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">{{ t('admin.accounts.columns.usageWindows') }}</span>
         <UsageSummary :account="account" :batched-usage="batchedUsage ?? null" />
       </div>
-        <!-- API Key accounts with upstream balance: 3-column grid -->
-        <div v-if="batchedUsage?.upstream_balance" class="space-y-2">
+        <!-- API Key accounts with upstream balance: 3-column grid.
+             codebuddy 例外：余额是积分（unit=credits），不套货币 $ 格式，
+             走下方完整 AccountUsageCell 的 codebuddy 单值分支。 -->
+        <div v-if="batchedUsage?.upstream_balance && account.platform !== 'codebuddy'" class="space-y-2">
           <div v-if="batchedUsageLoading" class="text-xs text-gray-400">...</div>
           <template v-else>
             <div class="grid grid-cols-3 gap-2">
@@ -96,8 +98,8 @@
             <div v-if="batchedUsage.upstream_balance.stale" class="text-[10px] text-amber-600 dark:text-amber-400">{{ t('admin.accounts.usageError') }}</div>
           </template>
         </div>
-        <!-- Other accounts: full AccountUsageCell -->
-        <div v-show="!batchedUsage?.upstream_balance">
+        <!-- Other accounts: full AccountUsageCell (codebuddy 走自己的积分分支) -->
+        <div v-show="!batchedUsage?.upstream_balance || account.platform === 'codebuddy'">
           <AccountUsageCell
             :account="account"
             :card-mode="true"
@@ -112,8 +114,8 @@
             @usage-loaded="$emit('usage-loaded', $event)"
           />
         </div>
-        <!-- Hidden: still mount AccountUsageCell for API Key accounts to trigger batched fetch -->
-        <div v-if="batchedUsage?.upstream_balance" class="hidden">
+        <!-- Hidden: still mount AccountUsageCell for API Key accounts to trigger batched fetch (codebuddy 上方已可见，无需隐藏实例) -->
+        <div v-if="batchedUsage?.upstream_balance && account.platform !== 'codebuddy'" class="hidden">
           <AccountUsageCell
             :account="account"
             :card-mode="true"

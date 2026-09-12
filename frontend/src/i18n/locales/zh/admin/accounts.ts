@@ -354,7 +354,8 @@ export default {
           retry: '重新扫码'
         },
         usage: {
-          balanceLabel: '余额'
+          balanceLabel: '余额',
+          creditsValue: '{value} 积分'
         },
         checkin: {
           action: '每日签到',

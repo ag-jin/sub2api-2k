@@ -20,7 +20,10 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: Record<string, unknown>) =>
+        key === 'admin.accounts.codebuddy.usage.creditsValue'
+          ? `${params?.value} credits`
+          : key
     })
   }
 })
@@ -105,7 +108,9 @@ describe('AccountUsageCell — CodeBuddy 单值余额分支（A2）', () => {
     expect(getUsage).toHaveBeenCalledTimes(1)
     const value = wrapper.get('[data-testid="codebuddy-balance-value"]')
     expect(value.text()).toContain('admin.accounts.codebuddy.usage.balanceLabel')
-    expect(value.text()).toContain('42.5')
+    // 积分形态：数值 + i18n 单位文案，绝不套货币格式（$）
+    expect(value.text()).toContain('42.5 credits')
+    expect(value.text()).not.toContain('$')
     expect(wrapper.findAll('.usage-bar')).toHaveLength(0)
   })
 
@@ -211,5 +216,19 @@ describe('AccountUsageCell — CodeBuddy 单值余额分支（A2）', () => {
 
     expect(wrapper.text()).not.toContain('10 req')
     expect(wrapper.get('[data-testid="codebuddy-balance-value"]').text()).toContain('3')
+  })
+
+  it('积分形态：整数余额无小数位，且渲染不含 $ 货币符号', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: { balance: 700, status: 'ok' }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7109 }))
+
+    await flushPromises()
+
+    const value = wrapper.get('[data-testid="codebuddy-balance-value"]')
+    expect(value.text()).toContain('700 credits')
+    expect(value.text()).not.toContain('$')
   })
 })
