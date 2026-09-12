@@ -343,6 +343,25 @@ export default {
           windows: 'Windows：%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info',
           linux: 'Linux：~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info',
           openAndPaste: '用文本编辑器打开 .info 文件，复制完整 JSON 内容，粘贴到上方 Auth JSON 输入框。'
+        },
+        qr: {
+          tabLabel: '扫码绑定',
+          startButton: '开始扫码',
+          waiting: '请使用 CodeBuddy / WorkBuddy App 扫码登录',
+          success: '扫码绑定成功：{uid}',
+          expired: '二维码已过期，请重新扫码',
+          pollError: '扫码状态查询失败，请重试',
+          retry: '重新扫码'
+        },
+        usage: {
+          balanceLabel: '余额'
+        },
+        checkin: {
+          action: '每日签到',
+          success: '签到成功，获得 {credit} 积分',
+          already: '今日已签到',
+          streak: '已连续签到 {days} 天',
+          failed: '签到失败，请稍后重试'
         }
       },
       cnProviders: {

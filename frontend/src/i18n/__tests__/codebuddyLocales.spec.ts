@@ -29,4 +29,35 @@ describe('CodeBuddy account locale copy', () => {
       expect(copy.authJsonEditPlaceholder).toBeTruthy()
     }
   })
+
+  it('exposes the QR binding copy in zh and en', () => {
+    for (const locale of [zh, en]) {
+      const qr = locale.admin.accounts.codebuddy.qr
+      expect(qr.tabLabel).toBeTruthy()
+      expect(qr.startButton).toBeTruthy()
+      expect(qr.waiting).toBeTruthy()
+      expect(qr.expired).toBeTruthy()
+      expect(qr.pollError).toBeTruthy()
+      expect(qr.retry).toBeTruthy()
+    }
+    // success 携带 uid 插值占位
+    expect(zh.admin.accounts.codebuddy.qr.success).toContain('{uid}')
+    expect(en.admin.accounts.codebuddy.qr.success).toContain('{uid}')
+  })
+
+  it('exposes the CodeBuddy balance label in zh and en', () => {
+    expect(zh.admin.accounts.codebuddy.usage.balanceLabel).toBeTruthy()
+    expect(en.admin.accounts.codebuddy.usage.balanceLabel).toBeTruthy()
+  })
+
+  it('exposes the daily check-in copy in zh and en', () => {
+    for (const locale of [zh, en]) {
+      const checkin = locale.admin.accounts.codebuddy.checkin
+      expect(checkin.action).toBeTruthy()
+      expect(checkin.success).toContain('{credit}')
+      expect(checkin.already).toBeTruthy()
+      expect(checkin.streak).toContain('{days}')
+      expect(checkin.failed).toBeTruthy()
+    }
+  })
 })
