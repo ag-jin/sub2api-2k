@@ -7,11 +7,14 @@ const {
   probeUpstreamBillingMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
+  authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
+  // 185 谱系未提供简单模式 ref 注入桩（sync 谱系共享工具），本文件自含。
+  authIsSimpleMode: { value: true },
 }))
 
 vi.mock('@/stores/app', () => ({
