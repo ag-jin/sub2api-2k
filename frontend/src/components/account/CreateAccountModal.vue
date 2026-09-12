@@ -1309,47 +1309,135 @@
                 : t('admin.accounts.apiKeyRequired')
             }}
           </label>
-          <textarea
+          <!-- CodeBuddy 创建：凭据区「粘贴(默认) | 扫码」双态；编辑弹窗不受影响。
+               扫码成功即关弹窗并触发父列表刷新，不回表单二次提交。 -->
+          <div
             v-if="form.platform === 'codebuddy'"
-            v-model="apiKeyValue"
-            required
-            rows="6"
-            data-testid="codebuddy-auth-json"
-            class="input font-mono"
-            :placeholder="apiKeyValuePlaceholder"
-          />
-          <input
-            v-else
-            v-model="apiKeyValue"
-            type="password"
-            required
-            class="input font-mono"
-            :placeholder="apiKeyValuePlaceholder"
-          />
-          <p v-if="form.platform === 'codebuddy'" class="input-hint">
-            {{ t('admin.accounts.codebuddy.pasteTip') }}
-          </p>
-          <details
-            v-if="form.platform === 'codebuddy'"
-            data-testid="codebuddy-credential-guide"
-            class="input-hint"
+            class="mb-2 flex gap-2"
+            data-testid="codebuddy-cred-mode-tabs"
           >
-            <summary class="cursor-pointer">
-              {{ t('admin.accounts.codebuddy.credentialGuide.summary') }}
-            </summary>
-            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.intro') }}</p>
-            <ul class="mt-1 list-disc pl-4">
-              <li>{{ t('admin.accounts.codebuddy.credentialGuide.macos') }}</li>
-              <li>{{ t('admin.accounts.codebuddy.credentialGuide.windows') }}</li>
-              <li>{{ t('admin.accounts.codebuddy.credentialGuide.linux') }}</li>
-            </ul>
-            <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.openAndPaste') }}</p>
-          </details>
-          <p v-else-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
+            <button
+              type="button"
+              data-testid="codebuddy-cred-tab-paste"
+              :class="[
+                'rounded-lg px-3 py-1 text-xs font-medium transition-all',
+                codebuddyCredMode === 'paste'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+              @click="codebuddyCredMode = 'paste'"
+            >
+              {{ t('admin.accounts.codebuddy.authJsonLabel') }}
+            </button>
+            <button
+              type="button"
+              data-testid="codebuddy-cred-tab-qr"
+              :class="[
+                'rounded-lg px-3 py-1 text-xs font-medium transition-all',
+                codebuddyCredMode === 'qr'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+              @click="codebuddyCredMode = 'qr'"
+            >
+              {{ t('admin.accounts.codebuddy.qr.tabLabel') }}
+            </button>
+          </div>
+          <template v-if="form.platform !== 'codebuddy' || codebuddyCredMode === 'paste'">
+            <textarea
+              v-if="form.platform === 'codebuddy'"
+              v-model="apiKeyValue"
+              required
+              rows="6"
+              data-testid="codebuddy-auth-json"
+              class="input font-mono"
+              :placeholder="apiKeyValuePlaceholder"
+            />
+            <input
+              v-else
+              v-model="apiKeyValue"
+              type="password"
+              required
+              class="input font-mono"
+              :placeholder="apiKeyValuePlaceholder"
+            />
+            <p v-if="form.platform === 'codebuddy'" class="input-hint">
+              {{ t('admin.accounts.codebuddy.pasteTip') }}
+            </p>
+            <details
+              v-if="form.platform === 'codebuddy'"
+              data-testid="codebuddy-credential-guide"
+              class="input-hint"
+            >
+              <summary class="cursor-pointer">
+                {{ t('admin.accounts.codebuddy.credentialGuide.summary') }}
+              </summary>
+              <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.intro') }}</p>
+              <ul class="mt-1 list-disc pl-4">
+                <li>{{ t('admin.accounts.codebuddy.credentialGuide.macos') }}</li>
+                <li>{{ t('admin.accounts.codebuddy.credentialGuide.windows') }}</li>
+                <li>{{ t('admin.accounts.codebuddy.credentialGuide.linux') }}</li>
+              </ul>
+              <p class="mt-1">{{ t('admin.accounts.codebuddy.credentialGuide.openAndPaste') }}</p>
+            </details>
+            <p v-else-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
+          </template>
+          <!-- 扫码态：qr/start → 渲染 authUrl → 2s→4s 退避轮询（300s 上限）；
+               expired/error 必须重新 qr/start（重试不复用旧 state）。 -->
+          <div
+            v-else
+            data-testid="codebuddy-qr-panel"
+            class="flex flex-col items-center gap-3 rounded-lg border border-dashed border-gray-300 p-4 dark:border-dark-600"
+          >
+            <button
+              v-if="!codebuddyQrWaiting && !codebuddyQrFailed"
+              type="button"
+              data-testid="codebuddy-qr-start"
+              class="btn btn-primary"
+              @click="startCodebuddyQr"
+            >
+              {{ t('admin.accounts.codebuddy.qr.startButton') }}
+            </button>
+            <template v-else-if="codebuddyQrFailed">
+              <p
+                v-if="codebuddyQrFailed === 'expired'"
+                data-testid="codebuddy-qr-expired"
+                class="text-sm text-red-500"
+              >
+                {{ t('admin.accounts.codebuddy.qr.expired') }}
+              </p>
+              <p v-else data-testid="codebuddy-qr-error" class="text-sm text-red-500">
+                {{ t('admin.accounts.codebuddy.qr.pollError') }}
+              </p>
+              <button
+                type="button"
+                data-testid="codebuddy-qr-retry"
+                class="btn btn-secondary"
+                @click="startCodebuddyQr"
+              >
+                {{ t('admin.accounts.codebuddy.qr.retry') }}
+              </button>
+            </template>
+            <template v-else>
+              <div class="rounded-2xl bg-white p-4 shadow-sm dark:bg-dark-800">
+                <canvas
+                  ref="codebuddyQrCanvas"
+                  data-testid="codebuddy-qr-canvas"
+                  class="mx-auto"
+                ></canvas>
+              </div>
+              <p
+                data-testid="codebuddy-qr-waiting"
+                class="text-center text-sm text-gray-500 dark:text-gray-400"
+              >
+                {{ t('admin.accounts.codebuddy.qr.waiting') }}
+              </p>
+            </template>
+          </div>
         </div>
 
-        <!-- CodeBuddy: optional enterprise ID（不做强制校验） -->
-        <div v-if="form.platform === 'codebuddy'">
+        <!-- CodeBuddy: optional enterprise ID（不做强制校验；扫码态隐藏） -->
+        <div v-if="form.platform === 'codebuddy' && codebuddyCredMode === 'paste'">
           <label class="input-label">{{ t('admin.accounts.codebuddy.enterpriseIdLabel') }}</label>
           <input
             v-model="codebuddyEnterpriseId"
@@ -3766,8 +3854,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import QRCode from 'qrcode'
 import { useAppStore } from '@/stores/app'
 import {
   claudeModels,
@@ -3924,6 +4013,124 @@ function buildCodebuddyCredentials(defaultBaseUrl: string): Record<string, unkno
     ...obj
   }
 }
+
+// ===== CodeBuddy 扫码绑定（A1）：凭据区「粘贴(默认) | 扫码」双态 =====
+// 冻结契约：POST /admin/codebuddy/qr/start → {state, authUrl}；
+// GET /admin/codebuddy/qr/poll?state= → {status: waiting|ok|expired|error, account?}。
+// 轮询 2s 起步、退避到 4s，总时长 300s 上限；unmount/关弹窗/切回粘贴态即停。
+// 成功：toast + emit('created')(父列表刷新) + emit('close')，不回表单二次提交。
+const codebuddyCredMode = ref<'paste' | 'qr'>('paste')
+const codebuddyQrWaiting = ref(false)
+const codebuddyQrFailed = ref<'expired' | 'error' | null>(null)
+const codebuddyQrState = ref('')
+const codebuddyQrCanvas = ref<HTMLCanvasElement | null>(null)
+const codebuddyQrUnmounted = ref(false)
+
+const CODEBUDDY_QR_FIRST_POLL_MS = 2000
+const CODEBUDDY_QR_BACKOFF_POLL_MS = 4000
+const CODEBUDDY_QR_MAX_WAIT_MS = 300_000
+let codebuddyQrPollTimer: ReturnType<typeof setTimeout> | null = null
+let codebuddyQrDeadlineAt = 0
+
+function stopCodebuddyQrPolling() {
+  if (codebuddyQrPollTimer) {
+    clearTimeout(codebuddyQrPollTimer)
+    codebuddyQrPollTimer = null
+  }
+}
+
+function resetCodebuddyQrPanel() {
+  stopCodebuddyQrPolling()
+  codebuddyQrWaiting.value = false
+  codebuddyQrFailed.value = null
+  codebuddyQrState.value = ''
+}
+
+const codebuddyQrSessionActive = () =>
+  !codebuddyQrUnmounted.value &&
+  codebuddyCredMode.value === 'qr' &&
+  codebuddyQrWaiting.value
+
+function scheduleCodebuddyQrPoll(delayMs: number) {
+  stopCodebuddyQrPolling()
+  codebuddyQrPollTimer = setTimeout(() => { void pollCodebuddyQr() }, delayMs)
+}
+
+async function pollCodebuddyQr() {
+  codebuddyQrPollTimer = null
+  const state = codebuddyQrState.value
+  if (!state || !codebuddyQrSessionActive()) return
+  try {
+    const result = await adminAPI.codebuddy.qrPoll(state)
+    if (!codebuddyQrSessionActive()) return
+    if (result.status === 'ok') {
+      codebuddyQrWaiting.value = false
+      if (result.account?.uid) {
+        appStore.showSuccess(t('admin.accounts.codebuddy.qr.success', { uid: result.account.uid }))
+      }
+      emit('created')
+      emit('close')
+      return
+    }
+    if (result.status === 'expired') {
+      codebuddyQrWaiting.value = false
+      codebuddyQrFailed.value = 'expired'
+      return
+    }
+    if (result.status === 'error') {
+      codebuddyQrWaiting.value = false
+      codebuddyQrFailed.value = 'error'
+      return
+    }
+    // waiting：总时长超限按过期处理（与后端 Redis TTL 300s 对齐）
+    if (Date.now() >= codebuddyQrDeadlineAt) {
+      codebuddyQrWaiting.value = false
+      codebuddyQrFailed.value = 'expired'
+      return
+    }
+    scheduleCodebuddyQrPoll(CODEBUDDY_QR_BACKOFF_POLL_MS)
+  } catch {
+    if (!codebuddyQrSessionActive()) return
+    codebuddyQrWaiting.value = false
+    codebuddyQrFailed.value = 'error'
+  }
+}
+
+async function startCodebuddyQr() {
+  if (codebuddyQrUnmounted.value || codebuddyCredMode.value !== 'qr') return
+  stopCodebuddyQrPolling()
+  codebuddyQrFailed.value = null
+  codebuddyQrWaiting.value = true
+  try {
+    const result = await adminAPI.codebuddy.qrStart()
+    if (!codebuddyQrSessionActive()) return
+    codebuddyQrState.value = result.state
+    await nextTick()
+    if (codebuddyQrCanvas.value && codebuddyQrSessionActive()) {
+      await QRCode.toCanvas(codebuddyQrCanvas.value, result.authUrl, {
+        width: 220,
+        margin: 2,
+      })
+    }
+    if (!codebuddyQrSessionActive()) return
+    codebuddyQrDeadlineAt = Date.now() + CODEBUDDY_QR_MAX_WAIT_MS
+    scheduleCodebuddyQrPoll(CODEBUDDY_QR_FIRST_POLL_MS)
+  } catch {
+    if (!codebuddyQrSessionActive()) return
+    codebuddyQrWaiting.value = false
+    codebuddyQrFailed.value = 'error'
+  }
+}
+
+watch(codebuddyCredMode, () => {
+  // 离开/进入扫码态都复位：重试必须重新 qr/start，不复用旧 state
+  resetCodebuddyQrPanel()
+})
+
+onBeforeUnmount(() => {
+  codebuddyQrUnmounted.value = true
+  stopCodebuddyQrPolling()
+})
 
 // Base URL / API Key 占位符：国产供应商随账号类型变化。
 const apiKeyBaseUrlPlaceholder = computed(() => {
@@ -5085,6 +5292,8 @@ const resetForm = () => {
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
   codebuddyEnterpriseId.value = ''
+  codebuddyCredMode.value = 'paste'
+  resetCodebuddyQrPanel()
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null

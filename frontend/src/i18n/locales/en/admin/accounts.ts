@@ -140,6 +140,25 @@ export default {
           windows: 'Windows: %LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info',
           linux: 'Linux: ~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info',
           openAndPaste: 'Open the .info file with a text editor, copy the full JSON content, and paste it into the Auth JSON field above.'
+        },
+        qr: {
+          tabLabel: 'Scan QR to bind',
+          startButton: 'Start scanning',
+          waiting: 'Scan the QR code with the CodeBuddy / WorkBuddy app to sign in',
+          success: 'QR binding succeeded: {uid}',
+          expired: 'QR code expired. Please start a new scan.',
+          pollError: 'Failed to check the QR status. Please retry.',
+          retry: 'Scan again'
+        },
+        usage: {
+          balanceLabel: 'Balance'
+        },
+        checkin: {
+          action: 'Daily check-in',
+          success: 'Check-in succeeded, +{credit} credits',
+          already: 'Already checked in today',
+          streak: '{days}-day streak',
+          failed: 'Check-in failed. Please try again later.'
         }
       },
       cnProviders: {
