@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/codebuddyqr"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/google/wire"
@@ -24,6 +25,21 @@ func ProvideGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthCli
 		svc = svc.WithSessionStore(xai.NewRedisSessionStore(redisClient))
 	}
 	return svc
+}
+
+// ProvideCodeBuddyAdminService 构造管理面 CodeBuddy 专属服务（扫码纳管 / 签到）。
+// wire.go is depguard-exempt for redis；Redis 未配置时扫码流程不可用（start
+// 返回 store unavailable），签到不受影响。
+func ProvideCodeBuddyAdminService(
+	adminSvc AdminService,
+	accountRepo AccountRepository,
+	redisClient *redis.Client,
+) *CodeBuddyAdminService {
+	var store codebuddyqr.Store
+	if redisClient != nil {
+		store = codebuddyqr.NewRedisStore(redisClient)
+	}
+	return NewCodeBuddyAdminService(adminSvc, accountRepo, store)
 }
 
 // BuildInfo contains build information
@@ -220,6 +236,8 @@ func ProvideAccountUsageService(
 		NewUpstreamBalanceFetcher(httpUpstream),
 	)
 	service.agentIdentityWS = openAIGatewayService
+	// CodeBuddy 实时积分 fetcher（A2）：追加式 DI，不改既有构造签名。
+	service.SetCodeBuddyCreditsFetcher(NewCodeBuddyCreditsFetcher(httpUpstream))
 	return service
 }
 
@@ -824,6 +842,7 @@ var ProviderSet = wire.NewSet(
 	NewOAuthService,
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
+	ProvideCodeBuddyAdminService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,

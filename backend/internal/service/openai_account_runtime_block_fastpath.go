@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -55,7 +57,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// auth JSON；其余状态沿用通用 upstream 错误链（temp-unsched / failover）。
 	if account != nil && account.IsCodeBuddy() {
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
-			s.handleCodeBuddyAccountUpstreamError(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody))
+			s.handleCodeBuddyAccountUpstreamError(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody), int(gjson.GetBytes(responseBody, "code").Int()))
 			return true
 		}
 		return false

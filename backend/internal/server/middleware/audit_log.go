@@ -58,6 +58,8 @@ var auditExtraAllowedKeys = map[string]struct{}{
 	"http_status": {}, "latency_ms": {}, "token_applied": {}, "retryable": {},
 	"event_id": {}, "requested_count": {}, "deleted_events": {}, "deleted_jobs": {},
 	"matched_count": {}, "snapshot_max_id": {}, "filter_hash": {}, "confirm": {},
+	// codebuddy 扫码纳管显式审计字段（actor/uid/nickname/create|update，A1）。
+	"uid": {}, "nickname": {},
 }
 
 // SetAuditExtra adds allowlisted, scalar details to the current audit entry.

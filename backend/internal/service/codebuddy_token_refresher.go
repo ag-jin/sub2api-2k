@@ -183,7 +183,8 @@ func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, accou
 			strings.Contains(lower, "grant") || strings.Contains(lower, "token") {
 			return nil, newCodeBuddyRefreshAuthError(resp.StatusCode, msg)
 		}
-		return nil, fmt.Errorf("codebuddy refresh failed: code %d %s", codeValue.Int(), logredact.RedactText(msg))
+		return nil, fmt.Errorf("codebuddy refresh failed: code %d %s", codeValue.Int(),
+			CodeBuddyBizCodeMessage(int(codeValue.Int()), logredact.RedactText(msg))) // 管理面日志附业务码说明（A4）
 	}
 	data := gjson.GetBytes(body, "data")
 	if !data.IsObject() {

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	opencodepkg "github.com/Wei-Shaw/sub2api/internal/pkg/opencode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -120,6 +120,14 @@ type upstreamBalanceCache struct {
 	timestamp   time.Time
 }
 
+// codebuddyUsageCache 缓存 CodeBuddy 积分余额查询（成功 + 负缓存）
+// 与最近一次成功快照（lastSuccess，失败时以 stale 值通道返回）。
+type codebuddyUsageCache struct {
+	usageInfo   *UsageInfo
+	lastSuccess *UsageInfo
+	timestamp   time.Time
+}
+
 const (
 	apiCacheTTL         = 3 * time.Minute
 	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
@@ -138,10 +146,12 @@ type UsageCache struct {
 	antigravityCache      sync.Map           // accountID -> *antigravityUsageCache
 	opencodeCache         sync.Map           // accountID -> *opencodeUsageCache
 	upstreamBalanceCache  sync.Map           // accountID -> *upstreamBalanceCache
+	codebuddyCache        sync.Map           // accountID -> *codebuddyUsageCache
 	apiFlight             singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight     singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
 	opencodeFlight        singleflight.Group // 防止同一 OpenCode 账号的并发请求击穿缓存
 	upstreamBalanceFlight singleflight.Group // 防止同一上游余额账号的并发请求击穿缓存
+	codebuddyFlight       singleflight.Group // 防止同一 CodeBuddy 账号的并发请求击穿缓存
 	openAIProbeCache      sync.Map           // accountID -> time.Time
 	grokProbeCache        sync.Map           // accountID -> last billing probe attempt
 }
@@ -364,6 +374,8 @@ type AccountUsageService struct {
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
 	opencodeFetcher         *OpenCodeUsageFetcher
+	codebuddyCreditsFetcher *CodeBuddyCreditsFetcher
+	runtimeBlocker          AccountRuntimeBlocker
 	upstreamBalanceFetcher  *UpstreamBalanceFetcher
 	cache                   *UsageCache
 	identityCache           IdentityCache
@@ -407,6 +419,17 @@ func NewAccountUsageService(
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
 	}
+}
+
+func (s *AccountUsageService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
+	s.runtimeBlocker = blocker
+}
+
+// SetCodeBuddyCreditsFetcher 注入 CodeBuddy 实时积分 fetcher（A2 追加式 DI，
+// 不改 NewAccountUsageService 既有签名）。nil 表示保持原有
+// USAGE_UNSUPPORTED 语义。
+func (s *AccountUsageService) SetCodeBuddyCreditsFetcher(fetcher *CodeBuddyCreditsFetcher) {
+	s.codebuddyCreditsFetcher = fetcher
 }
 
 func supportsAnthropicPassiveUsage(account *Account) bool {
@@ -470,11 +493,14 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return s.getOpenCodeUsage(ctx, account, forceProbe)
 	}
 
-	// CodeBuddy 平台：上游仅提供 chat 与 token refresh 端点，无用量/余额查询，
-	// 复用既有 "不支持用量查询" 语义显式短路，避免落入 getUpstreamBalance
-	// 用空 api_key 向 {base}/usage 发无意义请求。
+	// CodeBuddy 平台：缺失 Credits fetcher 时保持原有 "不支持用量查询" 语义
+	// 显式短路，避免落入 getUpstreamBalance 用空 api_key 向 {base}/usage 发
+	// 无意义请求。
 	if account.IsCodeBuddy() {
-		return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", fmt.Sprintf("account type %s does not support usage query", account.Type))
+		if s.codebuddyCreditsFetcher == nil {
+			return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", fmt.Sprintf("account type %s does not support usage query", account.Type))
+		}
+		return s.getCodeBuddyCredits(ctx, account, forceProbe)
 	}
 
 	// API Key accounts with a base_url: fetch upstream balance from {base_url}/usage.
@@ -1562,6 +1588,142 @@ func upstreamBalanceErrorCode(err error) string {
 		return balanceErr.Code
 	}
 	return "network_error"
+}
+
+// getCodeBuddyCredits 获取 CodeBuddy 账号实时积分余额（A2）。
+// 缓存口径照抄 opencode 上游先例：成功 apiCacheTTL=3min、负缓存
+// apiErrorCacheTTL=1min + 进程内 singleflight（多实例各查一次可接受，不引 Redis）。
+// 失败 401/超时 → 值通道 {status:error, stale:true, lastSuccess}，绝不改账号
+// 状态（不触发 StatusError/停调）；401 附 error_code=unauthenticated 与
+// needs_reauth 语义（channel monitor 按 usageFailureInfo 口径消费）。
+// 返回 UsageInfo.UpstreamBalance（json 键以 UpstreamBalanceUsage struct 现状
+// 为准，冻结契约见 codebuddy_credits.go）。
+func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if s == nil || account == nil || s.codebuddyCreditsFetcher == nil {
+		return nil, fmt.Errorf("codebuddy credits fetcher unavailable")
+	}
+	if s.cache == nil {
+		s.cache = NewUsageCache()
+	}
+	cachedEntry := func() (*codebuddyUsageCache, bool) {
+		cached, ok := s.cache.codebuddyCache.Load(account.ID)
+		if !ok {
+			return nil, false
+		}
+		entry, ok := cached.(*codebuddyUsageCache)
+		return entry, ok && entry != nil
+	}
+	isError := func(entry *codebuddyUsageCache) bool {
+		return entry != nil && entry.usageInfo != nil && entry.usageInfo.UpstreamBalance != nil &&
+			entry.usageInfo.UpstreamBalance.Error != ""
+	}
+	// 负缓存命中
+	if entry, ok := cachedEntry(); ok && isError(entry) && time.Since(entry.timestamp) < apiErrorCacheTTL {
+		return entry.usageInfo, nil
+	}
+	if !force {
+		if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && !isError(entry) && entry.usageInfo != nil {
+			return entry.usageInfo, nil
+		}
+	}
+
+	result, flightErr, _ := s.cache.codebuddyFlight.Do(fmt.Sprintf("codebuddy-credits:%d", account.ID), func() (any, error) {
+		if entry, ok := cachedEntry(); ok && isError(entry) && time.Since(entry.timestamp) < apiErrorCacheTTL {
+			return entry.usageInfo, nil
+		}
+		if !force {
+			if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && !isError(entry) && entry.usageInfo != nil {
+				return entry.usageInfo, nil
+			}
+		}
+
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, codeBuddyBillingRequestTimeout)
+		defer cancel()
+		snapshot, err := s.codebuddyCreditsFetcher.FetchCredits(fetchCtx, &CodeBuddyCreditsFetchOptions{
+			AccessToken: account.GetCodeBuddyAccessToken(),
+			ProxyURL:    proxyURL,
+			AccountID:   account.ID,
+		})
+		now := time.Now()
+		if err != nil {
+			var lastSuccess *UsageInfo
+			if previous, ok := cachedEntry(); ok {
+				lastSuccess = previous.lastSuccess
+				if lastSuccess == nil && previous.usageInfo != nil && !isError(previous) {
+					lastSuccess = previous.usageInfo
+				}
+			}
+			degraded := buildCodeBuddyCreditsError(err, now)
+			if lastSuccess != nil {
+				stale := cloneCodeBuddyCreditsUsage(lastSuccess)
+				stale.UpdatedAt = &now
+				stale.UpstreamBalance.Stale = true
+				stale.UpstreamBalance.Status = "stale"
+				stale.UpstreamBalance.Error = codeBuddyCreditsErrorCode(err)
+				stale.Error = codeBuddyCreditsErrorCode(err)
+				// 401/凭据失效语义同样写入值通道（needs_reauth 供 channel
+				// monitor 的 usageFailureInfo 口径消费）。
+				stale.ErrorCode = degraded.ErrorCode
+				stale.NeedsReauth = degraded.NeedsReauth
+				degraded = stale
+			}
+			s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: degraded, lastSuccess: lastSuccess, timestamp: now})
+			return degraded, nil
+		}
+		usage := &UsageInfo{Source: "active", UpdatedAt: &now, UpstreamBalance: snapshot}
+		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
+		return usage, nil
+	})
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		return nil, fmt.Errorf("codebuddy credits unavailable")
+	}
+	return usage, nil
+}
+
+func codeBuddyCreditsErrorCode(err error) string {
+	if creditsErr, ok := err.(*CodeBuddyCreditsError); ok && creditsErr.Code != "" {
+		return creditsErr.Code
+	}
+	return "network_error"
+}
+
+// buildCodeBuddyCreditsError 失败降级响应（值通道，不改账号状态）。
+// 401 → error_code=unauthenticated + needs_reauth；其余 network_error 语义。
+func buildCodeBuddyCreditsError(err error, now time.Time) *UsageInfo {
+	code := codeBuddyCreditsErrorCode(err)
+	usage := &UsageInfo{
+		Source:          "active",
+		UpdatedAt:       &now,
+		Error:           code,
+		UpstreamBalance: &UpstreamBalanceUsage{Status: "error", Error: code},
+	}
+	if creditsErr, ok := err.(*CodeBuddyCreditsError); ok {
+		if creditsErr.HTTPStatus == http.StatusUnauthorized || creditsErr.Code == "unauthenticated" {
+			usage.ErrorCode = errorCodeUnauthenticated
+			usage.NeedsReauth = true
+		} else {
+			usage.ErrorCode = errorCodeNetworkError
+		}
+	}
+	return usage
+}
+
+func cloneCodeBuddyCreditsUsage(source *UsageInfo) *UsageInfo {
+	if source == nil || source.UpstreamBalance == nil {
+		return source
+	}
+	clone := *source
+	balance := *source.UpstreamBalance
+	clone.UpstreamBalance = &balance
+	return &clone
 }
 
 func buildUpstreamBalanceError(err error, now time.Time) *UsageInfo {

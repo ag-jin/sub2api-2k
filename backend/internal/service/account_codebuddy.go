@@ -27,11 +27,12 @@ const codeBuddyTokenRefreshPath = "/v2/plugin/auth/token/refresh"
 // auto → deepseek-v4.1-flash），响应中的 model 为回显实值。
 const CodeBuddyAutoModel = "auto"
 
-// codeBuddyStaticModels CodeBuddy 平台的静态模型清单。上游 copilot.tencent.com
-// 不提供模型列表端点（/v1/models、/v2/models、/models 实测均 404；参考实现
-// codebuddy2api 的清单同样由本机静态文件反推），故"同步上游模型"探测直接
-// 返回该清单，不发 HTTP。与前端 useModelWhitelist.ts 的 codebuddyModels
-// 保持一致；deepseek-v4.1-flash 为上游 auto 实测解析出的模型。
+// codeBuddyStaticModels CodeBuddy 平台的静态模型清单（A5：12→15+auto，auto 置顶）。
+// 上游 copilot.tencent.com 不提供模型列表端点（/v1/models、/v2/models、/models
+// 实测均 404），故"同步上游模型"探测直接返回该清单，不发 HTTP。与前端
+// useModelWhitelist.ts 的 codebuddyModels 保持一致。15 个模型 + auto 全部实测
+// 可用（absorb-verify.md V3，2026-09-11）；auto 为上游路由别名（实测回显
+// deepseek-v4.1-flash），置顶排序。
 var codeBuddyStaticModels = []string{
 	"auto",
 	"deepseek-v4-flash",
@@ -40,10 +41,31 @@ var codeBuddyStaticModels = []string{
 	"glm-5.1",
 	"glm-5.2",
 	"glm-5v-turbo",
+	"hy3",
+	"hy3-preview",
 	"hy3-preview-agent",
 	"kimi-k2.5",
 	"kimi-k2.6",
 	"kimi-k2.7",
+	"minimax-m3",
+	"minimax-m3-pay",
+}
+
+// codeBuddyNonAutoModels vo 回显"15 项必需模型断言（不含 auto）"。
+var codeBuddyNonAutoModels = []string{
+	"deepseek-v4-flash",
+	"deepseek-v4-pro",
+	"deepseek-v4.1-flash",
+	"glm-5.1",
+	"glm-5.2",
+	"glm-5v-turbo",
+	"hy3",
+	"hy3-preview",
+	"hy3-preview-agent",
+	"kimi-k2.5",
+	"kimi-k2.6",
+	"kimi-k2.7",
+	"minimax-m3",
 	"minimax-m3-pay",
 }
 

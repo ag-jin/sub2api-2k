@@ -62,3 +62,28 @@ func TestSyncUpstreamModelCatalogCodeBuddyStatic(t *testing.T) {
 	}
 	assert.Nil(t, repo.updates, "静态清单无能力元数据,不应落账号快照")
 }
+
+// Scenario: 静态清单严格等于 15+auto 冻结契约（auto 置顶 + 14 个实测模型）。
+func TestCodeBuddyStaticModelsExact15FrozenList(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"auto",
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
+		"deepseek-v4.1-flash",
+		"glm-5.1",
+		"glm-5.2",
+		"glm-5v-turbo",
+		"hy3",
+		"hy3-preview",
+		"hy3-preview-agent",
+		"kimi-k2.5",
+		"kimi-k2.6",
+		"kimi-k2.7",
+		"minimax-m3",
+		"minimax-m3-pay",
+	}
+	require.Equal(t, want, CodeBuddyStaticModelIDs(),
+		"15+auto 冻结契约清单（auto 置顶；与前端 useModelWhitelist 成对同步）")
+}

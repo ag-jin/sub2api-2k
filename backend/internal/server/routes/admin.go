@@ -58,6 +58,9 @@ func RegisterAdminRoutes(
 		// Grok OAuth
 		registerGrokOAuthRoutes(admin, h)
 
+		// CodeBuddy（腾讯 Copilot）后台专属（扫码纳管 / 每日签到）
+		registerCodeBuddyRoutes(admin, h)
+
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
 		registerCNProviderRoutes(admin, h)
 
@@ -482,6 +485,20 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		grok.GET("/accounts/:id/quota", h.Admin.GrokOAuth.QueryQuota)
 		grok.POST("/accounts/:id/reset-quota", h.Admin.GrokOAuth.ResetQuota)
 		grok.GET("/runtime-sanity", h.Admin.GrokOAuth.RuntimeSanity)
+	}
+}
+
+// registerCodeBuddyRoutes 注册 CodeBuddy（腾讯 Copilot）平台组管理面端点
+// （平台组先例=grok）：
+//   - POST /admin/codebuddy/qr/start          发起扫码纳管（{state, authUrl}）
+//   - GET  /admin/codebuddy/qr/poll?state=    轮询扫码（发起者绑定 + ≥2s 节流）
+//   - POST /admin/codebuddy/accounts/:id/checkin  每日签到（0/10001 幂等）
+func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	codebuddy := admin.Group("/codebuddy")
+	{
+		codebuddy.POST("/qr/start", h.Admin.CodeBuddy.QRStart)
+		codebuddy.GET("/qr/poll", h.Admin.CodeBuddy.QRPoll)
+		codebuddy.POST("/accounts/:id/checkin", h.Admin.CodeBuddy.Checkin)
 	}
 }
 
