@@ -97,8 +97,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。
 	// 自动模式下标记缺失（未探测）按"现状即证据"原则继续走下方原 Responses 转换路径。
-	// OpenCode 永远不支持 Responses API，必须无条件走 CC 直转。
-	if account.Type == AccountTypeAPIKey && (account.IsOpenCode() || !openai_compat.ShouldUseResponsesAPI(account.Extra)) {
+	// OpenCode / CodeBuddy 永远不支持 Responses API，必须无条件走 CC 直转：
+	// codebuddy 上游仅提供 /v2/chat/completions，此前依赖 404 兜底多打一次
+	// /v1/responses 探测（上游若回非 404 拒绝码即以错误响应告终）。
+	if account.Type == AccountTypeAPIKey && (account.IsOpenCode() || account.IsCodeBuddy() || !openai_compat.ShouldUseResponsesAPI(account.Extra)) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 

@@ -325,6 +325,44 @@ func TestTransformCodeBuddyRequestBody(t *testing.T) {
 	assert.Equal(t, "be terse", gjson.GetBytes(out, "messages.0.content").String())
 }
 
+// collectMessageRoles 大小写不敏感地收集 messages[*] 的角色值（键名拼写任意）。
+func collectMessageRoles(body []byte) []string {
+	var roles []string
+	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+		msg.ForEach(func(key, value gjson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(key.String()), "role") {
+				roles = append(roles, value.String())
+				return false
+			}
+			return true
+		})
+		return true
+	})
+	return roles
+}
+
+// TestTransformCodeBuddyRequestBody_RoleKeyCaseInsensitive 键名大小写归一：
+// 上游（Go 侧 JSON 解析）对键名大小写不敏感，{"Role":"developer"} 与 {"ROLE":"developer"}
+// 都会被判为 developer 角色并拒绝（HTTP 400 / 业务码 11128
+// "Illegal API invocation from an unapproved channel"；2026-09-13 对本机凭证实测：
+// role / Role / ROLE 三种键名等价触发）。归一化若只按小写 role 定位键，
+// 这类客户端的整条请求会被上游拒绝（经网关复现：{"Role":"developer"} → 400 Upstream error: 400）。
+func TestTransformCodeBuddyRequestBody_RoleKeyCaseInsensitive(t *testing.T) {
+	for _, key := range []string{"role", "Role", "ROLE"} {
+		t.Run(key, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(
+				`{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"%s":"developer","content":"be terse"},{"role":"user","content":"hi"}]}`,
+				key,
+			))
+			out, err := transformCodeBuddyRequestBody(body)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"system", "user"}, collectMessageRoles(out),
+				"developer 角色必须归一化为 system（键名大小写无关）")
+			assert.NotContains(t, string(out), `"developer"`, "出站体不得残留 developer 角色值")
+		})
+	}
+}
+
 func TestCodeBuddyHeaders_ExactNames(t *testing.T) {
 	cb := &Account{Platform: PlatformCodeBuddy, Type: AccountTypeAPIKey, Credentials: map[string]any{
 		"uid": "u-1", "enterprise_id": "ent-1", "domain": "www.codebuddy.cn",
@@ -468,9 +506,11 @@ type scriptedHTTPUpstream struct {
 	seq  []string // 每项为一个完整响应：状态码 + "\n" + body
 	auth []string
 	uid  []string
+	urls []string
 }
 
 func (u *scriptedHTTPUpstream) respond(req *http.Request) (*http.Response, error) {
+	u.urls = append(u.urls, req.URL.String())
 	u.auth = append(u.auth, req.Header.Get("Authorization"))
 	u.uid = append(u.uid, req.Header.Get("X-User-Id"))
 	s := u.seq[0]
@@ -601,4 +641,45 @@ func TestSendCCUpstreamRequest_CodeBuddy401RereadErrFallsThrough(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	assert.Len(t, upstream.auth, 1, "reread 失败 → 原响应上抛，不重试")
+}
+
+// --- 入口分流：CodeBuddy 上游只有 /v2/chat/completions（/v1/responses 实测 404） ---
+
+const codeBuddyDispatchSSE = `data: {"id":"m1","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}` + "\n" +
+	`data: {"id":"m1","model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}` + "\n" +
+	"data: [DONE]\n"
+
+// TestForwardAsAnthropic_CodeBuddyUsesChatCompletionsUpstream /v1/messages 入站必须直转 CC：
+// CodeBuddy 上游不提供 /v1/responses（实测 404），缺分流时 Anthropic→Responses 转换后的请求
+// 会被发往 /v1/responses 且无兜底，客户端收到 404（2026-09-13 dev 实测 "Upstream error: 404"）。
+func TestForwardAsAnthropic_CodeBuddyUsesChatCompletionsUpstream(t *testing.T) {
+	upstream := &scriptedHTTPUpstream{seq: []string{"200\n" + codeBuddyDispatchSSE}}
+	repo := &codeBuddyRereadAccountRepo{account: newCodeBuddyCCAccount("tok")}
+	svc := newCodeBuddyCCGatewayForTest(t, repo, upstream)
+	account := newCodeBuddyCCAccount("tok")
+	c := codeBuddyCCTestContext(t)
+	body := []byte(`{"model":"auto","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, upstream.urls)
+	assert.Contains(t, upstream.urls[0], "/v2/chat/completions",
+		"CodeBuddy 必须直转 CC 端点，不得把 Responses 请求发往 /v1/responses")
+}
+
+// TestForwardAsChatCompletions_CodeBuddySkipsResponsesProbe CC 入站同样视为
+// Responses 不支持：修复前每次请求都要先打一次 /v1/responses 再靠 404 兜底（浪费一次上游调用，
+// 且上游若回非 404 的拒绝码即以错误响应告终）。
+func TestForwardAsChatCompletions_CodeBuddySkipsResponsesProbe(t *testing.T) {
+	upstream := &scriptedHTTPUpstream{seq: []string{"200\n" + codeBuddyDispatchSSE}}
+	repo := &codeBuddyRereadAccountRepo{account: newCodeBuddyCCAccount("tok")}
+	svc := newCodeBuddyCCGatewayForTest(t, repo, upstream)
+	account := newCodeBuddyCCAccount("tok")
+	c := codeBuddyCCTestContext(t)
+	body := []byte(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.Len(t, upstream.urls, 1, "CodeBuddy 不应先发 Responses 探测请求")
+	assert.Contains(t, upstream.urls[0], "/v2/chat/completions")
 }

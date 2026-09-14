@@ -49,8 +49,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// ForwardAsChatCompletions 对称）。缺少此分流时，/v1/messages 入站请求
 	// 会被无条件转为 Responses 格式发往上游 /v1/responses，导致只支持
 	// /v1/chat/completions 的第三方 OpenAI 兼容上游全部 400。
-	// OpenCode 永远不支持 Responses API，必须无条件走 CC 直转。
-	if account.Type == AccountTypeAPIKey && (account.IsOpenCode() || !openai_compat.ShouldUseResponsesAPI(account.Extra)) {
+	// OpenCode / CodeBuddy 永远不支持 Responses API，必须无条件走 CC 直转：
+	// codebuddy 上游仅提供 /v2/chat/completions（/v1/responses 实测 404，
+	// 缺此分流时 /v1/messages 入站会以 "Upstream error: 404" 告终，且无兜底）。
+	if account.Type == AccountTypeAPIKey && (account.IsOpenCode() || account.IsCodeBuddy() || !openai_compat.ShouldUseResponsesAPI(account.Extra)) {
 		return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 

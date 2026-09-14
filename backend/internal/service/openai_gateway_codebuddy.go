@@ -29,19 +29,27 @@ const codeBuddyUpstreamUserAgent = "codebuddy2openai/2.0"
 
 // transformCodeBuddyRequestBody 对 CodeBuddy 上游体施加平台约束：
 // developer→system 无需区分流式与否；kimi/zhipu 等共享链路不受影响（仅 codebuddy 调用）。
+//
+// 角色字段按键名大小写不敏感定位：上游按 Go encoding/json 语义解析消息对象
+// （键名大小写不敏感，{"Role":"developer"} 与 {"role":"developer"} 等价触发
+// HTTP 400 / 业务码 11128 "Illegal API invocation from an unapproved channel"，
+// 2026-09-13 实测）。只按小写 role 定位会漏归一化，令这类客户端的整条请求被
+// 上游拒绝（经网关复现：{"Role":"developer"} → 400 "Upstream error: 400"）。
 func transformCodeBuddyRequestBody(body []byte) ([]byte, error) {
 	out := body
 	arr := gjson.GetBytes(out, "messages")
 	if arr.IsArray() {
 		for i, m := range arr.Array() {
-			if strings.EqualFold(strings.TrimSpace(m.Get("role").String()), "developer") {
-				path := fmt.Sprintf("messages.%d.role", i)
-				updated, err := sjson.SetBytes(out, path, "system")
-				if err != nil {
-					return nil, fmt.Errorf("normalize codebuddy developer role: %w", err)
-				}
-				out = updated
+			roleKey, role := codeBuddyMessageRoleField(m)
+			if roleKey == "" || !strings.EqualFold(role, "developer") {
+				continue
 			}
+			path := fmt.Sprintf("messages.%d.%s", i, roleKey)
+			updated, err := sjson.SetBytes(out, path, "system")
+			if err != nil {
+				return nil, fmt.Errorf("normalize codebuddy developer role: %w", err)
+			}
+			out = updated
 		}
 	}
 	updated, err := sjson.SetBytes(out, "stream", true)
@@ -66,6 +74,20 @@ func applyCodeBuddyUpstreamHeaders(header http.Header, account *Account) {
 		header.Set(k, v)
 	}
 	header.Set("User-Agent", codeBuddyUpstreamUserAgent)
+}
+
+// codeBuddyMessageRoleField 大小写不敏感地取出消息对象的角色字段名与值。
+// 上游对键名大小写不敏感（Go encoding/json 语义），归一化必须按同样语义定位，
+// 返回实际键名以便就地改写（不新造 "role" 键，避免同对象出现两个大小写不同的角色键）。
+func codeBuddyMessageRoleField(msg gjson.Result) (key string, value string) {
+	msg.ForEach(func(k, v gjson.Result) bool {
+		if strings.EqualFold(strings.TrimSpace(k.String()), "role") {
+			key, value = k.String(), strings.TrimSpace(v.String())
+			return false
+		}
+		return true
+	})
+	return key, value
 }
 
 type codeBuddyAggregatedToolCall struct {
