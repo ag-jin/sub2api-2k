@@ -1125,6 +1125,35 @@ func TestTransformCodeBuddyRequestBody_DeepSeekThinking(t *testing.T) {
 		assert.False(t, gjson.GetBytes(out, "reasoning_summary").Exists())
 	})
 
+	t.Run("small output budget disables thinking", func(t *testing.T) {
+		// 上游思考无上限：预算不足时思考会把正文挤没（实测 mt=2048 → 正文 0 字符、finish=length）。
+		body := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":2048,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+		out, err := transformCodeBuddyRequestBody(body, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "disabled", gjson.GetBytes(out, "thinking.type").String(), "预算 <4096 强制关思考")
+		assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
+
+		// 预算充足 → 保留客户端档位并补 type=enabled。
+		big := []byte(`{"model":"deepseek-v4.1-flash","max_completion_tokens":8192,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+		out2, err := transformCodeBuddyRequestBody(big, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "high", gjson.GetBytes(out2, "reasoning_effort").String())
+		assert.Equal(t, "enabled", gjson.GetBytes(out2, "thinking.type").String())
+
+		// 未设置预算（视为不限）→ 保持客户端意图。
+		unset := []byte(`{"model":"deepseek-v4.1-flash","reasoning_effort":"medium","messages":[{"role":"user","content":"hi"}]}`)
+		out3, err := transformCodeBuddyRequestBody(unset, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "medium", gjson.GetBytes(out3, "reasoning_effort").String())
+	})
+
+	t.Run("camelCase xhigh falls back too", func(t *testing.T) {
+		body := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":8192,"reasoningEffort":"xhigh","messages":[{"role":"user","content":"hi"}]}`)
+		out, err := transformCodeBuddyRequestBody(body, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "high", gjson.GetBytes(out, "reasoningEffort").String(), "camelCase 的 xhigh 同样回落 high")
+	})
+
 	t.Run("model without catalog default untouched", func(t *testing.T) {
 		body := []byte(`{"model":"glm-5.0","messages":[{"role":"user","content":"hi"}]}`)
 		out, err := transformCodeBuddyRequestBody(body, nil)

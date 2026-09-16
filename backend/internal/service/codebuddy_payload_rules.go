@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 )
 
 // CodeBuddy 出站请求体规范化规则（对齐参考实现 workbuddy2api internal/upstream/payload.go）。
@@ -119,6 +121,33 @@ var codeBuddyModelDefaultEfforts = map[string]string{
 	"hunyuan-2.0-thinking": "medium",
 }
 
+// codeBuddyThinkingMinBudget 开思考所需的最小输出预算（max_tokens / max_completion_tokens）。
+//
+// 实测（2026-09-16 生产, deepseek-v4.1-flash, 硬 prompt 各 3 次）：该上游的思考**没有自带上限**，
+// 一旦开启就一路顶到 max_tokens，预算不足时正文一个字符都不出（finish_reason=length，客户端表现为
+// "一直在思考、永远不回答案"）：
+//
+//	mt=2048 → 有正文 1/3（reasoning 4.5-5.8k 字符）
+//	mt=4096 → 有正文 0/3（reasoning 11.8-13.3k 字符）  ← 用户报的"爆卡"
+//	mt=6144 → 有正文 2/3
+//	mt=8192 → 有正文 3/3
+//
+// 故预算低于该阈值时强制关思考（即使客户端显式要求）——宁可少思考，也不能没有答案。
+const codeBuddyThinkingMinBudget = 8192
+
+// codeBuddyMaxTokens 读取请求的输出预算（max_tokens / max_completion_tokens / maxTokens 任一）；
+// 未设置返回 0（视为不限，保持客户端意图）。
+func codeBuddyMaxTokens(out []byte) int64 {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "maxTokens"} {
+		if v := gjson.GetBytes(out, key); v.Exists() {
+			if n := v.Int(); n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
 // codeBuddyThinkingLevels 官方客户端的六个思考档位（app 内 EFFORT_ORDER 与
 // VALID_REASONING_EFFORTS 双处一致：minimal < low < medium < high < xhigh < max）。
 var codeBuddyThinkingLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
@@ -180,6 +209,20 @@ func injectCodeBuddyDeepSeekThinking(out []byte) ([]byte, error) {
 		out = deleteCodeBuddyJSONField(out, "reasoning_effort")
 		return deleteCodeBuddyJSONField(out, "reasoningEffort"), nil
 	}
+	// 预算保护：输出预算不足以容纳思考时强制关思考（上游思考无上限，会把正文挤没）。
+	if budget := codeBuddyMaxTokens(out); budget > 0 && budget < codeBuddyThinkingMinBudget {
+		logger.L().Debug("codebuddy thinking disabled: output budget below thinking minimum",
+			zap.String("model", model), zap.Int64("max_tokens", budget),
+			zap.Int64("min_budget", codeBuddyThinkingMinBudget),
+		)
+		out = deleteCodeBuddyJSONField(out, "reasoning_effort")
+		out = deleteCodeBuddyJSONField(out, "reasoningEffort")
+		updated, err := sjson.SetBytes(out, "thinking.type", "disabled")
+		if err != nil {
+			return nil, fmt.Errorf("disable codebuddy thinking for small budget: %w", err)
+		}
+		return updated, nil
+	}
 	level := ""
 	switch {
 	case hasCodeBuddyReasoningEffort(out):
@@ -207,13 +250,15 @@ func injectCodeBuddyDeepSeekThinking(out []byte) ([]byte, error) {
 		}
 		out = updated
 	}
-	// 客户端已有档位时同样适用官方改写（LegacyXhighFallbackRule 不看来源）。
-	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(out, "reasoning_effort").String()), "xhigh") {
-		updated, err := sjson.SetBytes(out, "reasoning_effort", "high")
-		if err != nil {
-			return nil, fmt.Errorf("fallback codebuddy xhigh effort: %w", err)
+	// 客户端已有档位时同样适用官方改写（LegacyXhighFallbackRule 不看来源），snake / camel 双字段。
+	for _, key := range []string{"reasoning_effort", "reasoningEffort"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(out, key).String()), "xhigh") {
+			updated, err := sjson.SetBytes(out, key, "high")
+			if err != nil {
+				return nil, fmt.Errorf("fallback codebuddy xhigh effort: %w", err)
+			}
+			out = updated
 		}
-		out = updated
 	}
 	// deepseek 出站恒带 thinking.type（官方规则链口径）：type 未定义时补 "enabled"。
 	if isDeepSeek && typ == "" {
