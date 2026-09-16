@@ -26,15 +26,6 @@ func NewCodeBuddyAdminHandler(codeBuddyService *service.CodeBuddyAdminService, a
 	return &CodeBuddyAdminHandler{codeBuddyService: codeBuddyService, audit: audit}
 }
 
-// qrStart 解析发起者身份（审计积极响应 actor/uid/nickname/create|update）。
-func (h *CodeBuddyAdminHandler) actorID(c *gin.Context) string {
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		return ""
-	}
-	return strconv.FormatInt(subject.UserID, 10)
-}
-
 // QRStart POST /admin/codebuddy/qr/start。
 func (h *CodeBuddyAdminHandler) QRStart(c *gin.Context) {
 	if h == nil || h.codeBuddyService == nil {

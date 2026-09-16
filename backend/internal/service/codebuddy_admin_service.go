@@ -194,8 +194,8 @@ func (s *CodeBuddyAdminService) Poll(ctx context.Context, actorID, state string)
 		return &CodeBuddyQRPollResult{Status: "waiting"}, nil
 	}
 	code := codebuddyEnvelopeCode(raw)
-	switch {
-	case code == 0:
+	switch code {
+	case 0:
 		data := gjson.GetBytes(raw, "data")
 		if !data.IsObject() || strings.TrimSpace(data.Get("accessToken").String()) == "" {
 			return &CodeBuddyQRPollResult{Status: "waiting"}, nil
@@ -212,7 +212,7 @@ func (s *CodeBuddyAdminService) Poll(ctx context.Context, actorID, state string)
 			return &CodeBuddyQRPollResult{Status: "waiting"}, nil
 		}
 		return finished, nil
-	case code == 11217:
+	case 11217:
 		// 11217 = 未扫码/登录进行中（实测口径）。
 		return &CodeBuddyQRPollResult{Status: "waiting"}, nil
 	default:
@@ -436,8 +436,8 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 		return nil, err
 	}
 	code := codebuddyEnvelopeCode(raw)
-	switch {
-	case code == 0, code == 10001:
+	switch code {
+	case 0, 10001:
 		result := &CodeBuddyCheckinResult{
 			AlreadyCheckedIn: code == 10001,
 			Credit:           gjson.GetBytes(raw, "data.credit").Float(),

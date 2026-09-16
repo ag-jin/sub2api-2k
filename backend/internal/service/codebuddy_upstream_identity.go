@@ -45,9 +45,6 @@ const (
 	codeBuddyCNOrigin     = "https://www.codebuddy.cn"
 	codeBuddyGlobalOrigin = "https://www.workbuddy.ai"
 
-	codeBuddyCNBrandDomain     = "www.codebuddy.cn"
-	codeBuddyGlobalBrandDomain = "www.workbuddy.ai"
-
 	// codeBuddyConversationReqIDContextKey 会话轮级聚合主键在 gin context 的惰性缓存键：
 	// 同一次入站请求的所有上游尝试（重试/换号）复用同一 ID，与官方"一次 user send
 	// 内所有 tool call/重试复用同一 X-Conversation-Request-ID"语义一致。

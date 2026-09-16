@@ -25,6 +25,8 @@ linters:
             - "!**/internal/service/ops_metrics_collector.go"
             - "!**/internal/service/ops_scheduled_report_service.go"
             - "!**/internal/service/wire.go"
+            # codebuddy 管理面测试用 miniredis 构造真实 redis 客户端（与 ops_* 同例）。
+            - "!**/internal/service/codebuddy_admin_service_test.go"
           deny:
             - pkg: github.com/Wei-Shaw/sub2api/internal/repository
               desc: "service must not import repository"

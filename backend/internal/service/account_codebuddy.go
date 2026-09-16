@@ -51,24 +51,6 @@ var codeBuddyStaticModels = []string{
 	"minimax-m3-pay",
 }
 
-// codeBuddyNonAutoModels vo 回显"15 项必需模型断言（不含 auto）"。
-var codeBuddyNonAutoModels = []string{
-	"deepseek-v4-flash",
-	"deepseek-v4-pro",
-	"deepseek-v4.1-flash",
-	"glm-5.1",
-	"glm-5.2",
-	"glm-5v-turbo",
-	"hy3",
-	"hy3-preview",
-	"hy3-preview-agent",
-	"kimi-k2.5",
-	"kimi-k2.6",
-	"kimi-k2.7",
-	"minimax-m3",
-	"minimax-m3-pay",
-}
-
 // codeBuddyStaticModelIDs 返回静态清单的去重排序副本（与既有探测路径的
 // 返回形态一致），避免调用方修改包级变量。
 func codeBuddyStaticModelIDs() []string {

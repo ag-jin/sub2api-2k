@@ -116,7 +116,9 @@ func TestNormalizeCodeBuddyCredentials_FlatPassthrough(t *testing.T) {
 	assert.Equal(t, "ent-1", out["enterprise_id"])
 	assert.Equal(t, "2026-10-01T00:00:00Z", out["expires_at"])
 	assert.Equal(t, "https://custom.example.com", out["base_url"])
-	assert.Equal(t, "glm-5.2", out["model_mapping"].(map[string]any)["glm-5.2"])
+	mapping, ok := out["model_mapping"].(map[string]any)
+	require.True(t, ok, "model_mapping 应为对象")
+	assert.Equal(t, "glm-5.2", mapping["glm-5.2"])
 }
 
 // Scenario: 输入已是 RFC3339 字符串的 expires_at 必须原样保留，即使 expires_in
@@ -149,7 +151,9 @@ func TestNormalizeCodeBuddyCredentials_RFC3339ExpiresAtWinsOverStaleExpiresIn(t 
 		"expires_in":   60,
 	})
 	require.NotNil(t, out)
-	parsed, err := time.Parse(time.RFC3339, out["expires_at"].(string))
+	expiresAt, ok := out["expires_at"].(string)
+	require.True(t, ok, "expires_at 应为字符串")
+	parsed, err := time.Parse(time.RFC3339, expiresAt)
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now().Add(60*time.Second), parsed, 5*time.Second)
 }
@@ -563,11 +567,17 @@ func TestAggregateCodeBuddyCCResponse_TextAndUsage(t *testing.T) {
 	assert.Equal(t, 5, usage.OutputTokens)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(out, &parsed))
-	choice := parsed["choices"].([]any)[0].(map[string]any)
-	message := choice["message"].(map[string]any)
+	choices, ok := parsed["choices"].([]any)
+	require.True(t, ok, "choices 应为数组")
+	require.NotEmpty(t, choices)
+	choice, ok := choices[0].(map[string]any)
+	require.True(t, ok, "choice 应为对象")
+	message, ok := choice["message"].(map[string]any)
+	require.True(t, ok, "message 应为对象")
 	assert.Equal(t, "Hello", message["content"])
 	assert.Equal(t, "stop", choice["finish_reason"])
-	usageOut := parsed["usage"].(map[string]any)
+	usageOut, ok := parsed["usage"].(map[string]any)
+	require.True(t, ok, "usage 应为对象")
 	assert.Equal(t, float64(11), usageOut["prompt_tokens"])
 }
 
@@ -583,17 +593,30 @@ func TestAggregateCodeBuddyCCResponse_ToolCallsIndexFragments(t *testing.T) {
 	assert.Equal(t, 9, usage.OutputTokens)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(out, &parsed))
-	choice := parsed["choices"].([]any)[0].(map[string]any)
+	choices, ok := parsed["choices"].([]any)
+	require.True(t, ok, "choices 应为数组")
+	require.NotEmpty(t, choices)
+	choice, ok := choices[0].(map[string]any)
+	require.True(t, ok, "choice 应为对象")
 	assert.Equal(t, "tool_calls", choice["finish_reason"])
-	tcs := choice["message"].(map[string]any)["tool_calls"].([]any)
+	msgObj, ok := choice["message"].(map[string]any)
+	require.True(t, ok, "message 应为对象")
+	tcs, ok := msgObj["tool_calls"].([]any)
+	require.True(t, ok, "tool_calls 应为数组")
 	require.Len(t, tcs, 2)
-	ta := tcs[0].(map[string]any)
+	ta, ok := tcs[0].(map[string]any)
+	require.True(t, ok, "tool_call 应为对象")
 	assert.Equal(t, "call_A", ta["id"])
-	assert.Equal(t, "get", ta["function"].(map[string]any)["name"])
-	assert.Equal(t, `{"lat":1}`, ta["function"].(map[string]any)["arguments"], "arguments 分片拼接")
-	tb := tcs[1].(map[string]any)
-	assert.Equal(t, "put", tb["function"].(map[string]any)["name"])
-	assert.Equal(t, "{}", tb["function"].(map[string]any)["arguments"])
+	taFn, ok := ta["function"].(map[string]any)
+	require.True(t, ok, "function 应为对象")
+	assert.Equal(t, "get", taFn["name"])
+	assert.Equal(t, `{"lat":1}`, taFn["arguments"], "arguments 分片拼接")
+	tb, ok := tcs[1].(map[string]any)
+	require.True(t, ok, "tool_call 应为对象")
+	tbFn, ok := tb["function"].(map[string]any)
+	require.True(t, ok, "function 应为对象")
+	assert.Equal(t, "put", tbFn["name"])
+	assert.Equal(t, "{}", tbFn["arguments"])
 }
 
 // --- Redact lists coverage（对齐 audit_log_test 模式）---
