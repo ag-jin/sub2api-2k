@@ -139,7 +139,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		var usageErr error
 		if isCodeBuddy {
 			// codebuddy：developer→system + 强制流式 + include_usage。
-			upstreamBody, usageErr = transformCodeBuddyRequestBody(upstreamBody)
+			upstreamBody, usageErr = transformCodeBuddyRequestBody(upstreamBody, account)
 		} else {
 			upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
 		}

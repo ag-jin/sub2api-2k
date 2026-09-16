@@ -106,8 +106,9 @@ func TestAccountTestService_CodeBuddy_Connection(t *testing.T) {
 
 	assert.Equal(t, "/v2/chat/completions", gotPath)
 	assert.Equal(t, "Bearer cb-access-token", gotAuth)
-	assert.Equal(t, codeBuddyUpstreamUserAgent, gotUA)
-	assert.Equal(t, "text/event-stream", gotAccept)
+	assert.Equal(t, "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1", gotUA,
+		"连通性测试与 chat 同形：官方三段式 UA")
+	assert.Equal(t, "application/json, text/event-stream", gotAccept)
 	assert.Equal(t, "user-1", gotXUser)
 	assert.Equal(t, "ent-9", gotXEnterprise)
 	assert.Equal(t, "ent-9", gotXTenant)

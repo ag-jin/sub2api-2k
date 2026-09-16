@@ -378,7 +378,7 @@ func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Ac
 
 	payloadBytes, _ := json.Marshal(createOpenAIChatCompletionsTestPayload(testModelID, prompt))
 	// CodeBuddy 上游约束与网关链路一致（openai_gateway_codebuddy.go）。
-	transformed, terr := transformCodeBuddyRequestBody(payloadBytes)
+	transformed, terr := transformCodeBuddyRequestBody(payloadBytes, account)
 	if terr != nil {
 		return s.sendErrorAndEnd(c, "Failed to build CodeBuddy test payload")
 	}
@@ -394,7 +394,7 @@ func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Ac
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+authToken)
-	applyCodeBuddyUpstreamHeaders(req.Header, account)
+	applyCodeBuddyChatUpstreamHeaders(req.Header, account, c, transformed)
 	account.ApplyHeaderOverrides(req.Header)
 
 	proxyURL := ""

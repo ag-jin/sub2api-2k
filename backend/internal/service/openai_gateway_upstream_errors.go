@@ -601,6 +601,14 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
+		// CodeBuddy 上游拒因只在 {code,msg} 信封里，通用提取器不认顶层 msg，
+		// 客户端会只看到不可诊断的 "Upstream error: 400"；此处补全为
+		// "Upstream error: 400 (code 11128: Illegal API invocation from an unapproved channel)"。
+		if account != nil && account.IsCodeBuddy() {
+			if envelope := codeBuddyUpstreamEnvelopeMessage(body); envelope != "" {
+				upstreamMsg = fmt.Sprintf("Upstream error: %d (%s)", resp.StatusCode, envelope)
+			}
+		}
 	}
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 

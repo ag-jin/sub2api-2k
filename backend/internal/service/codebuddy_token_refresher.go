@@ -130,7 +130,7 @@ func (r *CodeBuddyTokenRefresher) Refresh(ctx context.Context, account *Account)
 
 // callRefreshEndpoint 调上游刷新端点。
 //   - body 恒 {}（原型实证）；
-//   - 请求头保留鉴权身份集 + X-Refresh-Token + X-Auth-Refresh-Source: plugin；
+//   - 请求头规范化（官方公共头 + 身份头 + X-Refresh-Token + X-Auth-Refresh-Source: plugin）；
 //   - HTTP 401/403 或 code!=0 且 msg 含拒绝/失效语义 → errCodeBuddyRefreshRejected
 //     (不可重试,账号进 StatusError);网络/5xx 等瞬态错误原样带出。
 func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, account *Account, refreshURL string) (map[string]any, error) {
@@ -138,15 +138,10 @@ func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, accou
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy build refresh request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", codeBuddyUpstreamUserAgent)
 	req.Header.Set("Authorization", "Bearer "+account.GetCodeBuddyAccessToken())
-	for k, v := range BuildCodeBuddyUpstreamHeaders(account) {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("X-Refresh-Token", account.GetCodeBuddyRefreshToken())
-	req.Header.Set("X-Auth-Refresh-Source", "plugin")
+	// 出站头规范化：公共头 + 身份头（缺值走 X-No-* 声明）+ 刷新专属头，见
+	// codebuddy_upstream_identity.go（不带设备令牌/归属头/会话头族，与官方刷新请求同形）。
+	applyCodeBuddyRefreshUpstreamHeaders(req.Header, account)
 
 	resp, err := r.client.Do(req)
 	if err != nil {

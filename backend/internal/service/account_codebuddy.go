@@ -86,6 +86,12 @@ var codeBuddyPreservableConfigKeys = []string{
 	"base_url", "model_mapping",
 	"header_override_enabled", "header_overrides",
 	"expires_in", "refresh_expires_in", "refresh_expires_at", "last_refresh_time",
+	// 出站头规范化的账号级覆盖（见 codebuddy_upstream_identity.go）：
+	// 客户端/CLI 版本段、客户端名、UA 全量覆盖、X-Domain 覆盖、设备令牌。
+	"client_version", "cli_version", "client_name", "user_agent", "device_token",
+	"realm", "x_domain", "agent_intent",
+	// 部门全名：官方客户端鉴权拦截器用它注入 X-Department-Info（企业账号才有）。
+	"department_full_name",
 }
 
 // NormalizeCodeBuddyCredentials 把用户粘贴的 CodeBuddy auth JSON 归一化为
@@ -140,6 +146,8 @@ func NormalizeCodeBuddyCredentials(raw map[string]any) map[string]any {
 			}
 		}
 		pick("uid", "uid", accountMap)
+		// 企业账号的部门全名：出站 X-Department-Info 取值（官方鉴权拦截器口径）。
+		pick("department_full_name", "departmentFullName", accountMap)
 	}
 	// 2. 扁平键（编辑/刷新回写直接给扁平 map）。
 	flatExpires := raw["expires_at"]
@@ -291,13 +299,22 @@ func (a *Account) GetCodeBuddyUID() string {
 	return strings.TrimSpace(a.GetCredential("uid"))
 }
 
-// GetCodeBuddyEnterpriseID 返回 enterprise id；空串（个人账号）也按原样返回，
-// 头注入时发空串（原型实证：上游接受空串）。
+// GetCodeBuddyEnterpriseID 返回 enterprise id；个人账号为空串。
+// 头注入时按官方 CLI 约定改发 X-No-Enterprise-Id: 1（见 codebuddy_upstream_identity.go）。
 func (a *Account) GetCodeBuddyEnterpriseID() string {
 	if a == nil || !a.IsCodeBuddy() {
 		return ""
 	}
 	return strings.TrimSpace(a.GetCredential("enterprise_id"))
+}
+
+// GetCodeBuddyDepartment 返回部门全名（企业账号才有），用于 X-Department-Info 注入；
+// 官方客户端在 departmentFullName 缺失时改发 X-No-Department-Info: 1。
+func (a *Account) GetCodeBuddyDepartment() string {
+	if a == nil || !a.IsCodeBuddy() {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("department_full_name"))
 }
 
 // GetCodeBuddyDomain 返回 X-Domain 头的取值（auth.domain 原值，不是端点主机名）。
@@ -306,18 +323,4 @@ func (a *Account) GetCodeBuddyDomain() string {
 		return ""
 	}
 	return strings.TrimSpace(a.GetCredential("domain"))
-}
-
-// BuildCodeBuddyUpstreamHeaders 生成 CodeBuddy 上游请求的专用身份头集合。
-// enterpriseId 空串时按空串头注入（原型实证被接受）。
-func BuildCodeBuddyUpstreamHeaders(account *Account) map[string]string {
-	if account == nil || !account.IsCodeBuddy() {
-		return nil
-	}
-	return map[string]string{
-		"X-User-Id":       account.GetCodeBuddyUID(),
-		"X-Enterprise-Id": account.GetCodeBuddyEnterpriseID(),
-		"X-Tenant-Id":     account.GetCodeBuddyEnterpriseID(),
-		"X-Domain":        account.GetCodeBuddyDomain(),
-	}
 }

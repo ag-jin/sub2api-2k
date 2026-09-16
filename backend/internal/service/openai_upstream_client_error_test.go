@@ -292,3 +292,51 @@ func TestWriteOpenAIUpstreamClientError_PayloadShape(t *testing.T) {
 		})
 	}
 }
+
+// CodeBuddy 上游拒因只在 {code,msg} 信封里（通用提取器不认顶层 msg），
+// 兼容路径（Chat Completions / Anthropic）必须把码与原文带给客户端；
+// 否则 ZCode / Claude Code 这类客户端只看到 "Upstream error: 400"，
+// 无法区分"提示词指纹被上游安全策略拦截"与网络故障（2026-09-14 生产遗留项）。
+const codeBuddyUnapprovedChannelBody = `{"code":11128,` +
+	`"displayMsg":{"en":"The request was blocked by security policy.","zh":"请求被安全策略拦截。"},` +
+	`"msg":"Illegal API invocation from an unapproved channel",` +
+	`"requestId":"c7df365e-66d6-4056-8f38-7464e2e0a765"}`
+
+func TestHandleCompatErrorResponse_CodeBuddyEnvelopeMessageSurfaced(t *testing.T) {
+	c, _ := newOpenAIUpstreamErrorTestContext(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{ID: 500, Platform: PlatformCodeBuddy, Type: AccountTypeAPIKey, Name: "Jin"}
+
+	var status int
+	var message string
+	writeError := func(_ *gin.Context, statusCode int, _, msg string) {
+		status, message = statusCode, msg
+	}
+
+	_, err := svc.handleCompatErrorResponse(
+		newOpenAIUpstreamErrorResponse(http.StatusBadRequest, codeBuddyUnapprovedChannelBody),
+		c, account, writeError,
+	)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Contains(t, message, "code 11128")
+	require.Contains(t, message, "Illegal API invocation from an unapproved channel")
+}
+
+// 其它平台（或非信封形态的上游错误）不得被这条补全逻辑改写文案。
+func TestHandleCompatErrorResponse_NonEnvelopeMessageUnchanged(t *testing.T) {
+	c, _ := newOpenAIUpstreamErrorTestContext(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{ID: 501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Name: "buddy"}
+
+	var message string
+	writeError := func(_ *gin.Context, _ int, _, msg string) { message = msg }
+
+	_, err := svc.handleCompatErrorResponse(
+		newOpenAIUpstreamErrorResponse(http.StatusBadRequest, codeBuddyUnapprovedChannelBody),
+		c, account, writeError,
+	)
+	require.Error(t, err)
+	require.Equal(t, "Upstream error: 400", message,
+		"非 codebuddy 平台沿用通用文案，不拼接上游信封")
+}

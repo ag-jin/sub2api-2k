@@ -299,11 +299,11 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 		)))
 	}
 
-	// CodeBuddy 专用身份头：X-User-Id / X-Enterprise-Id / X-Tenant-Id / X-Domain
-	// (+ UA)。放在账号级覆写之前，并在 account_header_override 不可覆写清单中
-	// 同步禁覆写这几个头名。
+	// CodeBuddy 出站头规范化：身份头 + 归属头 + 会话头族 + 官方 UA/Origin/Referer
+	// （见 codebuddy_upstream_identity.go）。放在账号级覆写之前，并在
+	// account_header_override 不可覆写清单中同步禁覆写这些头名。
 	if account.IsCodeBuddy() {
-		applyCodeBuddyUpstreamHeaders(upstreamReq.Header, account)
+		applyCodeBuddyChatUpstreamHeaders(upstreamReq.Header, account, c, body)
 	}
 	if account.Platform == PlatformGrok {
 		if account.IsGrokOAuth() {

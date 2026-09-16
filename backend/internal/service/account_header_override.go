@@ -69,6 +69,22 @@ var headerOverrideBlockedNames = map[string]struct{}{
 	"x-enterprise-id": {},
 	"x-tenant-id":     {},
 	"x-domain":        {},
+	// CodeBuddy 出站规范化头（官方客户端形态）：身份/归属/会话头族由账号凭据与
+	// codebuddy_upstream_identity.go 统一注入，禁止账号级覆写造成身份串扰。
+	"x-codebuddy-request":       {},
+	"x-agent-purpose":           {},
+	"x-ide-name":                {},
+	"x-ide-type":                {},
+	"x-ide-version":             {},
+	"x-device-token":            {},
+	"x-conversation-id":         {},
+	"x-conversation-request-id": {},
+	"x-conversation-message-id": {},
+	"x-root-request-id":         {},
+	"x-trace-id":                {},
+	"x-b3-traceid":              {},
+	"x-b3-spanid":               {},
+	"x-b3-sampled":              {},
 }
 
 func isHeaderOverrideBlockedName(lowerName string) bool {
