@@ -59,6 +59,7 @@ func TestRunMigrationsWithDSN_AppliesAndCloses(t *testing.T) {
 }
 
 func TestMigrateOnlyCommandUsesEnvironmentAndExitsBeforeServerStartup(t *testing.T) {
+	//nolint:gosec // G702: 复用 go test 二进制（os.Args[0]）自启动子进程，命令与参数均为本文件常量，无外部输入
 	cmd := exec.Command(os.Args[0], "-test.run=TestMigrateOnlyCommandProcess")
 	cmd.Env = append(os.Environ(),
 		"SUB2API_TEST_MIGRATE_ONLY_PROCESS=1",

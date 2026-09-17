@@ -131,15 +131,20 @@ func TestRawChatCompletionsFirstTokenTimeoutAtHeaderStage(t *testing.T) {
 func TestRawChatCompletionsFirstTokenTimeoutDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	// timeout=0 → 不启用守卫；上游挂起 1s 后自行断开（EOF）。
-	// 180-card 语义：无数据块的空流按正常收尾处理（不判超时、不判截断失败），
-	// 验证超时功能未启用时不会拦截流。
+	// 上游主干语义（2026-09 起）：上游在任何终止信号前结束不再伪装成正常收尾，
+	// 判为截断失败（此前返回 nil error 会把半截回答当成功）。
+	// 本用例只锁"超时功能未启用时不得判为超时"。
 	svc, account := newFirstTokenTimeoutTestService(t, 0, firstTokenTimeoutHangingHandler(time.Second))
 	body := firstTokenTimeoutStreamBody()
 	c, _ := firstTokenTimeoutTestContext(body)
 
 	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
+	require.Error(t, err)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "expected UpstreamFailoverError, got: %v", err)
+	require.NotEqual(t, http.StatusGatewayTimeout, failoverErr.StatusCode,
+		"未启用首 token 守卫时不得判为超时")
 }
 
 func writeFirstTokenChunk(w http.ResponseWriter) {

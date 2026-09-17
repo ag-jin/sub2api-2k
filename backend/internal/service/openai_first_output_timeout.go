@@ -253,9 +253,6 @@ func (s *OpenAIGatewayService) chatCompletionsFirstTokenTimeout() time.Duration 
 	return time.Duration(s.cfg.Gateway.ChatCompletionsFirstTokenTimeoutSeconds) * time.Second
 }
 
-// newOpenAIChatFirstTokenTimeoutError 构造 CC 流式首 token 超时的 failover 错误。
-// SafeToFailoverAfterWrite：超时期间下游至多收到 SSE 注释 keepalive，没有语义输出，
-// 可在同一客户端流内切换账号重放。
 func (s *OpenAIGatewayService) newOpenAIChatFirstTokenTimeoutError(
 	ctx context.Context,
 	c *gin.Context,
@@ -292,10 +289,16 @@ func (s *OpenAIGatewayService) newOpenAIChatFirstTokenTimeoutError(
 	}
 }
 
+// newOpenAIFirstOutputTimeoutError records the timeout as an upstream attempt
+// and returns the failover error. proxyID/proxyName are supplied by the caller
+// because the same deadline is enforced over HTTP and WebSocket transports,
+// whose direct-route semantics differ (see opsUpstreamWSProxyAttribution).
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
+	proxyID *int64,
+	proxyName string,
 	startTime time.Time,
 	originalModel string,
 	reasoningEffort string,
@@ -311,7 +314,9 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	)
 	requestID := strings.TrimSpace(responseHeaders.Get("x-request-id"))
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+		ProxyID:   proxyID,
+		ProxyName: proxyName,
+		Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
 		UpstreamStatusCode: http.StatusGatewayTimeout, UpstreamRequestID: requestID,
 		Kind: "first_output_timeout", Message: "OpenAI upstream produced no semantic output before the deadline",
 		Detail: fmt.Sprintf("phase=%s elapsed_ms=%d timeout_ms=%d", phase, elapsed.Milliseconds(), timeout.Milliseconds()),

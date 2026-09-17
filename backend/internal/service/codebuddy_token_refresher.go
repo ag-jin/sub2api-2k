@@ -134,6 +134,7 @@ func (r *CodeBuddyTokenRefresher) Refresh(ctx context.Context, account *Account)
 //   - HTTP 401/403 或 code!=0 且 msg 含拒绝/失效语义 → errCodeBuddyRefreshRejected
 //     (不可重试,账号进 StatusError);网络/5xx 等瞬态错误原样带出。
 func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, account *Account, refreshURL string) (map[string]any, error) {
+	//nolint:gosec // G704: refreshURL 来自账号配置的 base_url（CodeBuddy 常量端点 / 硬编码路径，经 validateUpstreamBaseURL 校验），非请求输入
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader("{}"))
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy build refresh request: %w", err)
@@ -143,7 +144,7 @@ func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, accou
 	// codebuddy_upstream_identity.go（不带设备令牌/归属头/会话头族，与官方刷新请求同形）。
 	applyCodeBuddyRefreshUpstreamHeaders(req.Header, account)
 
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) //nolint:gosec // G704: 同上，req 目标由账号配置推导
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy refresh request: %w", err)
 	}
