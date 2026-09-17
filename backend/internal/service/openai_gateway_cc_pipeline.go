@@ -172,9 +172,6 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(account *Account) (apiKey
 	return apiKey, targetURL, nil
 }
 
-// openCodeUpstreamUserAgent 是 opencode 平台账号出站的自有 UA 兜底。
-const openCodeUpstreamUserAgent = "sub2api/1.0"
-
 // sendCCUpstreamRequest 构建并发送 CC 上游请求：分离的上游 context、OpenAI HTTP
 // profile、标准头（含流式 Accept 切换）、客户端 header 白名单透传、自定义 UA 与
 // 账号级 header 覆写，最后经代理发出。传输层失败（DNS/TCP/TLS，无 HTTP 响应）
@@ -283,21 +280,12 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	}
 	if userAgent != "" {
 		upstreamReq.Header.Set("user-agent", userAgent)
-	} else if account.IsOpenCode() {
-		// opencode GO 拒绝通用 HTTP 库 UA（其文档 where-can-i-use-it 明确要求
-		// 自有 agent 名），Go 栈默认 Go-http-client/1.1 不可接受，补自有身份。
-		upstreamReq.Header.Set("user-agent", openCodeUpstreamUserAgent)
 	}
 
-	// opencode GO 强制 x-opencode-session 会话头，缺头一律 400。无状态网关拿不到
-	// 客户端真实会话 ID，复用 Claude 伪装路径同款"会话级稳定种子"近似：同一对话
-	// （首条 user 消息不变）跨轮稳定，跨 API Key / 账号 / 对话互不相同。
-	if account.IsOpenCode() {
-		upstreamReq.Header.Set("x-opencode-session", generateSessionUUID(fmt.Sprintf(
-			"sub2api:opencode-session:u%d:a%d:%s",
-			getAPIKeyIDFromContext(c), account.ID, extractFirstUserText(body),
-		)))
-	}
+	// opencode GO 出站必需头（自有 UA 兜底 + 强制会话头 x-opencode-session，
+	// 缺头一律 400 MissingSessionID）。与真实转发保持同一注入点见
+	// opencode_upstream_headers.go——管理面测试路径曾因各写各的头而漏注入。
+	applyOpenCodeUpstreamHeaders(upstreamReq.Header, account, getAPIKeyIDFromContext(c), body, userAgent)
 
 	// CodeBuddy 出站头规范化：身份头 + 归属头 + 会话头族 + 官方 UA/Origin/Referer
 	// （见 codebuddy_upstream_identity.go）。放在账号级覆写之前，并在

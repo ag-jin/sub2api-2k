@@ -2070,6 +2070,11 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
+	// opencode 账号的出站必需头（自有 UA + 强制会话头 x-opencode-session）：
+	// 与真实转发同源。此前测试路径漏注入会话头，导致"正常调用 200、面板点测试
+	// 400 MissingSessionID"（2026-09-17 生产实测，见 opencode_upstream_headers.go）。
+	applyOpenCodeUpstreamHeaders(req.Header, account, 0, payloadBytes, "")
+
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
 

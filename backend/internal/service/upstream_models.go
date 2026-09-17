@@ -376,6 +376,9 @@ func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Contex
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// opencode 账号的模型目录同步同样带出站必需头（自有 UA + x-opencode-session），
+	// 与真实转发同源，避免"能调用但拉不到模型列表"。见 opencode_upstream_headers.go。
+	applyOpenCodeUpstreamHeaders(req.Header, account, 0, nil, "")
 	// 账号级请求头覆写：模型列表探测与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
