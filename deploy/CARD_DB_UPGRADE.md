@@ -16,8 +16,9 @@ dev 首次部署 v0.1.193-card 时实测到该失败；生产只读探测：**18
 
 ## 方案 A（推荐）：pre-step 以属主身份补跑迁移，**不碰归属**
 
-`deploy/systemd/card-db-migrate-preflight.conf` → 装成服务 drop-in 后，每次启动前以
-`postgres`（unix socket peer 认证，**unit 不存口令**）执行同一个二进制的 `--migrate-only`：
+`deploy/systemd/card-db-migrate-preflight.conf` + `deploy/card-db-migrate-preflight.sh` →
+装成服务 drop-in 后，每次启动前以 `postgres`（unix socket peer 认证，**unit 不存口令**）
+执行同一个二进制的 `--migrate-only`：
 
 ```
 systemctl daemon-reload           # 装好 drop-in 后
@@ -42,7 +43,14 @@ sudo -u postgres sh deploy/card-db-ownership.sh sub2api sub2api
 | --- | --- | --- |
 | 是否改 DDL | 否 | 是（一次性） |
 | 每次启动开销 | 一次 `--migrate-only`（已对齐时毫秒级 no-op） | 无 |
-| 权限姿态 | unit 里多一条 `runuser -u postgres` 的 pre-step | 无额外特权步骤 |
+| 权限姿态 | unit 里多一条以 postgres 身份跑迁移的 pre-step | 无额外特权步骤 |
 | 未来 dump 恢复后 | 自愈 | 需再跑一次脚本 |
 
-两个文件都随 release tar.gz 分发（`.goreleaser.yaml` 的 `files: deploy/*`）。
+pre-step 脚本可手工直接运行排查：`sudo sh /opt/sub2api-copy/card-db-migrate-preflight.sh`。
+
+**2026-09-17 dev 演练记录（方案 A 的两个坑，均已修）**：首版 conf 用绝对路径
+`/usr/bin/runuser`（Ubuntu 实际在 `/usr/sbin`），且带 systemd `-` 前缀把失败静默掉 →
+演练中迁移没跑、服务照旧失败而 pre-step 无告警。现改为：脚本内用 PATH 查找 runuser
+并显式报错；drop-in **不加** `-` 前缀——迁移失败即服务不启动，journal 直接给根因。
+
+以上文件都随 release tar.gz 分发（`.goreleaser.yaml` 的 `files: deploy/*`）。
