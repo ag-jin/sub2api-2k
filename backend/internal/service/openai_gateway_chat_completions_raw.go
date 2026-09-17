@@ -401,6 +401,16 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 		}
 
+		// CodeBuddy 上游帧是本家"全量 delta"形状（空串 content/refusal、空数组
+		// tool_calls、空壳 function_call/extra_fields、空串 finish_reason），原样
+		// 透传会让下游客户端误判帧边界（详见 codebuddy_stream_normalize.go）。
+		// 归一化放在 usage/首 token/静默拒绝观测之后，只影响写出给客户端的内容。
+		if account.IsCodeBuddy() {
+			if normalized, ok := normalizeCodeBuddyChatStreamLine(line); ok {
+				line = normalized
+			}
+		}
+
 		writeLine(line)
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
