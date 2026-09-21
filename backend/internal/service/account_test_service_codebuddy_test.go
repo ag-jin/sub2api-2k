@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -49,6 +50,18 @@ func (r *codeBuddyAccountTestRepo) GetByID(_ context.Context, _ int64) (*Account
 func newCodeBuddyTestService(account *Account) *AccountTestService {
 	repo := &codeBuddyAccountTestRepo{account: account}
 	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	return NewAccountTestService(repo, nil, nil, nil, nil, newDirectHTTPUpstream(), cfg, nil)
+}
+
+// newCodeBuddyTestServiceWithConfig 与 newCodeBuddyTestService 同构，但允许注入
+// 自定义 config（用于把 stream_data_interval_timeout 调小以便快速判定停顿）。
+func newCodeBuddyTestServiceWithConfig(account *Account, cfg *config.Config) *AccountTestService {
+	repo := &codeBuddyAccountTestRepo{account: account}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	cfg.Security.URLAllowlist.Enabled = false
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 	return NewAccountTestService(repo, nil, nil, nil, nil, newDirectHTTPUpstream(), cfg, nil)
@@ -177,4 +190,62 @@ func parseCodeBuddyTestEvents(rec *httptest.ResponseRecorder) []TestEvent {
 		events = append(events, TestEvent{Type: gjson.Get(payload, "type").String(), Text: gjson.Get(payload, "text").String(), Success: gjson.Get(payload, "success").Bool()})
 	}
 	return events
+}
+
+// ── 断流修复回归 F（面板「模型测试」路径的停顿兜底）──────────────────────────
+//
+// 生产实证：用户在面板点「模型测试」后**长时间无响应**，服务端三次记录
+// `context canceled`（间隔恰好 60s）。根因：该路径把上游请求标为
+// HTTPUpstreamProfileOpenAI，而 applyProfilePoolSettings 对该 profile 把
+// responseHeaderTimeout 置 0（永不超时），生产 config.yaml 又没有 gateway 段
+// → openai_response_header_timeout 取默认 0；且读取阶段原本没有任何空闲守卫。
+//
+// 本测试锁定：上游「接住连接但不吐数据」时，模型测试必须在空闲阈值附近结束
+// 并给出可归因的错误，而不是无限等待到用户放弃。
+func TestAccountTestService_CodeBuddy_StalledUpstreamIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// 响应头已发出，此后永久静默：不产字节、不结束。
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	account := &Account{
+		ID:       7,
+		Platform: PlatformCodeBuddy,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":     srv.URL,
+			"access_token": "cb-access-token",
+			"uid":          "user-1",
+			"domain":       "www.codebuddy.cn",
+		},
+	}
+
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamDataIntervalTimeout = 1 // 1s 空闲即判定停顿（绕过校验边界，直测行为）
+	svc := newCodeBuddyTestServiceWithConfig(account, cfg)
+
+	c, rec := newTestContext()
+
+	done := make(chan error, 1)
+	go func() { done <- svc.TestAccountConnection(c, account.ID, "", "hi", "") }()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("模型测试在上游静默时无限挂起——这正是用户看到「点了没反应」的形态")
+	}
+
+	out := rec.Body.String()
+	require.Contains(t, out, `"type":"error"`,
+		"必须以可见 error 事件收尾，而不是静默结束；实际输出: %s", out)
+	require.Contains(t, out, "上游",
+		"错误文案应说明是上游未产生数据，而不是笼统 context canceled；实际输出: %s", out)
 }

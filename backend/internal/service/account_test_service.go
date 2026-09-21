@@ -529,11 +529,41 @@ func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Ac
 		proxyURL = account.Proxy.URL()
 	}
 
+	// 上游等待与读取都必须有上限，否则上游「接住连接但不吐数据」时本路径会无限
+	// 挂着，面板只能干等（生产实证：三次 60s 后 context canceled，用户看到
+	// 「点了测试没有任何反应」）。
+	//
+	// 关键顺序：守卫必须在 DoWithTLS **之前**建立。生产卡住的正是「等响应头」
+	// 阶段（报错点在本函数的 DoWithTLS 调用处），若等响应头返回后再建守卫，
+	// 这段时间就是无保护的——那正是本次事故的形态。
+	//   1) 响应头阶段：守卫超时 → cancel 上游 ctx → DoWithTLS 立即返回；
+	//   2) 读取阶段：守卫包在响应体上，每次成功读到字节刷新计时。
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	defer stallCancel()
+	stallIdle := s.accountTestStallTimeout()
+	stallGuard := newUpstreamStallGuard(stallCtx, stallIdle, stallCancel)
+	defer stallGuard.stop()
+	req = req.WithContext(stallCtx)
+
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		if stallGuard.Fired() && ctx.Err() == nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf(
+				"CodeBuddy API (/v2/chat/completions) 上游 %s 内未返回响应头（已中止，避免无限等待）",
+				stallIdle.Round(time.Second)))
+		}
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf(
+				"CodeBuddy API (/v2/chat/completions) 上游在 %s 内未返回响应（已中止，避免无限等待）",
+				stallIdle.Round(time.Second)))
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/v2/chat/completions) request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// 响应头已到达即视为一次真实产出，重置空闲计时后再进入读取阶段。
+	stallGuard.touch()
+	resp.Body = stallGuard.wrap(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -2941,6 +2971,14 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 					return s.sendErrorAndEnd(c, "Chat Completions stream from /v1/chat/completions ended before [DONE]")
 				}
 				return s.sendErrorAndEnd(c, "Invalid Chat Completions response from /v1/chat/completions: expected SSE JSON data")
+			}
+			// 停顿时 stall guard 会取消上游 context，读操作随之返回 context.Canceled。
+			// 若原样透出 "context canceled"，使用者只会看到「没反应」——必须换成
+			// 说明「多久没有数据」的明确错误。
+			if errors.Is(err, context.Canceled) && c.Request != nil && c.Request.Context().Err() == nil {
+				return s.sendErrorAndEnd(c, fmt.Sprintf(
+					"Chat Completions stream from /v1/chat/completions stalled: 上游超过 %s 未产生数据（已中止）",
+					s.accountTestStallTimeout().Round(time.Second)))
 			}
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions stream read error from /v1/chat/completions: %s", err.Error()))
 		}

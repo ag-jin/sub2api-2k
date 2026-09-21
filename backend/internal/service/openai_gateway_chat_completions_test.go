@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1135,4 +1136,165 @@ func TestBuildChatStreamErrorSSE(t *testing.T) {
 	require.Equal(t, "invalid_request_error", gjson.Get(payload, "error.type").String())
 	require.Equal(t, "cyber_policy", gjson.Get(payload, "error.code").String())
 	require.Equal(t, "blocked by policy", gjson.Get(payload, "error.message").String())
+}
+
+// ── 断流修复回归 B（上游注释心跳饿死下游保活）────────────────────────────────
+//
+// 旧行为缺陷：保活判断用的是"上游最后一行到达"的时刻，而上游可以**持续** trickle
+// SSE 注释心跳（`:` 开头）。这些行既不转发给客户端、也不构成语义输出，却会不断
+// 刷新该时刻，于是网关自己的保活被永久抑制，客户端在整段停滞期内收到零字节
+// （生产实测出现过 ~900s 静默、0 个 keepalive 帧，最终以
+// "stream usage incomplete: missing terminal event" 收场）。
+//
+// 修复后：保活以"下游最后一次真正收到字节"为准，上游注释心跳无法再欺骗它。
+
+// upstreamEndlessCommentHeartbeatBody 在整个观察期内持续输出上游注释心跳，
+// 期间不产生任何语义输出——正是饿死下游保活的形态。
+type upstreamEndlessCommentHeartbeatBody struct {
+	until   time.Time
+	step    time.Duration
+	content string
+	phase   int
+}
+
+func (b *upstreamEndlessCommentHeartbeatBody) Read(p []byte) (int, error) {
+	switch b.phase {
+	case 0:
+		if time.Now().Before(b.until) {
+			time.Sleep(b.step)
+			return copy(p, ":\n\n"), nil
+		}
+		b.phase = 1
+		return 0, nil
+	case 1:
+		b.phase = 2
+		return copy(p, b.content), nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (b *upstreamEndlessCommentHeartbeatBody) Close() error { return nil }
+
+// TestHandleChatStreamingResponse_UpstreamCommentHeartbeatDoesNotStarveClientKeepalive
+// 锁定：上游持续 trickle 注释心跳、客户端毫无可见字节时，网关仍必须按
+// stream_keepalive_interval 给下游发保活；否则客户端零字节静默会被中间层掐断，
+// 表现为"回答打到一半突然停住"。
+func TestHandleChatStreamingResponse_UpstreamCommentHeartbeatDoesNotStarveClientKeepalive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	// 上游连续 3.2s 每 150ms 发一条注释心跳（远快于 1s 的保活周期），期间零语义输出；
+	// 之后才给出正文与终止事件。
+	body := &upstreamEndlessCommentHeartbeatBody{
+		until: time.Now().Add(3200 * time.Millisecond),
+		step:  150 * time.Millisecond,
+		content: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"late content\"}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"x-request-id": []string{"upstream-comment-heartbeat"},
+		},
+		Body: body,
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.StreamKeepaliveInterval = 1
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	_, _ = svc.handleChatStreamingResponse(
+		resp, c,
+		&Account{ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI},
+		"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol",
+		time.Now(), 0,
+	)
+
+	out := rec.Body.String()
+	require.Contains(t, out, "late content", "正文最终必须到达客户端")
+
+	// 保活必须出现在正文之前（即停滞期内就已经发给客户端）。
+	kaIdx := strings.Index(out, ":\n\n")
+	contentIdx := strings.Index(out, "late content")
+	require.GreaterOrEqual(t, kaIdx, 0,
+		"上游注释心跳不得饿死下游保活：停滞期内必须下发 SSE 注释帧，"+
+			"否则客户端零字节静默会被中间层掐断（生产 900s 静默、0 保活帧的机制）")
+	require.Less(t, kaIdx, contentIdx,
+		"保活应发生在正文之前，证明它覆盖了停滞期而不是被推迟到正文之后")
+}
+
+// ── 断流修复回归 D（守卫锚点必须是"语义事件"而非"任意字节"）────────────────
+//
+// 旧行为缺陷：data-interval 守卫读的是 lastReadAt——它在收到上游**任意一行**
+// 时刷新，包括 SSE 注释心跳（`:` 开头）。上游只要每 <interval 秒吐一个字节就能
+// 让守卫永不触发，而客户端可能整段停滞期内零语义输出。
+//
+// 生产实证：322,685 行日志里 "data interval" 出现 0 次（守卫从未生效），同期
+// 存在 901/902/915 秒请求以 "missing terminal event" 收场，用户看到"回答停住"。
+//
+// 修复后：锚点改为语义事件（解析出真实 data 帧）才刷新。
+
+// commentOnlyStallBody 持续吐 SSE 注释心跳，但永远不给语义事件。
+type commentOnlyStallBody struct {
+	stop chan struct{}
+	once sync.Once
+}
+
+func (b *commentOnlyStallBody) Read(p []byte) (int, error) {
+	select {
+	case <-b.stop:
+		return 0, io.EOF
+	case <-time.After(60 * time.Millisecond):
+		// 远快于守卫间隔的节奏滴流注释帧——这正是"续命"手法。
+		return copy(p, ":\n\n"), nil
+	}
+}
+
+func (b *commentOnlyStallBody) Close() error {
+	b.once.Do(func() { close(b.stop) })
+	return nil
+}
+
+// TestHandleChatStreamingResponse_CommentHeartbeatDoesNotDefeatIntervalGuard
+// 锁定：上游只发注释心跳时，data-interval 守卫必须照常触发（按语义空闲计时），
+// 而不是被注释帧无限续命。
+func TestHandleChatStreamingResponse_CommentHeartbeatDoesNotDefeatIntervalGuard(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"x-request-id": []string{"comment-stall"},
+		},
+		Body: &commentOnlyStallBody{stop: make(chan struct{})},
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.StreamDataIntervalTimeout = 1 // 1s 语义空闲即判定停顿
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	start := time.Now()
+	_, err := svc.handleChatStreamingResponse(
+		resp, c,
+		&Account{ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI},
+		"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol",
+		time.Now(), 0,
+	)
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "上游只有注释心跳、无任何语义输出时必须判定停顿并报错")
+	require.Contains(t, err.Error(), "data interval timeout",
+		"应按 data-interval 停顿归因；实际: %v", err)
+	require.Less(t, elapsed, 20*time.Second,
+		"守卫应在语义空闲阈值附近触发，而非被注释帧续命到很久之后")
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"sync"
 )
 
 func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
@@ -1336,4 +1337,361 @@ func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +
 		`"}],"stream":true}`)
+}
+
+// ── 断流修复回归（WordBuddy "停止/断流"）─────────────────────────────────────
+//
+// 旧行为缺陷：streamRawChatCompletions 在上游中途断开时既不写 error 帧也不写
+// [DONE]，只是让响应体自然结束。按 SSE 语义客户端会把这种结束当作正常完成，
+// 于是"断流"被静默吞掉（用户看到回答突然停住、界面却显示成功）。
+
+// TestForwardAsRawChatCompletions_TruncatedStreamEmitsTerminalError 锁定：上游在
+// 已输出正文后异常中断 → 必须补发可见 error 帧 + [DONE]，客户端可判定失败。
+func TestForwardAsRawChatCompletions_TruncatedStreamEmitsTerminalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// 上游先给出一个正文帧，然后读错误 —— 没有 finish_reason、没有 [DONE]。
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_truncated"}},
+		Body: &openAIChatStreamReadErrorCloser{
+			payload: []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"partial answer"}}]}` + "\n\n"),
+			err:     errors.New("unexpected EOF"),
+		},
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	out := rec.Body.String()
+	require.Contains(t, out, "partial answer", "正文必须已下发给客户端")
+
+	// 修复的核心断言：截断必须对客户端可见。
+	require.Contains(t, out, `"code":"stream_read_error"`,
+		"上游截断时必须下发可见的终止 error 帧，否则客户端把半截回答当完整回答")
+	require.Contains(t, out, "data: [DONE]",
+		"终止 error 帧后必须跟上 [DONE]，否则客户端会挂到自身读超时")
+}
+
+// TestForwardAsRawChatCompletions_CleanEOFWithoutTerminalFrameEmitsError 锁定：
+// 上游以正常 EOF 收尾但整个流没有任何终止信号 → 同样必须让客户端可感知截断。
+func TestForwardAsRawChatCompletions_CleanEOFWithoutTerminalFrameEmitsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// 上游只发正文帧就干净地结束：没有 finish_reason，也没有 [DONE]。
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"half an answer"}}]}`,
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_no_terminal"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	out := rec.Body.String()
+	require.Contains(t, out, "half an answer")
+	require.Contains(t, out, `"code":"stream_truncated"`,
+		"上游无终止帧收尾时必须下发可见终止错误")
+	require.Contains(t, out, "data: [DONE]")
+}
+
+// TestForwardAsRawChatCompletions_TerminalFrameDoesNotEmitSpuriousError 锁定：
+// 正常带 [DONE] 的流不得被追加伪造的 error 帧（避免回归成"正常回答被标成失败"）。
+func TestForwardAsRawChatCompletions_TerminalFrameDoesNotEmitSpuriousError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"full answer"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_normal"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	out := rec.Body.String()
+	require.Contains(t, out, "full answer")
+	require.NotContains(t, out, `"code":"stream_truncated"`, "正常完成的流不得被标记为截断")
+	require.NotContains(t, out, `"code":"stream_read_error"`)
+}
+
+// TestForwardAsRawChatCompletions_KeepaliveOnMidStreamStall 锁定：正文已开始输出后
+// 若上游长时间静默，网关必须下发 SSE 注释 keepalive，避免零字节静默被 nginx /
+// 客户端空闲超时掐断（用户表现为"回答打到一半突然停住"）。
+//
+// 注意首 token 之前刻意不保活：提交响应头会固化 200 并让上层丧失换号重试能力
+// （openAIForwardMayFailover 要求响应未写出），那段等待由首 token 超时守卫负责。
+func TestForwardAsRawChatCompletions_KeepaliveOnMidStreamStall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// 上游先给出首帧（正文开始），随后静默 2.4s（>2 个 keepalive 周期），再收尾。
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_midstall"}},
+		Body: &midStreamStallRawBody{
+			first: `data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"first part"}}]}` + "\n\n",
+			stall: 2400 * time.Millisecond,
+			rest: strings.Join([]string{
+				`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"second part"}}]}`,
+				"",
+				`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n"),
+		},
+	}}
+
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamKeepaliveInterval = 1
+	svc := &OpenAIGatewayService{
+		cfg:          cfg,
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	out := rec.Body.String()
+	require.Contains(t, out, "first part")
+	require.Contains(t, out, "second part")
+	require.Contains(t, out, ":\n\n",
+		"正文输出后遭遇长静默时必须发 SSE 注释 keepalive，避免被中间层掐断")
+	require.NotContains(t, out, `"code":"stream_truncated"`, "正常完成的流不应被判为截断")
+}
+
+// midStreamStallRawBody: 第一次 Read 返回首帧；第二次 Read 前停 stall；之后再返回收尾帧。
+type midStreamStallRawBody struct {
+	first string
+	stall time.Duration
+	rest  string
+	phase int
+	slept bool
+}
+
+func (b *midStreamStallRawBody) Read(p []byte) (int, error) {
+	switch b.phase {
+	case 0:
+		b.phase = 1
+		return copy(p, b.first), nil
+	case 1:
+		if !b.slept {
+			b.slept = true
+			time.Sleep(b.stall)
+		}
+		b.phase = 2
+		return copy(p, b.rest), nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (b *midStreamStallRawBody) Close() error { return nil }
+
+// ── 断流修复回归 E（buddy/raw 直转路径的中流停顿）──────────────────────────
+//
+// 旧行为缺陷：raw 直转路径只有"首 token 截止"守卫，**没有任何中流空闲判定**。
+// 上游在首帧之后挂住时网关会一直读下去，既不报错也不收尾——生产实证：
+// buddy 链路出现 63–68 秒后客户端放弃的 499，WordBuddy 侧 900 秒级静默。
+//
+// 修复后：按 stream_data_interval_timeout 监控上游空闲，超时取消上游请求并按
+// 可重试错误收尾，同时给已经开始的客户端补一个可见终止帧。
+
+// silentAfterFirstFrameBody 先给一个正文帧，随后永久静默（不产出、不结束）。
+type silentAfterFirstFrameBody struct {
+	first string
+	sent  bool
+	stop  chan struct{}
+	once  sync.Once
+}
+
+func (b *silentAfterFirstFrameBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.first), nil
+	}
+	select {
+	case <-b.stop:
+		return 0, io.EOF
+	case <-time.After(50 * time.Millisecond):
+		return 0, nil // 静默：不是 EOF，也不产出字节
+	}
+}
+
+func (b *silentAfterFirstFrameBody) Close() error {
+	b.once.Do(func() { close(b.stop) })
+	return nil
+}
+
+// TestForwardAsRawChatCompletions_MidStreamStallDoesNotHangForever 锁定：
+// 上游给出一帧正文后长期静默时，请求必须在空闲阈值附近结束并给出可见终止帧，
+// 而不是无限挂着（生产 900 秒级静默的机制）。
+func TestForwardAsRawChatCompletions_MidStreamStallDoesNotHangForever(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_stall"}},
+		Body: &silentAfterFirstFrameBody{
+			first: `data: {"id":"chatcmpl_stall","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"content":"partial answer"}}]}` + "\n\n",
+			stop:  make(chan struct{}),
+		},
+	}}
+
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamDataIntervalTimeout = 1 // 1s 空闲即判定停顿
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+
+	done := make(chan struct{})
+	var out string
+	var gotErr error
+	go func() {
+		defer close(done)
+		_, gotErr = svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+		out = rec.Body.String()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("上游中流静默时 raw 路径无限挂起（这正是生产断流的形态）")
+	}
+
+	require.Contains(t, out, "partial answer", "首帧正文应已透传给客户端")
+	require.NotNil(t, gotErr, "停顿应作为错误上抛，供上层判失败/故障转移")
+	require.Contains(t, gotErr.Error(), "stalled",
+		"错误应明确归因为上游停顿；实际: %v", gotErr)
+}
+
+// ── 断流修复回归 G（buddy 平台专属：CodeBuddy 账号的中流停顿）────────────────
+//
+// 缺口说明：此前的 raw 停顿测试用的是通用 OpenAI apikey 账号，
+// 而 buddy 平台（key 36 → 组 32 → codebuddy 账号 500）走的是 **CodeBuddy 分支**，
+// 该分支有三个独有的差异，都会影响停顿路径：
+//   1. URL 与请求体经 transformCodeBuddyRequestBody 改写（角色归一/字段剥离等）；
+//   2. 上行帧经 normalizeCodeBuddyChatStreamLine 归一化后才写出给客户端；
+//   3. `isCodeBuddy` 会强制 stream=true，即使客户端要非流式。
+// 因此必须单独覆盖：证明 CodeBuddy 账号在中流静默时同样收敛，而非无限挂着。
+
+func codeBuddyRawChatTestAccount() *Account {
+	return &Account{
+		ID:          501,
+		Name:        "buddy-codebuddy",
+		Platform:    PlatformCodeBuddy,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"base_url":     "http://upstream.example",
+			"access_token": "cb-token",
+			"uid":          "user-1",
+			"domain":       "www.codebuddy.cn",
+		},
+	}
+}
+
+// TestForwardAsRawChatCompletions_CodeBuddyMidStreamStallIsBounded 锁定：
+// buddy 链路（CodeBuddy 账号）在首帧之后上游静默时，请求必须在空闲阈值附近
+// 收敛并给出可见终止帧 + 可归因错误，而不是无限等待（生产 63–68s 客户端放弃、
+// 900s 级静默的同型机制）。
+func TestForwardAsRawChatCompletions_CodeBuddyMidStreamStallIsBounded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_cb_stall"}},
+		Body: &silentAfterFirstFrameBody{
+			first: `data: {"id":"cb-stall","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"started then hung "}}]}` + "\n\n",
+			stop:  make(chan struct{}),
+		},
+	}}
+
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamDataIntervalTimeout = 1
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+
+	done := make(chan struct{})
+	var out string
+	var gotErr error
+	go func() {
+		defer close(done)
+		_, gotErr = svc.forwardAsRawChatCompletions(context.Background(), c, codeBuddyRawChatTestAccount(), body, "")
+		out = rec.Body.String()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("CodeBuddy 账号在中流静默时无限挂起（buddy 平台断流的直接机制）")
+	}
+
+	require.Contains(t, out, "started then hung", "首帧正文应已透传给客户端")
+	require.NotNil(t, gotErr, "停顿应作为错误上抛，供上层判失败/故障转移")
+	require.Contains(t, gotErr.Error(), "stalled", "错误应归因为上游停顿；实际: %v", gotErr)
 }

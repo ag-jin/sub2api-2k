@@ -3540,6 +3540,19 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
+			// Chat Completions 客户端按 SSE 协议把 `data: [DONE]` 当作流终止标志。
+			// 只发 error 帧而不发 [DONE] 时，部分客户端（含 OpenAI 兼容 SDK 的
+			// 流式迭代器）不会结束读取循环，会一直挂到自身读超时——对用户表现为
+			// "错误之后仍长时间卡住"。补一发 [DONE] 让下游能立即收尾。
+			//
+			// 仅对 Chat Completions 生效：/v1/messages（Anthropic 协议）与
+			// /v1/responses 各有自己的终止事件语义（response.failed 等），
+			// 追加 [DONE] 会污染协议。
+			if inboundIsChatCompletions(c) {
+				if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+					_ = c.Error(err)
+				}
+			}
 			flusher.Flush()
 		}
 		return

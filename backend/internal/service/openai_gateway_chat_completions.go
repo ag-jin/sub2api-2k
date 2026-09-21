@@ -764,6 +764,12 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		firstTokenCh = nil
 	}
 
+	// lastClientWriteAt 记录"最近一次真正把字节写给下游"的时刻，供保活判断使用。
+	// 与"上游任意一行到达"区分开：上游可以持续 trickle SSE 注释心跳，
+	// 那些行既不转发给客户端、也不构成语义输出，若用它判断保活，网关会误以为
+	// 下游一直在收到数据，从而**完全不发保活**，客户端整段停滞期内零字节。
+	lastClientWriteAt := time.Now()
+
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
@@ -927,6 +933,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					}
 					pendingSSE = pendingSSE[:0]
 					clientOutputStarted = !clientDisconnected
+					lastClientWriteAt = time.Now()
 					if clientDisconnected {
 						break
 					}
@@ -938,6 +945,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					)
 					break
 				}
+				lastClientWriteAt = time.Now()
 			}
 		}
 		if len(chunks) > 0 && !clientDisconnected && clientOutputStarted {
@@ -1096,8 +1104,17 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	// semanticAt 记录"最近一次收到**语义事件**"的时刻，供 data-interval 守卫使用。
+	//
+	// 历史缺陷：该守卫原先读的是"最后收到任意一行"的时刻，而扫描协程在每一行
+	// （含 SSE 注释心跳 `:` 开头）都会刷新它。上游只要每 <stream_data_interval_timeout
+	// 秒吐一个字节，守卫就永不触发，而客户端可能整段停滞期内零语义输出。
+	// 生产实证：322,685 行日志里 "data interval" 出现 0 次（守卫从未生效），
+	// 而同一时期存在 901/902/915 秒的请求以 "missing terminal event" 收场。
+	// 守卫口径必须是"有没有真正的进展"，不是"链路上有没有字节"。
+	var semanticAt int64
+	atomic.StoreInt64(&semanticAt, time.Now().UnixNano())
+
 	sendEvent := func(ev scanEvent) bool {
 		select {
 		case events <- ev:
@@ -1109,7 +1126,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	go func() {
 		defer close(events)
 		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 			if !sendEvent(scanEvent{line: scanner.Text()}) {
 				return
 			}
@@ -1129,7 +1145,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if keepaliveTicker != nil {
 		keepaliveCh = keepaliveTicker.C
 	}
-	lastDataAt := time.Now()
 	var parser openAICompatSSEFrameParser
 
 	for {
@@ -1153,12 +1168,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				return resultWithUsage(), newOpenAIUpstreamStreamReadError(ev.err)
 			}
-			lastDataAt = time.Now()
 			line := ev.line
 			frame, ok := parser.AddLine(line)
 			if !ok {
+				// 注释行/事件行等非终结行：不算语义进展（保活与守卫都不应被它续命）。
 				continue
 			}
+			// 解析出真实 data 帧 = 上游产生了语义事件，刷新守卫锚点。
+			atomic.StoreInt64(&semanticAt, time.Now().UnixNano())
 			if strings.TrimSpace(frame.Data) == "[DONE]" {
 				return missingTerminalErr()
 			}
@@ -1176,8 +1193,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			return nil, s.newOpenAIChatFirstTokenTimeoutError(c.Request.Context(), c, account, originalModel, requestID, time.Since(startTime))
 
 		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
+			// 以"最后一个语义事件"为锚点，而非"最后一个字节"：上游可以持续
+			// trickle 注释心跳来伪造活跃，从而让守卫永不触发（本次事故形态）。
+			lastSemantic := time.Unix(0, atomic.LoadInt64(&semanticAt))
+			if time.Since(lastSemantic) < streamInterval {
 				continue
 			}
 			if clientDisconnected {
@@ -1187,6 +1206,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("model", originalModel),
 				zap.Duration("interval", streamInterval),
+				zap.Int64("idle_semantic_ms", time.Since(lastSemantic).Milliseconds()),
 			)
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 
@@ -1197,7 +1217,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if refusalDetector.Enabled() && !clientOutputStarted {
 				continue
 			}
-			if time.Since(lastDataAt) < keepaliveInterval {
+			// 以"下游最后一次收到字节"为准，而不是上游最后一次发来任意一行：
+			// 上游可以持续 trickle 注释心跳（不会被转发给客户端）来伪造"有数据"，
+			// 若以此判断，连网关自身的保活都会被抑制，客户端整段停滞期内零字节。
+			if time.Since(lastClientWriteAt) < keepaliveInterval {
 				continue
 			}
 			// Send SSE comment as keepalive
@@ -1210,6 +1233,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				continue
 			}
 			c.Writer.Flush()
+			lastClientWriteAt = time.Now()
 		}
 	}
 }

@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -200,11 +203,32 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if clientStream || isCodeBuddy {
 		firstTokenTimeout = s.chatCompletionsFirstTokenTimeout()
 	}
-	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream || isCodeBuddy, token, customUA, grokCacheIdentity, firstTokenTimeout)
+
+	// 流停顿守卫：raw 直转路径除了"首 token 截止"之外，原本**没有任何中流空闲
+	// 判定**。上游在首帧之后挂住时（生产实证：buddy 链路出现 63–68 秒后客户端
+	// 放弃的 499，以及 WordBuddy 侧 900 秒级静默），网关会一直读下去，既不报错
+	// 也不收尾。这里按 stream_data_interval_timeout 监控上游空闲：超时即取消上游
+	// 请求，让本请求按可重试错误收尾，而不是把挂起原样暴露给用户。
+	//
+	// 用独立的子 context（而非直接取消调用方的 ctx）：这样取消来源可归因——
+	// 只有 stallGuard.Fired() 时才判定为上游停顿，客户端主动断开不误判。
+	stallIdle := s.streamDataIntervalTimeout()
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	defer stallCancel()
+	stallGuard := newUpstreamStallGuard(stallCtx, stallIdle, stallCancel)
+	defer stallGuard.stop()
+
+	resp, firstTokenGuard, err := s.sendCCUpstreamRequest(stallCtx, c, account, targetURL, upstreamBody, clientStream || isCodeBuddy, token, customUA, grokCacheIdentity, firstTokenTimeout)
 	if err != nil {
-		// 请求在首 token 截止前就挂起（连接/响应头阶段被守卫取消）：
-		// 归类为超时 failover，而非传输错误。守卫已在 sendCCUpstreamRequest
-		// 内释放，这里只根据 Fired() 判定归因。
+		// 首 token 截止前就挂起（连接/响应头阶段）：归类为超时 failover，而非传输
+		// 错误。守卫已在 sendCCUpstreamRequest 内释放，这里只按 Fired() 归因。
+		//
+		// 注意（代码事实，勿想当然）：**stallGuard 并不覆盖响应头等待阶段**。
+		// sendCCUpstreamRequestOnce 内部再次调用 detachUpstreamContext
+		// （openai_gateway_cc_pipeline.go 的 context.WithoutCancel），stallCtx 的
+		// cancel 到不了 transport；且此刻 onStall 钩子尚未注册。
+		// 该阶段的保护完全来自 firstTokenGuard（默认 60s，仅流式或 CodeBuddy）。
+		// 既有限制：非流式且非 CodeBuddy 的 raw 请求两者皆无（既有缺口，未恶化）。
 		if firstTokenGuard != nil && firstTokenGuard.Fired() {
 			return nil, s.newOpenAIChatFirstTokenTimeoutError(ctx, c, account, originalModel, "", time.Since(startTime))
 		}
@@ -224,6 +248,28 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if firstTokenGuard != nil {
 		// 守卫的停表/取消随响应体关闭兜底释放；首个数据块到达后由流循环停表。
 		resp.Body = &openAIRequestContextReadCloser{ReadCloser: resp.Body, cleanup: firstTokenGuard.close}
+	}
+	// 响应头到达视为一次真实产出，重置空闲计时后再进入读取阶段。
+	resp.Body = stallGuard.wrap(resp.Body)
+
+	// **关键**：本路径的上游请求经 detachUpstreamContext 用 context.WithoutCancel
+	// 剥离了取消链（设计意图：客户端断开后仍继续 drain 上游以完成计费），因此
+	// stallGuard 的 cancel() **到不了上游请求**，无法解除阻塞中的 Read。
+	// 故改为在守卫触发时关闭响应体来解阻塞。
+	//
+	// 关于依据（避免后人误引）：net/http **没有**文档化"Close 会中断挂起的 Read"
+	// 这一保证。实测机制是——响应体外层为 bodyEOFSignal，其 Close 在未见过 EOF 时
+	// 走 earlyCloseFn（net/http/transport.go），通知 persistConn.readLoop 由 transport
+	// **带外关闭连接**，使阻塞中的 socket 读报错返回（HTTP/2 为 pipe close）。
+	// 该行为经本仓实证：HTTP/1.1 与 HTTP/2 下 Close 均毫秒级解除阻塞、Close 返回 nil。
+	// 属实现细节，跨 Go 版本理论上可变；若失效，
+	// TestUpstreamStallGuard_OnStallHookUnblocksDetachedRead 会失败。
+	// 副作用已核：连接被丢弃不复用（非污染）、trackedBody 的 inFlight 正确释放、
+	// 与客户端断开的 drain 计费路径不冲突（守卫只在"上游也无产出"时介入）。
+	// 仅当守卫判定停顿（Fired）才生效，不影响正常读取。
+	if stallGuard != nil {
+		body := resp.Body
+		stallGuard.onStall(func() { _ = body.Close() })
 	}
 
 	// 7. Handle error response with failover
@@ -317,7 +363,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}, nil
 	}
 	if clientStream {
-		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), firstTokenGuard)
+		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), firstTokenGuard, stallGuard)
 	} else {
 		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
@@ -358,6 +404,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	startTime time.Time,
 	requestBodyLen int,
 	firstTokenGuard *openAIFirstOutputHeaderGuard,
+	stallGuard *upstreamStallGuard,
 ) (*OpenAIForwardResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -375,8 +422,93 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
 
+	// sawTerminal 记录上游是否给出过协议终止信号（[DONE] 或非空 finish_reason）。
+	// 旧实现从不校验该信号，导致上游半途断开时客户端收到"半截正文后流自然结束"，
+	// 无法区分"回答完整"与"被截断"——这正是下游把断流误当正常完成的原因。
+	sawTerminal := false
+
+	// writeMu 串行化所有对 c.Writer 的写入：keepalive goroutine 与读循环并发写，
+	// 不加锁会让 SSE 帧交错、破坏客户端解析。
+	//
+	// 并发状态约定（避免数据竞争）：clientDisconnected / clientOutputStarted /
+	// pendingLines 仅由本函数所在 goroutine 读写；keepalive goroutine 只读写下面
+	// 的 atomic 变量（outputStarted / keepaliveWriteFailed / lastWriteAt），
+	// 不触碰读循环的普通变量。
+	var writeMu sync.Mutex
+	var lastWriteAt int64
+	var outputStarted atomic.Bool
+	var keepaliveWriteFailed atomic.Bool
+	atomic.StoreInt64(&lastWriteAt, time.Now().UnixNano())
+
+	writeRaw := func(str string) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, err := c.Writer.WriteString(str)
+		return err
+	}
+	flushRaw := func() {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		c.Writer.Flush()
+	}
+
+	// 下游空闲保活：raw 直转路径原先完全没有 keepalive，上游在长思考/生成阶段
+	// 可以数十秒不发一个字节（实测单流曾出现 21.7s 静默窗口）。中间任何一跳
+	// （nginx / 隧道 / 客户端）都可能因零字节静默掐断连接，对用户表现为"无征兆断流"。
+	// 这里按 stream_keepalive_interval 补发 SSE 注释帧（eventsource 层直接忽略，
+	// 不进入客户端事件流）。
+	//
+	// **刻意只在正文开始输出之后保活**：正文之前提交响应头会固化 200 状态码，
+	// 使上层丧失"换号重试"能力（见 openAIForwardMayFailover——它要求响应未被写出，
+	// 或显式标记 SafeToFailoverAfterWrite）。首 token 前的等待因此交给首 token 超时
+	// 守卫处理，与另一条 Chat Completions 路径（openai_gateway_chat_completions.go
+	// 的 keepalive 分支同样在未开始输出时 continue）保持一致的取舍。
+	keepaliveInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamKeepaliveInterval > 0 {
+		keepaliveInterval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+	}
+	keepaliveStop := make(chan struct{})
+	keepaliveDone := make(chan struct{})
+	if keepaliveInterval > 0 {
+		go func() {
+			defer close(keepaliveDone)
+			ticker := time.NewTicker(keepaliveInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-keepaliveStop:
+					return
+				case <-ticker.C:
+				}
+				if !outputStarted.Load() || keepaliveWriteFailed.Load() {
+					continue
+				}
+				if time.Since(time.Unix(0, atomic.LoadInt64(&lastWriteAt))) < keepaliveInterval {
+					continue
+				}
+				writeMu.Lock()
+				_, err := c.Writer.WriteString(":\n\n")
+				if err == nil {
+					atomic.StoreInt64(&lastWriteAt, time.Now().UnixNano())
+					c.Writer.Flush()
+				}
+				writeMu.Unlock()
+				if err != nil {
+					keepaliveWriteFailed.Store(true)
+					return
+				}
+			}
+		}()
+	} else {
+		close(keepaliveDone)
+	}
+	defer func() {
+		close(keepaliveStop)
+		<-keepaliveDone
+	}()
+
 	writeLine := func(line string) {
-		if clientDisconnected {
+		if clientDisconnected || keepaliveWriteFailed.Load() {
 			return
 		}
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
@@ -386,7 +518,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if !clientOutputStarted {
 			writeStreamHeaders()
 			for _, pending := range pendingLines {
-				if _, werr := c.Writer.WriteString(pending + "\n"); werr != nil {
+				if werr := writeRaw(pending + "\n"); werr != nil {
 					clientDisconnected = true
 					logger.L().Debug("openai chat_completions raw: client disconnected, continuing to drain upstream for billing",
 						zap.Error(werr),
@@ -397,8 +529,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 			pendingLines = pendingLines[:0]
 			clientOutputStarted = true
+			// 响应头已提交、正文已开始：此后保活是安全的（响应身份已固化）。
+			outputStarted.Store(true)
+			atomic.StoreInt64(&lastWriteAt, time.Now().UnixNano())
 		}
-		if _, werr := c.Writer.WriteString(line + "\n"); werr != nil {
+		if werr := writeRaw(line + "\n"); werr != nil {
 			clientDisconnected = true
 			logger.L().Debug("openai chat_completions raw: client disconnected, continuing to drain upstream for billing",
 				zap.Error(werr),
@@ -412,12 +547,20 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
+			// 语义进展锚点：解析出真实 data 帧即刷新停顿守卫。
+			// 绝不能用"读到任意字节"当锚点——上游会滴流 SSE 注释心跳
+			// （生产实测帧 `: heartbeat`），那样守卫会被无限续命，
+			// 而客户端在该时段收不到任何语义输出（本次事故形态）。
+			stallGuard.touch()
 			terminal.ObserveDataLine(trimmedPayload)
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
 					usage = *u
+				}
+				if strings.TrimSpace(gjson.Get(payload, "choices.0.finish_reason").String()) != "" {
+					sawTerminal = true
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
@@ -443,14 +586,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 
 		writeLine(line)
+		atomic.StoreInt64(&lastWriteAt, time.Now().UnixNano())
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
-				c.Writer.Flush()
+				flushRaw()
 			}
 			continue
 		}
 		if !clientDisconnected && clientOutputStarted {
-			c.Writer.Flush()
+			flushRaw()
 		}
 	}
 
@@ -494,6 +638,25 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		errors.Is(scanErr, context.Canceled) ||
 		errors.Is(scanErr, context.DeadlineExceeded)
 
+	// **停顿归因必须先于截断判定**：守卫解阻塞的方式是关闭响应体，Close 之后
+	// scanner 既可能返回读错误、也可能直接干净 EOF。若只在错误分支归因，
+	// clean-EOF 形态会掉进下方"截断"分支被记成 stream_truncated，
+	// 错误语义与用户提示都失真。
+	// （本仓测试 TestForwardAsRawChatCompletions_MidStreamStallDoesNotHangForever 抓的就是这点。）
+	if stallGuard.Fired() {
+		logger.L().Warn("openai chat_completions raw: upstream stream stalled",
+			zap.String("request_id", requestID),
+			zap.Duration("idle", stallGuard.Idle()),
+			zap.Int64("account_id", account.ID),
+			zap.String("model", originalModel),
+		)
+		if !clientDisconnected && clientOutputStarted && !sawTerminal {
+			writeTerminalError(c, writeRaw, flushRaw, "upstream_stream_stalled",
+				fmt.Sprintf("Upstream produced no data for %s", stallGuard.Idle().Round(time.Second)))
+		}
+		return nil, upstreamStallError("chat.completions", stallGuard.Idle())
+	}
+
 	// 上游在任何终止信号之前结束：连接被 reset（scanErr != nil）或干净 EOF。
 	// 两者都不能再记成功——此前统一返回 nil error，把上游截断伪装成
 	// `HTTP 200 + usage 0/0`，客户端收到半截回答且 Ops 侧完全无感。
@@ -527,7 +690,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if len(pendingLines) > 0 {
 			writeStreamHeaders()
 			for _, pending := range pendingLines {
-				if _, werr := c.Writer.WriteString(pending + "\n"); werr != nil {
+				if werr := writeRaw(pending + "\n"); werr != nil {
 					clientDisconnected = true
 					logger.L().Debug("openai chat_completions raw: client disconnected during final flush",
 						zap.Error(werr),
@@ -537,13 +700,49 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				}
 			}
 			if !clientDisconnected {
-				c.Writer.Flush()
+				flushRaw()
 				clientOutputStarted = true
 			}
 		}
 	}
 
 	return resultWithUsage(), nil
+}
+
+// writeTerminalError 在响应头已提交、正文已开始输出之后，向下游补发一个可见的
+// 终止事件（标准 error 帧 + [DONE]），使客户端能够区分"回答完整"与"上游截断"。
+//
+// 为什么需要它：raw 直转路径此前在上游异常中断时既不写 error 帧也不写 [DONE]，
+// 只是让响应体自然结束。按 SSE 语义，客户端会把这种结束当作正常完成，于是
+// "断流"被静默吞掉（用户看到的是回答突然停住但界面显示成功）。
+//
+// [DONE] 必须跟在 error 帧之后：多数 OpenAI 兼容客户端只在收到 [DONE] 或
+// finish_reason 才结束读取循环，缺少它会导致客户端挂到自身读超时。
+func writeTerminalError(
+	c *gin.Context,
+	writeRaw func(string) error,
+	flushRaw func(),
+	code string,
+	message string,
+) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	payload, err := json.Marshal(gin.H{"error": gin.H{
+		"type":    "upstream_error",
+		"code":    code,
+		"message": message,
+	}})
+	if err != nil {
+		payload = []byte(`{"error":{"type":"upstream_error","message":"Upstream stream terminated unexpectedly"}}`)
+	}
+	if werr := writeRaw("data: " + string(payload) + "\n\n"); werr != nil {
+		return
+	}
+	if werr := writeRaw("data: [DONE]\n\n"); werr != nil {
+		return
+	}
+	flushRaw()
 }
 
 // ensureOpenAIChatStreamUsage 确保 raw Chat Completions 流式请求会让上游返回 usage。

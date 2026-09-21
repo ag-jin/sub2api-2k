@@ -2658,3 +2658,71 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
 	}
 }
+
+// TestLoadGatewayStreamGuardsActiveWithProductionConfigShape 锁定一个关键安全前提。
+//
+// 生产 /opt/sub2api-copy/data/config.yaml **没有 gateway: 段**（顶层只有
+// server/database/redis/jwt/default/rate_limit/timezone/totp/remote_codex）。
+// 断流修复依赖 gateway.* 的三个阈值：
+//   - stream_data_interval_timeout (默认 180)：停顿守卫的判定阈值，**0 表示禁用**
+//   - stream_keepalive_interval    (默认 10) ：中流保活间隔，0 表示禁用
+//   - chat_completions_first_token_timeout_seconds (默认 60)：首 token 兜底
+//
+// 若 viper 默认值未生效（例如被读成 0），守卫会被静默禁用——
+// 修复在本地测试全绿、上生产却完全不工作。本测试用**生产同形配置**证明默认值生效。
+func TestLoadGatewayStreamGuardsActiveWithProductionConfigShape(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	// 与生产 config.yaml 同形：有这些顶层段，但**没有 gateway:**
+	prodShape := `server:
+  port: 18080
+database:
+  host: 127.0.0.1
+  port: 5432
+  user: sub2api
+  password: sub2api
+  dbname: sub2api
+redis:
+  host: 127.0.0.1
+  port: 6379
+jwt:
+  secret: test-secret-for-production-shape
+default:
+  admin_email: admin@example.com
+rate_limit:
+  enabled: false
+timezone: Asia/Shanghai
+totp:
+  enabled: false
+remote_codex:
+  enabled: false
+`
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(prodShape), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	// 1) 停顿守卫必须被启用（非 0）
+	require.NotZero(t, cfg.Gateway.StreamDataIntervalTimeout,
+		"生产同形配置下 stream_data_interval_timeout 为 0 —— 停顿守卫会被静默禁用！")
+	require.Equal(t, 180, cfg.Gateway.StreamDataIntervalTimeout,
+		"停顿守卫默认阈值应为 180s")
+
+	// 2) 保活必须被启用（非 0）
+	require.NotZero(t, cfg.Gateway.StreamKeepaliveInterval,
+		"生产同形配置下 stream_keepalive_interval 为 0 —— 中流保活会被禁用！")
+	require.Equal(t, 10, cfg.Gateway.StreamKeepaliveInterval)
+
+	// 3) 首 token 兜底（0 合法但生产应为默认 60）
+	require.Equal(t, 60, cfg.Gateway.ChatCompletionsFirstTokenTimeoutSeconds)
+
+	// 4) 守卫节流参数随阈值推导，必须落在合法区间
+	require.GreaterOrEqual(t, cfg.Gateway.StreamDataIntervalTimeout, 30,
+		"默认阈值必须落在校验允许区间（0 或 30-300）")
+	t.Logf("生产同形配置 → interval=%ds keepalive=%ds firstToken=%ds",
+		cfg.Gateway.StreamDataIntervalTimeout,
+		cfg.Gateway.StreamKeepaliveInterval,
+		cfg.Gateway.ChatCompletionsFirstTokenTimeoutSeconds)
+}

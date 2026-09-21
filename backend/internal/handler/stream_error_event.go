@@ -178,3 +178,22 @@ func mapResponsesErrorCode(errType, code string) string {
 		return errType
 	}
 }
+
+// inboundIsChatCompletions 判断当前请求是否落在 Chat Completions 路由上。
+//
+// 与 inboundIsResponses 同源：用 FullPath 归一化后比较，底层路径（Request.URL.Path）
+// 兜底。Chat Completions 只以 `data: [DONE]` 作为流终止标志，因此中流错误帧之后
+// 需要补发它；而 /v1/messages 与 /v1/responses 有各自的协议终止事件，不能追加。
+func inboundIsChatCompletions(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	p := strings.TrimRight(c.FullPath(), "/")
+	if p == "" && c.Request != nil && c.Request.URL != nil {
+		p = strings.TrimRight(c.Request.URL.Path, "/")
+	}
+	if p == "" {
+		return false
+	}
+	return strings.HasSuffix(p, "/chat/completions")
+}

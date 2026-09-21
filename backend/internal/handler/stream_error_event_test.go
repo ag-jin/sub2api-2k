@@ -375,3 +375,29 @@ func TestMapResponsesErrorCode(t *testing.T) {
 	}
 	assert.Equal(t, gatewayQueueFullCode, mapResponsesErrorCode("rate_limit_error", gatewayQueueFullCode))
 }
+
+// ── 断流修复回归 C（中流错误后必须可终止）──────────────────────────────────
+//
+// 旧行为缺陷：Chat Completions 流中途中止时只下发 `event: error`，不发
+// `data: [DONE]`。按 SSE 协议 [DONE] 才是流终止标志，缺它的客户端会一直挂在
+// 读取循环里直到自身读超时——用户看到的是"报错之后仍然长时间卡住"。
+func TestOpenAIHandleStreamingAwareError_ChatCompletionsAppendsDoneAfterError(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointChatCompletions)
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "upstream gone", true)
+
+	body := w.Body.String()
+	assert.True(t, strings.HasPrefix(body, "event: error\n"), "got: %q", body)
+	assert.Contains(t, body, "data: [DONE]",
+		"Chat Completions 中流错误后必须补发 [DONE]，否则客户端不会结束读取循环")
+}
+
+// 反向锁定：/v1/messages（Anthropic 协议）不得被追加 [DONE]，否则污染协议。
+func TestGatewayHandleStreamingAwareError_MessagesDoesNotAppendDone(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointMessages)
+	h := &GatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+
+	assert.NotContains(t, w.Body.String(), "[DONE]",
+		"Anthropic 协议以 message_stop 终止，追加 [DONE] 会污染协议")
+}
