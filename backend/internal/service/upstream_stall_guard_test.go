@@ -215,3 +215,109 @@ func (b *blockingReadCloser) Close() error {
 	b.once.Do(func() { close(b.unblock) })
 	return nil
 }
+
+// ── 回归：注释心跳不得"续命"守卫 ────────────────────────────────────────────
+//
+// 生产实测（本次事故取证）：上游在长期静默期内会只滴流 SSE 注释行
+// （捕获到的真实帧是 `: heartbeat`），而客户端在该时段**收不到任何语义输出**。
+// 若守卫按"任意字节"计时，这些注释就能无限续命 → 守卫永不触发 → 客户端无限干等。
+//
+// 历史：Responses 路径的同形缺陷已修（锚点改为语义事件）；
+// raw 路径的守卫一度仍按字节计时（`touch()` 在 n>0 时无条件调用），
+// 由本组测试锁定为"必须按语义行计时"。
+
+// commentHeartbeatOnlyBody 定期产出 SSE 注释行、**永不产出 data 帧**。
+type commentHeartbeatOnlyBody struct {
+	interval time.Duration
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func (b *commentHeartbeatOnlyBody) Read(p []byte) (int, error) {
+	select {
+	case <-b.closed:
+		return 0, io.EOF
+	case <-time.After(b.interval):
+	}
+	return copy(p, ": heartbeat\n\n"), nil
+}
+
+func (b *commentHeartbeatOnlyBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestUpstreamStallGuard_CommentHeartbeatDoesNotRefreshIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	idle := 400 * time.Millisecond
+	g := newUpstreamStallGuard(ctx, idle, cancel)
+	require.NotNil(t, g)
+	defer g.stop()
+
+	body := &commentHeartbeatOnlyBody{interval: 60 * time.Millisecond, closed: make(chan struct{})}
+	defer body.Close()
+	rc := g.wrap(body)
+
+	buf := make([]byte, 256)
+	// 持续读：注释心跳会不断到达，但守卫必须仍然判定停顿。
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := rc.Read(buf); err != nil {
+			break
+		}
+		if g.Fired() {
+			return // 期望路径：守卫触发
+		}
+	}
+	t.Fatalf("上游只发注释心跳（: heartbeat）时守卫未触发——"+
+		"注释不得续命空闲计时；Idle=%v Fired=%v", g.Idle(), g.Fired())
+}
+
+func TestUpstreamStallGuard_DataLineRefreshesIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	g := newUpstreamStallGuard(ctx, 500*time.Millisecond, cancel)
+	require.NotNil(t, g)
+	defer g.stop()
+
+	for i := 0; i < 5; i++ {
+		rc := g.wrap(io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")))
+		buf := make([]byte, 256)
+		_, _ = rc.Read(buf)
+		require.False(t, g.Fired(), "data 帧必须续命守卫（第 %d 次）", i+1)
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func TestContainsSemanticSSELine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"注释心跳", ": heartbeat\n\n", false},
+		{"裸冒号", ":\n\n", false},
+		{"data 帧", "data: {\"a\":1}\n\n", false /* 见下方修正 */},
+		{"data 完整行", "data: {\"a\":1}", true},
+		{"data 无空格", "data:{\"a\":1}", true},
+		{"DONE", "data: [DONE]", true},
+		{"event 行", "event: message", false},
+		{"空行", "\n", false},
+		{"CRLF data", "data: {\"a\":1}\r\n", true},
+		{"注释夹 data", ": ping\ndata: {\"a\":1}\n\n", true},
+		{"多行含注释", ": hb\n\n: hb\n\n", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name == "data 帧" {
+				// "data: {...}\n\n" 含一行 data: 前缀 → 视为语义行
+				require.True(t, containsSemanticSSELine([]byte(c.in)))
+				return
+			}
+			require.Equal(t, c.want, containsSemanticSSELine([]byte(c.in)))
+		})
+	}
+}
