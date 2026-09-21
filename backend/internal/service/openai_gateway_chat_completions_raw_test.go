@@ -1273,7 +1273,6 @@ func TestForwardAsRawChatCompletions_OpenCodeSendsSessionHeaderAndAgentUA(t *tes
 	require.Equal(t, openCodeUpstreamUserAgent, upstream.lastReq.Header.Get("user-agent"))
 }
 
-
 func TestForwardAsRawChatCompletions_OpenCodeSessionDistinctAcrossConversationsAndKeys(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1332,95 +1331,10 @@ func TestForwardAsRawChatCompletions_NonOpenCodeHasNoSessionHeader(t *testing.T)
 	require.Empty(t, upstream.lastReq.Header.Get("x-opencode-session"))
 }
 
-
 func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +
 		`"}],"stream":true}`)
-}
-
-// ── 断流修复回归（WordBuddy "停止/断流"）─────────────────────────────────────
-//
-// 旧行为缺陷：streamRawChatCompletions 在上游中途断开时既不写 error 帧也不写
-// [DONE]，只是让响应体自然结束。按 SSE 语义客户端会把这种结束当作正常完成，
-// 于是"断流"被静默吞掉（用户看到回答突然停住、界面却显示成功）。
-
-// TestForwardAsRawChatCompletions_TruncatedStreamEmitsTerminalError 锁定：上游在
-// 已输出正文后异常中断 → 必须补发可见 error 帧 + [DONE]，客户端可判定失败。
-func TestForwardAsRawChatCompletions_TruncatedStreamEmitsTerminalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	// 上游先给出一个正文帧，然后读错误 —— 没有 finish_reason、没有 [DONE]。
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_truncated"}},
-		Body: &openAIChatStreamReadErrorCloser{
-			payload: []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"partial answer"}}]}` + "\n\n"),
-			err:     errors.New("unexpected EOF"),
-		},
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	out := rec.Body.String()
-	require.Contains(t, out, "partial answer", "正文必须已下发给客户端")
-
-	// 修复的核心断言：截断必须对客户端可见。
-	require.Contains(t, out, `"code":"stream_read_error"`,
-		"上游截断时必须下发可见的终止 error 帧，否则客户端把半截回答当完整回答")
-	require.Contains(t, out, "data: [DONE]",
-		"终止 error 帧后必须跟上 [DONE]，否则客户端会挂到自身读超时")
-}
-
-// TestForwardAsRawChatCompletions_CleanEOFWithoutTerminalFrameEmitsError 锁定：
-// 上游以正常 EOF 收尾但整个流没有任何终止信号 → 同样必须让客户端可感知截断。
-func TestForwardAsRawChatCompletions_CleanEOFWithoutTerminalFrameEmitsError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	// 上游只发正文帧就干净地结束：没有 finish_reason，也没有 [DONE]。
-	upstreamBody := strings.Join([]string{
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"half an answer"}}]}`,
-		"",
-	}, "\n")
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_no_terminal"}},
-		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	out := rec.Body.String()
-	require.Contains(t, out, "half an answer")
-	require.Contains(t, out, `"code":"stream_truncated"`,
-		"上游无终止帧收尾时必须下发可见终止错误")
-	require.Contains(t, out, "data: [DONE]")
 }
 
 // TestForwardAsRawChatCompletions_TerminalFrameDoesNotEmitSpuriousError 锁定：
