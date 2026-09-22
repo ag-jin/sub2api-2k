@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
+import { createAccountsViewTestRouter } from './accountsViewTestRouter'
 
 const {
   listAccounts,
@@ -168,6 +169,7 @@ describe('admin AccountsView bulk edit scope', () => {
   it('opens bulk edit in filtered-results mode from the bulk actions dropdown', async () => {
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: {
@@ -233,6 +235,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: {
@@ -302,6 +305,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: { template: '<div><slot name="table" /></div>' },
@@ -365,6 +369,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: { template: '<div><slot name="table" /><slot name="pagination" /></div>' },
@@ -440,6 +445,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: { template: '<div><slot name="table" /><slot name="pagination" /></div>' },
@@ -514,6 +520,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: { template: '<div><slot name="table" /></div>' },
@@ -586,6 +593,7 @@ describe('admin AccountsView bulk edit scope', () => {
 
     const wrapper = mount(AccountsView, {
       global: {
+      plugins: [createAccountsViewTestRouter()],
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
           TablePageLayout: { template: '<div><slot name="table" /></div>' },

@@ -6,6 +6,7 @@ import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
+import { createAccountsViewTestRouter } from './accountsViewTestRouter'
 
 // 外审 F2:AccountActionMenu emit 'create-spark-shadow',但 AccountsView 此前未监听,
 // 导致按钮点击无效。本测试通过真实组件引用 emit 该事件,断言父页面接线调用 API。
@@ -69,6 +70,7 @@ vi.mock('vue-i18n', async () => {
 const mountView = () =>
   mount(AccountsView, {
     global: {
+      plugins: [createAccountsViewTestRouter()],
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: {
@@ -212,6 +214,7 @@ describe('admin AccountsView — 外审 F2:spark 影子创建接线', () => {
 const mountViewWithRow = () =>
   mount(AccountsView, {
     global: {
+      plugins: [createAccountsViewTestRouter()],
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: {
