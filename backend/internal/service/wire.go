@@ -71,19 +71,33 @@ func ProvideCodeBuddyCheckinScheduler(
 	return scheduler
 }
 
-// ProvideCodeBuddyActivityScheduler 构造并启动活跃上报调度器（5.2）。
+// ProvideCodeBuddyActivityScheduler 构造活跃上报执行器（**不启动自动排程**）。
 //
-// 与签到调度器同款形态（每分钟 tick + 窗口内一次 + 当日去重），默认关闭。
+// # 为什么这里不调 Start()
+//
+// 用户 2026-09-22 裁定的三级合规分级把**活跃上报（/v2/report）归为 `full` 级
+// = 仅手动，不得进任何自动排程**。依据：它复刻官方客户端 `chat_request_send`
+// 事件形状，靠伪造对话活跃过 `chat_5` 门槛。授权记录与分级表见
+// `/Volumes/数据盘/网站/中转站/.scratch/codebuddy-impl/_briefs/00-shared.md`
+// 的「用户授权记录」节。
+//
+// 授权已给（功能要做），但授权**不含**"把它放进自动排程"——团队负责人
+// 2026-09-22 明确裁决走保守方案：能力保留、自动 tick 移除。
+//
+// 所以这里的语义是"构造一个**可被手动调用**的执行器"：
+//   - 不启动 cron → 进程起来后不会有任何自动上报；
+//   - 手动入口是 `RunActivityNow`（管理端点 / 运维脚本调用）；
+//   - 想恢复自动排程，必须先改它的分级并重走裁定——
+//     `TestCodeBuddyActivityIsNeverAutoScheduled` 会拦住顺手加回的 `Start()`。
+//
 // accountRepo 用于按候选 ID 取回完整账号——候选列表只带 ID/名字，而上报需要
-// 凭据（access_token / uid），所以必须再取一次完整账号。
+// 凭据（access_token / uid）。
 func ProvideCodeBuddyActivityScheduler(
 	codeBuddyAdminService *CodeBuddyAdminService,
 	accountRepo AccountRepository,
 	settingService *SettingService,
 ) *CodeBuddyActivityScheduler {
-	scheduler := NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
-	scheduler.Start()
-	return scheduler
+	return NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
 }
 
 // BuildInfo contains build information

@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -354,4 +357,104 @@ func TestCodeBuddyActivitySchedulerHealthySelfCheckNotCountedAsFailure(t *testin
 
 	require.Equal(t, 0, env.scheduler.codeBuddyActivitySelfCheckFailedForTest())
 	require.Equal(t, 3, env.runner.result.StreakDays)
+}
+
+// --- 合规守门：活跃上报是 full 级，不得进自动排程 ---
+
+// Scenario：**wire 的 provider 不得启动活跃上报的自动 tick**。
+//
+// 这是用户 2026-09-22 裁定的合规边界：活跃上报复刻官方客户端
+// `chat_request_send` 事件形状、靠伪造对话活跃过 `chat_5` 门槛，属 `full` 级
+// = **仅手动，不得进任何自动排程**（依据见 00-shared.md 的「用户授权记录」节）。
+//
+// 为什么要在**源码层面**断言而不是只测行为：行为测试需要真的把进程跑起来才
+// 能发现"它又开始自动跑了"，而这个改动通常是某人顺手加回一行 `scheduler.Start()`
+// ——那种改动不会让任何既有测试变红。这里直接盯住 provider 函数体。
+func TestCodeBuddyActivityIsNeverAutoScheduled(t *testing.T) {
+	source, err := os.ReadFile("wire.go")
+	require.NoError(t, err, "读不到 wire.go，测试失效（不是通过）")
+
+	body, ok := extractFuncBody(string(source), "ProvideCodeBuddyActivityScheduler")
+	require.True(t, ok, "wire.go 里找不到 ProvideCodeBuddyActivityScheduler；若已改名请同步本测试")
+
+	require.NotContains(t, body, ".Start()",
+		"活跃上报是 full 级（仅手动），provider 不得启动自动 tick —— 见文件头合规说明")
+	require.Contains(t, body, "NewCodeBuddyActivityScheduler(",
+		"provider 仍应构造执行器（保留手动调用能力）")
+}
+
+// Scenario：`Start` 的注释必须写明"仅手动 + 授权出处"，防止后来者不知情地加回。
+func TestCodeBuddyActivityStartCarriesComplianceWarning(t *testing.T) {
+	source, err := os.ReadFile("codebuddy_activity_scheduler.go")
+	require.NoError(t, err)
+	text := string(source)
+
+	require.Contains(t, text, "00-shared.md",
+		"必须写明授权/裁定的出处文件，便于后来者核实")
+	require.Contains(t, text, "仅手动",
+		"必须写明 full 级 = 仅手动")
+	require.Contains(t, text, "RunActivityNow",
+		"必须指明唯一的生产入口")
+}
+
+// extractFuncBody 取某个顶层函数的函数体（从签名到下一个顶层 func / 文件尾）。
+//
+// 用朴素扫描而不是 AST：这是**测试**，要能在解析失败时明确报"找不到"，
+// 而不是静默返回空体（空体会让 NotContains 恒真 = 假绿）。
+func extractFuncBody(source, funcName string) (string, bool) {
+	marker := "func " + funcName + "("
+	start := strings.Index(source, marker)
+	if start < 0 {
+		return "", false
+	}
+	// 从签名结束的 '{' 开始配对花括号。
+	open := strings.Index(source[start:], "{")
+	if open < 0 {
+		return "", false
+	}
+	open += start
+	depth := 0
+	for i := open; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[open : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// Scenario：手动入口 `RunActivityNow` 仍能执行（授权要求"保留能力"，只是不自动）。
+//
+// 与合规守门测试是一对：那个证明"不自动"，这个证明"手动可用"——
+// 只有前者会退化成"把功能删掉"，而授权明确要求功能保留。
+func TestRunActivityNowExecutesEvenWhenFeatureDisabled(t *testing.T) {
+	// 刻意用**未配置**（功能默认关闭）起环境：手动触发不该被开关挡住。
+	env := newCodeBuddyActivitySchedulerTestEnv(t, "",
+		newCodeBuddyActivityAccount(1, "u-1", "t-1"))
+	env.runner.candidates = []CodeBuddyCheckinCandidate{{AccountID: 1, Name: "cb-1"}}
+	env.runner.result = CodeBuddyActivityReportResult{Reported: 5, Expected: 5, Verified: true}
+
+	summary := env.scheduler.RunActivityNow(context.Background())
+
+	require.Empty(t, summary.Error)
+	require.Equal(t, 1, summary.Attempted, "手动触发应处理候选账号")
+	require.Equal(t, 1, summary.Reported, "手动触发不受平台功能开关限制")
+	require.Equal(t, 1, env.runner.reportCount())
+}
+
+// Scenario：候选列表拉取失败时，汇总里要能看出"是失败"而不是"没有账号"。
+func TestRunActivityNowReportsTopLevelFailureDistinctly(t *testing.T) {
+	env := newCodeBuddyActivitySchedulerTestEnv(t, "")
+	env.runner.listErr = errors.New("db down")
+
+	summary := env.scheduler.RunActivityNow(context.Background())
+
+	require.NotEmpty(t, summary.Error, "顶层失败必须显式报出，不能显示成 0 个账号")
+	require.Equal(t, 0, summary.Attempted)
+	require.Equal(t, 0, summary.Reported)
 }
