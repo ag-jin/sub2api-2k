@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,4 +83,84 @@ func TestCodeBuddyNormalizeBizCodeNumericForms(t *testing.T) {
 	require.Equal(t, "11-128", codeBuddyNormalizeBizCode("11-128"))
 	require.Equal(t, "11-128", codeBuddyNormalizeBizCode("  11-128  "))
 	require.Equal(t, "", codeBuddyNormalizeBizCode(nil))
+}
+
+// --- A6 P5：三级分级的调度边界（按动作拆）---
+
+// Scenario：full 级动作**只能是**领养 / 夜猫子 / 开学季；旅行领奖必须可自动。
+//
+// 这是团队负责人 2026-09-22 的裁定：分级按**动作性质**，不按通道整体。
+// 若有人把 travel_run（纯幂等领奖）也归成 full，自动排程会白白失去旅行领奖；
+// 反过来若把 adopt / night_cat / school 降级成 claim，伪造上报就会进自动排程
+// ——**那是用户裁定的合规红线**。
+func TestCodeBuddyGrowthFullTierIsExactlyTheForgeryActions(t *testing.T) {
+	needManual := map[string]bool{
+		CodeBuddyGrowthChannelAdopt:    true,
+		CodeBuddyGrowthChannelNightCat: true,
+		CodeBuddyGrowthChannelSchool:   true,
+	}
+
+	autoKeys := CodeBuddyGrowthAutoSchedulableChannelKeys()
+	autoSet := map[string]bool{}
+	for _, key := range autoKeys {
+		autoSet[key] = true
+	}
+
+	for key := range needManual {
+		if autoSet[key] {
+			t.Errorf("%s 是 full 级（含伪造活跃上报语义），不得出现在自动排程里", key)
+		}
+		if !CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			continue // 期望如此
+		}
+		t.Errorf("%s 不应允许自动调度", key)
+	}
+}
+
+// Scenario：纯幂等领奖的旅行动作**必须可自动**（不能被整条通道连坐）。
+func TestCodeBuddyGrowthTravelRunStaysAutoSchedulable(t *testing.T) {
+	for _, key := range []string{
+		CodeBuddyGrowthChannelTravelStatus,
+		CodeBuddyGrowthChannelTravelRun,
+		CodeBuddyGrowthChannelTrial,
+		CodeBuddyGrowthChannelStreak,
+	} {
+		if !CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			t.Errorf("%s 是只读或幂等领奖，应允许自动调度（按动作分级，勿连坐）", key)
+		}
+	}
+}
+
+// Scenario：未注册的通道键 fail-closed（不认识的通道不照跑）。
+func TestCodeBuddyGrowthUnknownChannelIsNeverAutoSchedulable(t *testing.T) {
+	for _, key := range []string{"", "nonexistent", "travel "} {
+		if CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			t.Errorf("未知通道 %q 必须 fail-closed（不允许自动调度）", key)
+		}
+	}
+}
+
+// Scenario：全表自洽——每个 spec 的分级合法、键唯一、rationale 非空。
+func TestCodeBuddyGrowthChannelRegistryIsInternallyConsistent(t *testing.T) {
+	seen := map[string]bool{}
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if seen[spec.Key] {
+			t.Fatalf("通道键重复：%q（重复会让分级互相覆盖）", spec.Key)
+		}
+		seen[spec.Key] = true
+		if !spec.Tier.IsValid() {
+			t.Errorf("通道 %s 的分级 %q 非法", spec.Key, spec.Tier)
+		}
+		if strings.TrimSpace(spec.Rationale) == "" {
+			t.Errorf("通道 %s 缺少分级理由（合规裁定要求逐条标明）", spec.Key)
+		}
+	}
+	// AutoSchedulable 必须与 full 的补集一致（防止有人只改一边）。
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		want := spec.Tier != GrowthTierFull
+		if spec.Tier.AutoSchedulable() != want {
+			t.Errorf("通道 %s：Tier=%s 但 AutoSchedulable()=%v，两者不一致",
+				spec.Key, spec.Tier, spec.Tier.AutoSchedulable())
+		}
+	}
 }
