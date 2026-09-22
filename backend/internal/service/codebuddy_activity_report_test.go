@@ -320,3 +320,107 @@ func TestCodeBuddyActivityEndpointPathsAreFixed(t *testing.T) {
 	require.Equal(t, "/activity/growth/streak", CodeBuddyActivityStreakPath)
 	require.NotEqual(t, codebuddy.CodeBuddyActivityReportPath, CodeBuddyActivityStreakPath)
 }
+
+// --- 必写测试 ④：条间 1.5s 间隔 ---
+
+// captureActivityGaps 记录 sleep 收到的间隔，并立即返回（不真等）。
+func captureActivityGaps(t *testing.T) *[]time.Duration {
+	t.Helper()
+	original := codeBuddyActivitySleep
+	gaps := &[]time.Duration{}
+	codeBuddyActivitySleep = func(ctx context.Context, d time.Duration) error {
+		*gaps = append(*gaps, d)
+		return ctx.Err()
+	}
+	t.Cleanup(func() { codeBuddyActivitySleep = original })
+	return gaps
+}
+
+// Scenario：同一账号内 5 条之间的间隔必须是 **1.5s**，且条与条之间都要等
+// （5 条 = 4 个间隔，最后一条后面不等）。
+//
+// ⚠️ 为什么必须专门测：其它用例统统把间隔压成 0（不然要真等 6 秒），
+// 于是"间隔到底是多少"**从未被断言过**——有人把它改成 0（秒发 5 条触发风控）
+// 或改成 10 秒（整轮超时），全套用例照样全绿。
+func TestReportCodeBuddyActivityGapsBetweenEventsAreOnePointFiveSeconds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == CodeBuddyActivityStreakPath {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"streak":{"days":1}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	gaps := captureActivityGaps(t)
+
+	account := newCodeBuddyActivityAccount(1, "u-1", "token-1")
+	svc := NewCodeBuddyAdminService(nil, newCodebuddyAdminTestRepo(account), nil).WithTestBaseURL(server.URL)
+
+	result := svc.ReportCodeBuddyActivity(context.Background(), account, 5)
+
+	require.NoError(t, result.Err)
+	require.Equal(t, 5, result.Reported)
+	require.Len(t, *gaps, 4, "5 条之间应有 4 个间隔（最后一条后面不再等）")
+	for i, gap := range *gaps {
+		require.Equal(t, 1500*time.Millisecond, gap,
+			"第 %d 个间隔应为 1.5s（避免秒发触发上游风控）", i+1)
+	}
+}
+
+// Scenario：上报条数可配——1 条时不产生任何间隔（不空等）。
+func TestReportCodeBuddyActivitySingleEventWaitsNothing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == CodeBuddyActivityStreakPath {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"streak":{"days":1}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	gaps := captureActivityGaps(t)
+
+	account := newCodeBuddyActivityAccount(1, "u-1", "token-1")
+	svc := NewCodeBuddyAdminService(nil, newCodebuddyAdminTestRepo(account), nil).WithTestBaseURL(server.URL)
+
+	result := svc.ReportCodeBuddyActivity(context.Background(), account, 1)
+
+	require.NoError(t, result.Err)
+	require.Equal(t, 1, result.Reported)
+	require.Empty(t, *gaps, "只有一条时不该产生间隔")
+}
+
+// Scenario：失败即停时，失败那条之后**不再等待**（不白等 1.5s）。
+func TestReportCodeBuddyActivityDoesNotWaitAfterFailure(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == CodeBuddyActivityStreakPath {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"streak":{"days":1}}}`))
+			return
+		}
+		mu.Lock()
+		attempts++
+		current := attempts
+		mu.Unlock()
+		if current >= 2 {
+			_, _ = w.Write([]byte(`{"code":"99999","msg":"boom"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	gaps := captureActivityGaps(t)
+
+	account := newCodeBuddyActivityAccount(1, "u-1", "token-1")
+	svc := NewCodeBuddyAdminService(nil, newCodebuddyAdminTestRepo(account), nil).WithTestBaseURL(server.URL)
+
+	result := svc.ReportCodeBuddyActivity(context.Background(), account, 5)
+
+	require.Error(t, result.Err)
+	require.Equal(t, 1, result.Reported)
+	// 第 1 条成功 → 等 1.5s → 第 2 条失败 → 停止，不再等。
+	require.Len(t, *gaps, 1, "失败后不该再有间隔等待")
+}
