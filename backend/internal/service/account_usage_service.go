@@ -214,6 +214,21 @@ type UpstreamBalanceUsage struct {
 	Status    string                `json:"status,omitempty"`
 	Stale     bool                  `json:"stale,omitempty"`
 	Error     string                `json:"error,omitempty"`
+	// Expiries 到期列表（codebuddy 积分：按套餐的 CycleEndTime，仅含仍有余额的套餐，
+	// 按到期时间升序）。其他平台不产出本字段。
+	Expiries []UpstreamBalanceExpiry `json:"expiries,omitempty"`
+	// CachedAgeSeconds 本次响应取自缓存时的缓存年龄（秒）；0 表示实时查询。
+	// 用户据此区分"这是实时值还是缓存值"。
+	CachedAgeSeconds int `json:"cached_age_seconds,omitempty"`
+	// Cached 本次响应是否来自缓存（与 CachedAgeSeconds>0 等价，独立给出便于前端判读）。
+	Cached bool `json:"cached,omitempty"`
+}
+
+// UpstreamBalanceExpiry 一笔即将到期的余额（codebuddy 积分套餐口径）。
+// Amount 是该到期批次当前仍有余额的积分量；At 是按上游墙钟（UTC+8）解释的到期时刻。
+type UpstreamBalanceExpiry struct {
+	At     time.Time `json:"at"`
+	Amount float64   `json:"amount"`
 }
 
 // UpstreamBalanceStats is one period of upstream usage stats.
@@ -1634,18 +1649,20 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 		return entry.usageInfo, nil
 	}
 	if !force {
+		// 缓存命中时把缓存年龄写进返回值（前端据此标注"缓存"）——写的是返回对象的
+		// 副本，不动缓存里的原件本身。
 		if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && !isError(entry) && entry.usageInfo != nil {
-			return entry.usageInfo, nil
+			return withCodeBuddyCacheAge(entry.usageInfo, entry.timestamp), nil
 		}
 	}
 
 	result, flightErr, _ := s.cache.codebuddyFlight.Do(fmt.Sprintf("codebuddy-credits:%d", account.ID), func() (any, error) {
 		if entry, ok := cachedEntry(); ok && isError(entry) && time.Since(entry.timestamp) < apiErrorCacheTTL {
-			return entry.usageInfo, nil
+			return withCodeBuddyCacheAge(entry.usageInfo, entry.timestamp), nil
 		}
 		if !force {
 			if entry, ok := cachedEntry(); ok && time.Since(entry.timestamp) < apiCacheTTL && !isError(entry) && entry.usageInfo != nil {
-				return entry.usageInfo, nil
+				return withCodeBuddyCacheAge(entry.usageInfo, entry.timestamp), nil
 			}
 		}
 
@@ -1659,6 +1676,7 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 			AccessToken: account.GetCodeBuddyAccessToken(),
 			ProxyURL:    proxyURL,
 			AccountID:   account.ID,
+			Account:     account, // realm 判定用（决定计费域名与路径族）
 		})
 		now := time.Now()
 		if err != nil {
@@ -1676,6 +1694,9 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 				stale.UpstreamBalance.Stale = true
 				stale.UpstreamBalance.Status = "stale"
 				stale.UpstreamBalance.Error = codeBuddyCreditsErrorCode(err)
+				// 降级返回的是"上一轮成功的值"：如实标出它有多旧。
+				stale.UpstreamBalance.Cached = true
+				stale.UpstreamBalance.CachedAgeSeconds = codeBuddyCacheAgeSeconds(cacheTimestampOf(lastSuccess, now))
 				stale.Error = codeBuddyCreditsErrorCode(err)
 				// 401/凭据失效语义同样写入值通道（needs_reauth 供 channel
 				// monitor 的 usageFailureInfo 口径消费）。
@@ -1687,6 +1708,8 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 			return degraded, nil
 		}
 		usage := &UsageInfo{Source: "active", UpdatedAt: &now, UpstreamBalance: snapshot}
+		// 真实查询成功才记积分流水（缓存命中/降级都不记）。
+		s.recordCodeBuddyCreditsChange(ctx, account, snapshot, now)
 		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil
 	})
@@ -1698,6 +1721,36 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 		return nil, fmt.Errorf("codebuddy credits unavailable")
 	}
 	return usage, nil
+}
+
+// withCodeBuddyCacheAge 克隆值通道并标注缓存年龄。缓存条目在 Store 后可能仍被
+// 单飞内的降级路径改写，直接改原件会有并发读写风险，故一律返回副本。
+func withCodeBuddyCacheAge(source *UsageInfo, cachedAt time.Time) *UsageInfo {
+	clone := cloneCodeBuddyCreditsUsage(source)
+	if clone == nil || clone.UpstreamBalance == nil {
+		return clone
+	}
+	clone.UpstreamBalance.Cached = true
+	clone.UpstreamBalance.CachedAgeSeconds = codeBuddyCacheAgeSeconds(cachedAt)
+	return clone
+}
+
+// codeBuddyCacheAgeSeconds 缓存年龄（秒，钳非负）。
+func codeBuddyCacheAgeSeconds(cachedAt time.Time) int {
+	age := int(time.Since(cachedAt).Seconds())
+	if age < 0 {
+		return 0
+	}
+	return age
+}
+
+// cacheTimestampOf 取"这份快照是什么时候拿到的"：优先 UsageInfo.UpdatedAt
+// （成功/降级的公共字段），缺失时退回 now（宁可标 0 秒，不编造年龄）。
+func cacheTimestampOf(source *UsageInfo, fallback time.Time) time.Time {
+	if source != nil && source.UpdatedAt != nil {
+		return *source.UpdatedAt
+	}
+	return fallback
 }
 
 func codeBuddyCreditsErrorCode(err error) string {

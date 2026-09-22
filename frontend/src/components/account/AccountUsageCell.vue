@@ -489,6 +489,29 @@
               t('admin.accounts.codebuddy.usage.creditsValue', { value: codebuddyBalanceDisplay })
             }}</strong>
           </div>
+          <!-- 缓存可见性：用户要能分辨"这是实时值还是缓存值" -->
+          <div
+            v-if="codebuddyCacheHint"
+            data-testid="codebuddy-balance-cached"
+            class="text-[9px] text-gray-400 dark:text-gray-500"
+          >
+            {{ codebuddyCacheHint }}
+          </div>
+          <!-- 到期列表（后端 Expiries：仅含仍有余额的套餐，升序） -->
+          <div
+            v-for="(expiry, index) in codebuddyExpiries"
+            :key="index"
+            data-testid="codebuddy-balance-expiry"
+            class="flex items-center justify-between gap-2 text-[9px] text-gray-500 dark:text-gray-400"
+          >
+            <span>⏳ {{ t('admin.accounts.codebuddy.usage.expiresLabel') }}</span>
+            <span>{{
+              t('admin.accounts.codebuddy.usage.expiresValue', {
+                amount: parseFloat(expiry.amount.toFixed(2)),
+                at: formatCodebuddyExpiry(expiry.at)
+              })
+            }}</span>
+          </div>
           <div
             v-if="codebuddyBalanceErrorLabel"
             data-testid="codebuddy-balance-error"
@@ -950,6 +973,32 @@ const codebuddyBalanceDisplay = computed(() => {
   // 整数不带小数；小数最多两位且去掉多余的尾零（积分是数量，不是货币金额）
   return String(parseFloat(value.toFixed(2)))
 })
+
+// 缓存年龄标注：后端命中缓存时在 upstream_balance 上带 cached/cached_age_seconds。
+// 实时查询（cached 非真）不标注。
+const codebuddyCacheHint = computed(() => {
+  if (props.account.platform !== 'codebuddy') return null
+  const snapshot = usageInfo.value?.upstream_balance
+  if (!snapshot?.cached) return null
+  return t('admin.accounts.codebuddy.usage.cachedHint', {
+    seconds: Math.max(0, Math.round(snapshot.cached_age_seconds ?? 0))
+  })
+})
+
+// 到期列表（仅 codebuddy 产出；空数组时整块不渲染）。
+const codebuddyExpiries = computed(() => {
+  if (props.account.platform !== 'codebuddy') return []
+  const list = usageInfo.value?.upstream_balance?.expiries
+  if (!Array.isArray(list)) return []
+  return list.filter(item => !!item && typeof item.amount === 'number' && Number.isFinite(item.amount))
+})
+
+// 到期时刻按本地时区展示（后端已把上游 UTC+8 墙钟解释成绝对时刻）。
+function formatCodebuddyExpiry(at: string): string {
+  const parsed = new Date(at)
+  if (Number.isNaN(parsed.getTime())) return at
+  return parsed.toLocaleString()
+}
 
 // 降级值通道：error 文本透传，无文本时按 status/stale 回退通用文案。
 const codebuddyBalanceErrorLabel = computed(() => {

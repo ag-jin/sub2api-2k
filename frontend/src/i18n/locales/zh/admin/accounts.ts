@@ -357,7 +357,10 @@ export default {
         },
         usage: {
           balanceLabel: '余额',
-          creditsValue: '{value} 积分'
+          creditsValue: '{value} 积分',
+          cachedHint: '缓存 {seconds}s 前',
+          expiresLabel: '到期',
+          expiresValue: '{amount} 积分 · {at}'
         },
         checkin: {
           action: '每日签到',

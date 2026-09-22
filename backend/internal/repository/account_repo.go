@@ -61,6 +61,9 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 	"upstream_billing_probe",
 	"upstream_billing_rate_sync",
 	"ollama_cloud_usage",
+	// codebuddy 积分留痕（余额基线/流水/去重键）：由出站余额轮询（3min/账号）写入，
+	// 属观测数据而非调度相关配置——不中性化会让每次轮询都入队一次调度变更事件。
+	"codebuddy_credits_ledger",
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
