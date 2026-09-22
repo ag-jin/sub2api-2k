@@ -1308,6 +1308,139 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 	require.Empty(t, got.Data[0].CreatedAt)
 }
 
+// CodeBuddy 分组无 model_mapping 时，/v1/models 必须回落到平台静态清单。
+// 回归：defaultModelIDsForPlatform 曾缺 codebuddy 分支，落 default 返回
+// claude.DefaultModels，客户端拿到的模型名上游一个都不认。
+func TestDefaultModelIDsForPlatform_CodeBuddyUsesStaticList(t *testing.T) {
+	got := defaultModelIDsForPlatform(service.PlatformCodeBuddy)
+	require.Equal(t, service.CodeBuddyStaticModelIDs(), got)
+	require.Contains(t, got, "auto")
+	require.Contains(t, got, "hy3")
+	require.NotContains(t, got, "claude-sonnet-4-6")
+}
+
+// Scenario: CodeBuddy 分组下 GET /v1/models 返回 CodeBuddy 模型表而非 Claude 表。
+func TestGatewayModels_CodeBuddyGroupFallsBackToCodeBuddyModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(51)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:          1,
+						Platform:    service.PlatformCodeBuddy,
+						Type:        service.AccountTypeAPIKey,
+						Credentials: map[string]any{"base_url": "https://copilot.tencent.com"},
+					},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformCodeBuddy},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, service.CodeBuddyStaticModelIDs(), modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6")
+}
+
+// Scenario: 分组级白名单开启时，CodeBuddy 的回落来源同样是平台静态清单，
+// 通配白名单必须能在 codebuddy 模型上展开。
+func TestGatewayModels_CodeBuddyGroupAllowlistExpandsAgainstStaticList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(52)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:          1,
+						Platform:    service.PlatformCodeBuddy,
+						Type:        service.AccountTypeAPIKey,
+						Credentials: map[string]any{"base_url": "https://copilot.tencent.com"},
+					},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{
+			ID:       groupID,
+			Platform: service.PlatformCodeBuddy,
+			ModelAllowlist: service.GroupModelAllowlist{
+				Enabled: true,
+				Models:  []string{"hy3", "minimax-m3"},
+			},
+		},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"hy3", "minimax-m3"}, modelIDsForTest(got.Data))
+}
+
+// Scenario: Codex 清单路径对 CodeBuddy 分组也用平台静态清单（否则 Codex
+// 客户端会拿到 Claude slug）。
+func TestGatewayCodexModels_CodeBuddyWithoutMappingUsesStaticList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const groupID int64 = 53
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{
+			groupID: {
+				{
+					ID:          1,
+					Platform:    service.PlatformCodeBuddy,
+					Type:        service.AccountTypeAPIKey,
+					Credentials: map[string]any{"base_url": "https://copilot.tencent.com"},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/models?client_version=0.147.0", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformCodeBuddy},
+	})
+
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.NotEmpty(t, got.Models)
+
+	slugs := make([]string, 0, len(got.Models))
+	for _, model := range got.Models {
+		slugs = append(slugs, model.Slug)
+	}
+	require.Contains(t, slugs, "auto")
+	require.NotContains(t, slugs, "claude-sonnet-4-6")
+}
+
 func modelIDsForTest(models []gatewayModelItemForTest) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {

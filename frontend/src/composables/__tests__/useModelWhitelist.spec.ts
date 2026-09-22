@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/admin/accounts', () => ({
@@ -169,16 +171,35 @@ describe('useModelWhitelist', () => {
   })
 
   describe('codebuddy platform whitelist', () => {
-    it('exposes the codebuddy fallback model list', () => {
-      const models = getModelsByPlatform('codebuddy')
-      for (const model of [
-        'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
-        'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
-        'deepseek-v4-pro', 'deepseek-v4-flash',
-        'minimax-m3-pay', 'hy3-preview-agent', 'auto'
-      ]) {
-        expect(models).toContain(model)
+    // 前端清单与后端 codeBuddyStaticModels 必须逐项等值：白名单模式据此生成
+    // model_mapping，任何一侧多一项或少一项都会造成"看得见、一选就报不支持"。
+    // 这里直接读后端源码取权威清单，而不是在前端再抄一份常量——抄一份只会
+    // 把漂移从"清单不同步"变成"测试常量不同步"，照样漏。
+    const backendModels = (() => {
+      const source = readFileSync(
+        resolve(__dirname, '../../../../backend/internal/service/account_codebuddy.go'),
+        'utf8'
+      )
+      const block = /var codeBuddyStaticModels = \[\]string\{([\s\S]*?)\n\}/
+      const match = source.match(block)
+      if (!match) {
+        throw new Error('未能在 backend/internal/service/account_codebuddy.go 中定位 codeBuddyStaticModels')
       }
+      return [...match[1].matchAll(/"([^"]+)"/g)].map(m => m[1])
+    })()
+
+    it('backend static list is readable and non-empty (test harness sanity)', () => {
+      // 守卫：正则一旦失效必须显式失败，不能退化成"空集 == 空集"的假绿。
+      expect(backendModels.length).toBeGreaterThanOrEqual(14)
+      expect(backendModels).toContain('auto')
+    })
+
+    it('exposes exactly the backend codebuddy static model list', () => {
+      const models = getModelsByPlatform('codebuddy')
+
+      expect(models.slice().sort()).toEqual(backendModels.slice().sort())
+      // 顺序断言：auto 置顶（与后端 codeBuddyStaticModels 的契约一致）。
+      expect(models[0]).toBe('auto')
     })
 
     it('has no preset mappings for codebuddy', () => {

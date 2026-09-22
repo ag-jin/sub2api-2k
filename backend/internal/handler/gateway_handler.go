@@ -1185,6 +1185,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeGrokModelsList(c, xai.DefaultModelIDs())
 		return
 	}
+	if platform == service.PlatformCodeBuddy {
+		// CodeBuddy 上游不提供模型列表端点，回落平台静态清单。此处曾直接落到
+		// 末尾的 claude.DefaultModels，客户端拿到的模型名上游一个都不认
+		// （2026-09-22 P0-1）；defaultModelIDsForPlatform 的 codebuddy 分支
+		// 只覆盖白名单来源，无映射的普通分组走的是这条兜底。
+		writeModelsList(c, platform, defaultModelIDsForPlatform(platform))
+		return
+	}
 
 	writeModelsListResponse(c, claude.DefaultModels)
 }
@@ -1453,6 +1461,11 @@ func defaultModelIDsForPlatform(platform string) []string {
 		return xai.DefaultModelIDs()
 	case service.PlatformOpenCodeGo:
 		return service.DefaultOpenCodeGoModelIDs()
+	case service.PlatformCodeBuddy:
+		// CodeBuddy 上游不提供模型列表端点，唯一的清单来源是平台静态清单。
+		// 缺此分支时回落 default 返回 claude.DefaultModels，客户端拿到的模型名
+		// 上游一个都不认（2026-09-22 P0-1 回归）。
+		return service.CodeBuddyStaticModelIDs()
 	case service.PlatformComposite:
 		ids := make([]string, 0)
 		seen := make(map[string]struct{})

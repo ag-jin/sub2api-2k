@@ -16,15 +16,19 @@ const opencodeModels = [
   'muse-spark-1.2', 'muse-spark-1.2-contributor'
 ]
 
-// CodeBuddy（来源：codebuddy2api converter.py 回退清单 @ f717db6f；auto 为兜底别名，豁免白名单校验。
-// 与后端静态清单 codeBuddyStaticModels 保持一致；deepseek-v4.1-flash 为上游 auto 实测解析出的模型）
+// CodeBuddy（来源：后端静态清单 backend/internal/service/account_codebuddy.go 的
+// codeBuddyStaticModels；上游 copilot.tencent.com 无模型列表端点，该清单是唯一权威来源）。
+// 上游一个模型列表端点都不提供，故两边必须逐项一致——漂移会让白名单模式的账号
+// 生成缺项的 model_mapping，用户在列表里看得见、一选就报"该账号不支持"。
+// 与 useModelWhitelist.spec.ts 的等值断言配套：改这里必须同步改后端，反之亦然。
+// auto 为兜底别名，豁免白名单校验；deepseek-v4.1-flash 为上游 auto 实测解析出的模型。
 const codebuddyModels = [
-  'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
-  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
-  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4.1-flash',
-  'minimax-m3-pay',
-  'hy3-preview-agent',
-  'auto'
+  'auto',
+  'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4.1-flash',
+  'glm-5.1', 'glm-5.2', 'glm-5v-turbo',
+  'hy3', 'hy3-preview', 'hy3-preview-agent',
+  'kimi-k2.5', 'kimi-k2.6', 'kimi-k2.7',
+  'minimax-m3', 'minimax-m3-pay'
 ]
 
 // OpenAI
