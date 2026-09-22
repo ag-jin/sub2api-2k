@@ -52,6 +52,18 @@
         <button @click="$emit('toggle-schedulable', false)" class="btn btn-warning btn-sm">{{ t('admin.accounts.bulkActions.disableScheduling') }}</button>
         <button @click="$emit('edit-selected')" class="btn btn-primary btn-sm">{{ t('admin.accounts.bulkActions.edit') }}</button>
       </template>
+      <button
+        data-test="codebuddy-checkin"
+        :disabled="checkinRunning"
+        class="btn btn-secondary btn-sm"
+        @click="$emit('checkin-codebuddy')"
+      >
+        {{
+          checkinRunning
+            ? t('admin.accounts.bulkActions.checkinRunning')
+            : t('admin.accounts.bulkActions.checkinCodeBuddy')
+        }}
+      </button>
       <button @click="$emit('edit-filtered')" class="btn btn-primary btn-sm">
         {{ t('admin.accounts.bulkEdit.submit') }}
       </button>
@@ -67,6 +79,7 @@ defineProps<{
   totalResults: number
   selectingAll: boolean
   allResultsSelected: boolean
+  checkinRunning?: boolean
 }>()
 
 defineEmits([
@@ -79,7 +92,8 @@ defineEmits([
   'toggle-schedulable',
   'reset-status',
   'refresh-token',
-  'probe-upstream-billing'
+  'probe-upstream-billing',
+  'checkin-codebuddy'
 ])
 
 const { t } = useI18n()

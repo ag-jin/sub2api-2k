@@ -7022,8 +7022,120 @@
         </div>
         <!-- /Tab: Login Agreement -->
 
-	        <!-- Tab: Features (功能开关) -->
+        <!-- Tab: Features (功能开关) -->
         <div v-show="activeTab === 'features'" class="space-y-6">
+
+        <!-- 平台功能：各平台的平台级功能开关，按平台分别配置（服务端注册表驱动） -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.platformFeatures.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.platformFeatures.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <p v-if="platformFeaturesLoading" class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.platformFeatures.loading') }}
+            </p>
+            <p
+              v-else-if="platformFeatureGroups.length === 0"
+              class="text-sm text-gray-500 dark:text-gray-400"
+            >
+              {{ t('admin.settings.features.platformFeatures.empty') }}
+            </p>
+            <template v-else>
+              <div
+                v-for="group in platformFeatureGroups"
+                :key="group.platform"
+                class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+              >
+                <div class="mb-3 flex items-center gap-2">
+                  <!-- 注册表用普通 string 标识平台；不在已知清单里时 PlatformIcon
+                       自行兜底，不因新平台未登记而渲染失败 -->
+                  <PlatformIcon
+                    :platform="(group.platform as GroupPlatform)"
+                    size="sm"
+                  />
+                  <span class="text-sm font-medium text-gray-900 dark:text-white">
+                    {{ platformDisplayLabel(group.platform) }}
+                  </span>
+                </div>
+                <div
+                  v-for="feature in group.features"
+                  :key="`${group.platform}:${feature.key}`"
+                  class="space-y-3 border-t border-gray-100 py-3 first:border-t-0 first:pt-0 dark:border-dark-700"
+                >
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {{ feature.title || feature.key }}
+                      </label>
+                      <p
+                        v-if="feature.description"
+                        class="mt-0.5 text-xs text-gray-500 dark:text-gray-400"
+                      >
+                        {{ feature.description }}
+                      </p>
+                    </div>
+                    <Toggle v-model="feature.value.enabled" />
+                  </div>
+
+                  <!-- time_range：时段语义 = 时段内执行一次 -->
+                  <div
+                    v-if="feature.kind === 'time_range' && feature.value.enabled && feature.value.start && feature.value.end"
+                    class="rounded-lg bg-gray-50 p-3 dark:bg-dark-700/40"
+                  >
+                    <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.features.platformFeatures.windowHint') }}
+                    </p>
+                    <div class="flex flex-wrap items-center gap-3">
+                      <label class="text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t('admin.settings.features.platformFeatures.start') }}
+                      </label>
+                      <input
+                        type="time"
+                        class="input w-32"
+                        :value="timeOfDayToHHMMBound(feature.value.start)"
+                        @change="setTimeOfDay(feature.value, 'start', $event)"
+                      />
+                      <label class="text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t('admin.settings.features.platformFeatures.end') }}
+                      </label>
+                      <input
+                        type="time"
+                        class="input w-32"
+                        :value="timeOfDayToHHMMBound(feature.value.end)"
+                        @change="setTimeOfDay(feature.value, 'end', $event)"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3">
+                <button
+                  class="btn btn-primary btn-sm"
+                  :disabled="platformFeaturesSaving"
+                  @click="savePlatformFeatures"
+                >
+                  {{
+                    platformFeaturesSaving
+                      ? t('admin.settings.features.platformFeatures.saving')
+                      : t('admin.settings.features.platformFeatures.save')
+                  }}
+                </button>
+                <span
+                  v-if="platformFeaturesSaved"
+                  class="text-xs text-green-600 dark:text-green-400"
+                >
+                  {{ t('admin.settings.features.platformFeatures.saved') }}
+                </span>
+              </div>
+            </template>
+          </div>
+        </div>
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -8849,6 +8961,7 @@ import type {
 } from "@/api/admin/settings";
 import type {
   AdminGroup,
+  GroupPlatform,
   LoginAgreementDocument,
   NotifyEmailEntry,
   Proxy,
@@ -8887,6 +9000,13 @@ import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSi
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
 import { useAppStore } from "@/stores";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
+import PlatformIcon from "@/components/common/PlatformIcon.vue";
+import { platformLabel as sharedPlatformLabel } from "@/utils/platformColors";
+import {
+  usePlatformFeatures,
+  timeOfDayToHHMM,
+  applyHHMMToTimeOfDay,
+} from "@/composables/usePlatformFeatures";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
 import {
   isRegistrationEmailSuffixDomainValid,
@@ -8907,6 +9027,45 @@ const appStore = useAppStore();
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
 const isZhLocale = computed(() => locale.value.startsWith("zh"));
+
+// --- 平台功能设置（按平台分别配置的平台级功能开关）---
+// 状态逻辑抽在 composable 里（可单测）；这里只做绑定与提示。
+const {
+  groups: platformFeatureGroups,
+  loading: platformFeaturesLoading,
+  saving: platformFeaturesSaving,
+  saved: platformFeaturesSaved,
+  load: loadPlatformFeatures,
+  save: savePlatformFeatures,
+} = usePlatformFeatures({
+  onError: (key) => {
+    const i18nKey =
+      key === 'loadFailed'
+        ? 'admin.settings.features.platformFeatures.loadFailed'
+        : 'admin.settings.features.platformFeatures.saveFailed';
+    appStore.showError(t(i18nKey));
+  },
+});
+
+/** 平台显示名：复用全站共享映射（与侧边栏/账号页一致，避免第三份清单漂移）。 */
+function platformDisplayLabel(platform: string): string {
+  return sharedPlatformLabel(platform);
+}
+
+function timeOfDayToHHMMBound(value?: { hour: number; minute: number }): string {
+  return timeOfDayToHHMM(value);
+}
+
+function setTimeOfDay(
+  target: { start?: { hour: number; minute: number }; end?: { hour: number; minute: number } },
+  field: "start" | "end",
+  event: Event,
+): void {
+  const raw = (event.target as HTMLInputElement | null)?.value ?? "";
+  applyHHMMToTimeOfDay(target, field, raw);
+}
+
+onMounted(loadPlatformFeatures);
 
 function localText(zh: string, en: string): string {
   return isZhLocale.value ? zh : en;

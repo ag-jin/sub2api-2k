@@ -14,6 +14,26 @@ export default {
         payment: 'Payment',
       },
       features: {
+        platformFeatures: {
+          title: 'Platform Features',
+          description:
+            'Configure platform-level feature toggles per platform. Features are registered by each platform and aggregated here; platforms without configuration use their own defaults.',
+          loading: 'Loading…',
+          empty: 'No platform features are registered.',
+          save: 'Save',
+          saving: 'Saving…',
+          saved: 'Saved',
+          saveFailed: 'Failed to save',
+          loadFailed: 'Failed to load platform features',
+          enabled: 'Enabled',
+          window: 'Time window',
+          windowHint:
+            'Runs once within this window (not outside it; skips if already run today).',
+          start: 'Start',
+          end: 'End',
+          closed: 'Off',
+          open: 'On',
+        },
         channelMonitor: {
           title: 'Channel Monitor',
           description: 'Choose either V1 active probes or V2 passive usage monitoring. When disabled, both background jobs stop and the user entry is hidden.',

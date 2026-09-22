@@ -55,8 +55,42 @@ export async function checkin(id: number): Promise<CodeBuddyCheckinResponse> {
   return data
 }
 
+/** 单账号的非成功明细（失败原因 / 跳过原因）。 */
+export interface CodeBuddyCheckinAccountNote {
+  account_id: number
+  account_name?: string
+  message: string
+}
+
+/**
+ * 批量签到汇总。四态互斥：succeeded / already_checked_in / failed / skipped，
+ * total = 四态之和（即本轮考虑过的全部候选账号）。
+ */
+export interface CodeBuddyCheckinBatchResponse {
+  total: number
+  succeeded: number
+  already_checked_in: number
+  failed: number
+  skipped: number
+  credit_earned?: number
+  errors?: CodeBuddyCheckinAccountNote[]
+  skipped_notes?: CodeBuddyCheckinAccountNote[]
+}
+
+/**
+ * 批量签到全部 CodeBuddy 账号（服务端并发执行，上限 5）。
+ * 逐账号汇总四态，不因单账号失败中断。
+ */
+export async function checkinAll(): Promise<CodeBuddyCheckinBatchResponse> {
+  const { data } = await apiClient.post<CodeBuddyCheckinBatchResponse>(
+    '/admin/codebuddy/accounts/checkin-all'
+  )
+  return data
+}
+
 export default {
   qrStart,
   qrPoll,
   checkin,
+  checkinAll,
 }
