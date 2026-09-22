@@ -25,6 +25,8 @@ type codeBuddyCheckinRunnerStub struct {
 	lastCands int
 	resp      *CodeBuddyCheckinBatchResponse
 	err       error
+	// onCall 在 CheckinAll 执行**期间**调用（用于模拟"执行慢于 tick 间隔"时的重入）。
+	onCall func()
 }
 
 func (r *codeBuddyCheckinRunnerStub) ListCodeBuddyCheckinCandidates(_ context.Context, _ int) ([]CodeBuddyCheckinCandidate, error) {
@@ -33,6 +35,9 @@ func (r *codeBuddyCheckinRunnerStub) ListCodeBuddyCheckinCandidates(_ context.Co
 
 func (r *codeBuddyCheckinRunnerStub) CheckinAll(_ context.Context) (*CodeBuddyCheckinBatchResponse, error) {
 	r.calls.Add(1)
+	if r.onCall != nil {
+		r.onCall()
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -87,6 +92,9 @@ func (e *codeBuddyCheckinSchedulerTestEnv) at(t *testing.T, day, hhmm string) {
 	e.current = parsed
 	e.scheduler.tick()
 }
+
+// tickWithClock 用指定时刻 tick（测试模拟"执行期间时钟仍停在当前分钟"）。
+func (s *CodeBuddyCheckinScheduler) tickWithClock(_ time.Time) { s.tick() }
 
 // tickAt 只设置时间不触发（供需要连续多次触发的用例复用同一时刻）。
 func (e *codeBuddyCheckinSchedulerTestEnv) setTime(t *testing.T, day, hhmm string) {
@@ -274,4 +282,45 @@ func TestCodeBuddyCheckinSchedulerStartStopIdempotent(t *testing.T) {
 	nilScheduler.Start()
 	nilScheduler.Stop()
 	NewCodeBuddyCheckinScheduler(nil, nil).tick()
+}
+
+// --- 窗口饱和与重入（补测：此前只在 A4 报告里"读代码"论证，未经测试执行）---
+
+// Scenario：**重复 tick 的重入保护**——乐观占位（先记日期再执行）保证
+// 单轮执行超过 tick 间隔时不会被下一轮重入。
+//
+// 为什么需要：runOnce 在锁外执行（不持锁跑上游），若不先占位，
+// 一轮跑 90s 时第 2 分钟的 tick 会看到 lastRunDate 仍是空 → 重复触发。
+func TestCodeBuddyCheckinSchedulerOptimisticPlaceholderBlocksReentrancy(t *testing.T) {
+	env := newCodeBuddyCheckinSchedulerTestEnv(t,
+		`{"codebuddy":{"checkin":{"enabled":true,"start":{"hour":9,"minute":0},"end":{"hour":11,"minute":0}}}}`)
+	// 让 CheckinAll 模拟"跑得比 tick 慢"：执行期间再 tick 一次。
+	// 若把占位挪到 runOnce 之后，reentrant tick 会看到空日期并再触发一次。
+	env.runner.onCall = func() {
+		// 执行中重新进入 tick（同一时刻，模拟下一分钟 tick 落在执行期内）
+		env.scheduler.tickWithClock(env.current)
+	}
+
+	env.at(t, "2026-09-22", "09:00")
+	require.Equal(t, 1, env.runner.callCount(),
+		"执行期间的 tick 必须被乐观占位挡住，不得重入")
+}
+
+// Scenario：**窗口饱和后的新实例会补触发一次**（在内存去重的固有语义）。
+//
+// lastRunDate 是进程内状态：窗口内重启 / 窗口饱和后才启动的实例看不到
+// "今天已执行过"，会在窗口内再触发一次。这不是 bug——上游 10001 是幂等
+// 成功——但必须**如实钉住**，避免有人误以为跨实例恰好只打一次。
+func TestCodeBuddyCheckinSchedulerFreshInstanceRetriggersWithinWindow(t *testing.T) {
+	env1 := newCodeBuddyCheckinSchedulerTestEnv(t,
+		`{"codebuddy":{"checkin":{"enabled":true,"start":{"hour":9,"minute":0},"end":{"hour":11,"minute":0}}}}`)
+	env1.at(t, "2026-09-22", "09:30")
+	require.Equal(t, 1, env1.runner.callCount(), "实例 1 触发一次")
+
+	// 窗口未结束（10:30，仍在 09:00–11:00 内）时新实例上线。
+	env2 := newCodeBuddyCheckinSchedulerTestEnv(t,
+		`{"codebuddy":{"checkin":{"enabled":true,"start":{"hour":9,"minute":0},"end":{"hour":11,"minute":0}}}}`)
+	env2.at(t, "2026-09-22", "10:30")
+	require.Equal(t, 1, env2.runner.callCount(),
+		"新实例的内存去重为空 → 窗口内会再触发一次（上游幂等兜底，非 bug）")
 }
