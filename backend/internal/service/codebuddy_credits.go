@@ -346,35 +346,65 @@ func codeBuddyAccountsAsMaps(list []any) []map[string]any {
 //
 //   - CycleCapacitySize > 0 时：remain = clamp(remain, 0, size)，再用
 //     used = size - remain 与 CycleCapacityUsed 反修正；
-//   - 无周期额度时退 CapacityRemain。
+//   - 无周期额度时退 Capacity 域。
+//
+// ⚠️ **两条退化出口都必须钳位**（本函数是"多级退化"结构，任何一条出口漏钳都会
+// 让脏数据原样透出；同类教训见 `.scratch/codebuddy-impl/LESSONS.md` L1/L7）：
+//
+//	出口 1（Cycle 域，含 Precise 与整数两形态）
+//	出口 2（Cycle 全缺 → Capacity 域的 CapacityRemain/CapacitySize）
+//
+// 参考实现**只钳了出口 1**（REF-B `_package_remain` 的非 Cycle 分支直接
+// `return _num(item,'CapacityRemain')`，REF-C 同）——那是它们的缺口，不是规范：
+// `CapacityRemain > CapacitySize` 与 Cycle 域同源同后果，一样会高估余额。
 //
 // 为什么必须钳上界不只是钳负值：腾讯偶发 `CycleCapacityRemain > CycleCapacitySize`
 // 的脏数据，只钳负值会**高估**余额（用户看到比实际多的数字，且不报错、不明显）。
 // 注意 Precise 字段是字符串精确小数，**本函数只钳不退化**——即 Precise 在场时
 // 也必须参与钳位，否则精确小数路径仍然会漏掉脏数据。
 func codeBuddyPackageRemain(item map[string]any) float64 {
-	size := codeBuddyFloatAny(item["CycleCapacitySize"])
-	remain, hasCycleRemain := codeBuddyPackagePreciseRemain(item)
-	if !hasCycleRemain {
-		remain = codeBuddyFloatAny(item["CycleCapacityRemain"])
+	remain, hasPrecise := codeBuddyPackagePreciseRemain(item)
+	intRemain := codeBuddyFloatAny(item["CycleCapacityRemain"])
+	if !hasPrecise {
+		remain = intRemain
 	}
-	if size <= 0 && remain <= 0 && codeBuddyFloatAny(item["CycleCapacityUsed"]) <= 0 {
-		// Cycle 三元组全缺 → 退化 Capacity 域（照抄参考实现退化口径）。
-		return codeBuddyFloatAny(item["CapacityRemain"])
+	cycleSize := codeBuddyFloatAny(item["CycleCapacitySize"])
+	cycleUsed := codeBuddyFloatAny(item["CycleCapacityUsed"])
+	if cycleSize > 0 || remain > 0 || cycleUsed > 0 || intRemain > 0 {
+		// 出口 1：Cycle 域。
+		return codeBuddyClampPackageRemain(remain, cycleSize, cycleUsed, true)
 	}
-	if size <= 0 {
-		// 有 Cycle 余额但没有总量：无从钳上界（上游同款语义），保持原值。
-		return remain
-	}
+	// 出口 2：Cycle 三元组全缺 → 退化 Capacity 域（照抄参考实现退化口径，
+	// 但**补上参考实现漏掉的上界钳位**）。
+	// 出口 2：Cycle 三元组全缺 → 退化 Capacity 域（照抄参考实现退化口径，
+	// 但**补上参考实现漏掉的上界钳位**——见函数头注释）。
+	return codeBuddyClampPackageRemain(
+		codeBuddyFloatAny(item["CapacityRemain"]),
+		codeBuddyFloatAny(item["CapacitySize"]),
+		0,
+		false,
+	)
+}
+
+// codeBuddyClampPackageRemain 把单套餐 remain 钳进 [0, size]（size>0 时），
+// 并在 cycle 域做 used 反修正。两个退化出口共用同一钳位实现——**不要各写一份**，
+// 否则又会漂移成"只改了一条路"。
+//
+// size<=0 时不设上界：没有总量就无从判断"超出"（参考实现同款语义），只把负值归零。
+func codeBuddyClampPackageRemain(remain, size, used float64, cycle bool) float64 {
 	if remain < 0 {
 		remain = 0
+	}
+	if size <= 0 {
+		return remain
 	}
 	if remain > size {
 		remain = size
 	}
 	// used 反修正：上游把 used 记成"已消耗"，若它比 size-remain 更大，说明
-	// remain 被高估，用 used 反推一个更小的 remain（仍然只往下修）。
-	if used := codeBuddyFloatAny(item["CycleCapacityUsed"]); used > size-remain && size >= used {
+	// remain 被高估，用 used 反推一个更小的 remain（仍然只往下修；size < used
+	// 视为 used 侧脏值，不动 remain）。
+	if cycle && used > size-remain && size >= used {
 		remain = size - used
 	}
 	return remain

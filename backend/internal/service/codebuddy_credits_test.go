@@ -191,9 +191,12 @@ func TestGetCodeBuddyCreditsCacheAndDegraded(t *testing.T) {
 	_ = time.Now
 }
 
-// Scenario: 单套餐余额钳位（P0：此前只钳负值 → CycleCapacityRemain > Size 的
-// 上游脏数据会被原样显示，用户看到比上游多的余额）。表驱动覆盖钳负 / 钳上界 /
-// used 反修正 / Precise 路径同样受钳 / 无 size 时不钳上界。
+// Scenario: 单套餐余额钳位（P0：此前只钳负值 → Remain > Size 的上游脏数据会被
+// 原样显示，用户看到比上游多的余额）。
+//
+// 本函数是**多级退化**结构（出口 1 = Cycle 域、出口 2 = Capacity 兜底），每条出口
+// 都必须钳位——A1 的教训（LESSONS.md L1）同款：只改主路径会漏掉用户实际走的那条。
+// 故本表按**出口分组**，每组都含"脏数据被钳住"的用例。
 func TestCodeBuddyPackageRemainClamp(t *testing.T) {
 	t.Parallel()
 
@@ -201,54 +204,140 @@ func TestCodeBuddyPackageRemainClamp(t *testing.T) {
 		name string
 		item map[string]any
 		want float64
+		// exit 标注该用例打在哪个出口上，断言失败时能直接看出漏了哪条。
+		exit string
 	}{
+		// ---- 出口 1：Cycle 域（整数形态） ----
 		{
-			name: "脏数据 Remain > Size → 钳到 Size（修复前会返回 500 显示成余额）",
+			name: "Cycle 整数：脏数据 Remain > Size → 钳到 Size",
 			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemain": 4999999},
 			want: 500,
+			exit: "出口1-Cycle-整数",
 		},
 		{
-			name: "脏数据 Precise Remain > Size → 同样钳到 Size（整数与精确小数两条路都必须钳）",
-			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemainPrecise": "4999999.75"},
-			want: 500,
-		},
-		{
-			name: "负 Remain → 钳到 0",
+			name: "Cycle 整数：负 Remain → 钳到 0",
 			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemain": -30},
 			want: 0,
+			exit: "出口1-Cycle-整数",
 		},
 		{
-			name: "used 反修正：used 比 size-remain 更大时按 used 反推更小的 remain",
-			item: map[string]any{"CycleCapacitySize": 100, "CycleCapacityRemain": 90, "CycleCapacityUsed": 95},
-			want: 5,
-		},
-		{
-			name: "used 修正不得把 remain 推成负数（used > size 视为脏值，保留钳后值）",
-			item: map[string]any{"CycleCapacitySize": 100, "CycleCapacityRemain": 90, "CycleCapacityUsed": 130},
-			want: 90,
-		},
-		{
-			name: "正常值原样返回（零回归）",
+			name: "Cycle 整数：正常值原样返回（零回归）",
 			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemain": 499, "CycleCapacityUsed": 1},
 			want: 499,
+			exit: "出口1-Cycle-整数",
 		},
 		{
-			name: "无 Size（无从钳上界）→ 保持原值，只钳负",
+			name: "Cycle 整数：used 反修正——used 比 size-remain 更大时按 used 反推更小的 remain",
+			item: map[string]any{"CycleCapacitySize": 100, "CycleCapacityRemain": 90, "CycleCapacityUsed": 95},
+			want: 5,
+			exit: "出口1-Cycle-整数",
+		},
+		{
+			name: "Cycle 整数：used > size（used 侧脏值）时不得把 remain 推成负数，保留钳后值",
+			item: map[string]any{"CycleCapacitySize": 100, "CycleCapacityRemain": 90, "CycleCapacityUsed": 130},
+			want: 90,
+			exit: "出口1-Cycle-整数",
+		},
+		// ---- 出口 1：Cycle 域（Precise 精确小数形态） ----
+		{
+			name: "Cycle Precise：脏数据 Remain > Size → 同样钳到 Size（精确小数路径也必须钳）",
+			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemainPrecise": "4999999.75"},
+			want: 500,
+			exit: "出口1-Cycle-Precise",
+		},
+		{
+			name: "Cycle Precise：负值 → 钳到 0",
+			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemainPrecise": "-12.5"},
+			want: 0,
+			exit: "出口1-Cycle-Precise",
+		},
+		{
+			name: "Cycle Precise：正常小数原样保留（精度不回归）",
+			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemainPrecise": "499.95"},
+			want: 499.95,
+			exit: "出口1-Cycle-Precise",
+		},
+		{
+			name: "Cycle Precise：无法解析时退化整数 CycleCapacityRemain 并同样受钳",
+			item: map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemainPrecise": "abc", "CycleCapacityRemain": 4999999},
+			want: 500,
+			exit: "出口1-Cycle-Precise退化",
+		},
+		// ---- 出口 1：无 Size（无从钳上界） ----
+		{
+			name: "Cycle 无 Size：不设上界，只钳负（上游同款语义）",
 			item: map[string]any{"CycleCapacityRemain": 800},
 			want: 800,
+			exit: "出口1-无Size",
 		},
 		{
-			name: "Cycle 三元组全缺 → 退化 CapacityRemain（既有退化口径不回归）",
+			name: "Cycle 无 Size 且负值 → 仍钳到 0",
+			item: map[string]any{"CycleCapacityRemain": -5},
+			want: 0,
+			exit: "出口1-无Size",
+		},
+		// ---- 出口 2：Cycle 全缺 → Capacity 兜底 ----
+		{
+			name: "Capacity 兜底：脏数据 CapacityRemain > CapacitySize → 必须钳到 Size（修复前原样返回 4999999）",
+			item: map[string]any{"CapacitySize": 500, "CapacityRemain": 4999999},
+			want: 500,
+			exit: "出口2-Capacity兜底",
+		},
+		{
+			name: "Capacity 兜底：负 Remain → 钳到 0",
+			item: map[string]any{"CapacitySize": 500, "CapacityRemain": -80},
+			want: 0,
+			exit: "出口2-Capacity兜底",
+		},
+		{
+			name: "Capacity 兜底：无 Size → 不设上界（既有退化口径不回归）",
 			item: map[string]any{"CapacityRemain": 45},
 			want: 45,
+			exit: "出口2-Capacity兜底",
+		},
+		{
+			name: "Capacity 兜底：正常值原样返回",
+			item: map[string]any{"CapacitySize": 500, "CapacityRemain": 45},
+			want: 45,
+			exit: "出口2-Capacity兜底",
+		},
+		// ---- 分支优先级 ----
+		{
+			name: "有 Cycle 字段时不走 Capacity 兜底（即使 Capacity 域的值更大）",
+			item: map[string]any{
+				"CycleCapacitySize": 500, "CycleCapacityRemain": 300,
+				"CapacitySize": 999999, "CapacityRemain": 999999,
+			},
+			want: 300,
+			exit: "出口1-优先级",
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			require.InDelta(t, testCase.want, codeBuddyPackageRemain(testCase.item), 1e-9)
+			require.InDelta(t, testCase.want, codeBuddyPackageRemain(testCase.item), 1e-9,
+				"出口=%s", testCase.exit)
 		})
 	}
+}
+
+// Scenario: 两条退化出口的钳位必须**成对存在**——同一份脏数据（Remain > Size）
+// 在 Cycle 形态与 Capacity 形态下都要被钳住，不能只修一条。
+// 这条用例是"只改主路径"这类回归的守门人（A1 LESSONS.md L1 同款教训）。
+func TestCodeBuddyPackageRemainClampCoversBothFallbacks(t *testing.T) {
+	t.Parallel()
+
+	cycleDirty := map[string]any{"CycleCapacitySize": 500, "CycleCapacityRemain": 4999999}
+	capacityDirty := map[string]any{"CapacitySize": 500, "CapacityRemain": 4999999}
+
+	require.InDelta(t, 500.0, codeBuddyPackageRemain(cycleDirty), 1e-9,
+		"出口1（Cycle）未钳住脏数据")
+	require.InDelta(t, 500.0, codeBuddyPackageRemain(capacityDirty), 1e-9,
+		"出口2（Capacity 兜底）未钳住脏数据——这正是参考实现漏掉的那条")
+
+	// 严格小于脏输入，证明不是"恰好把输入返回了"。
+	require.Less(t, codeBuddyPackageRemain(cycleDirty), 4999999.0)
+	require.Less(t, codeBuddyPackageRemain(capacityDirty), 4999999.0)
 }
 
 // Scenario: 逐套餐先钳后加（顺序不能换）——一个负套餐不得吃掉合计里的正数。
