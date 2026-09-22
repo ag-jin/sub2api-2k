@@ -311,3 +311,82 @@ func extractJSONField(t *testing.T, body []byte, field string) string {
 	value, _ := decoded[field].(string)
 	return value
 }
+
+// --- 必写测试 ⑤：活动下线静默跳过（§6.5）---
+
+// Scenario：上游回 41000（活动未开始或已结束）→ **静默跳过**，不当故障、不重试。
+//
+// §6.5 的硬要求，且明确"**别硬编码活动名**——按上游返回的错误语义判断"。
+// 判据来自 `codebuddy.CodeBuddyGrowthOfflineReason`（按业务码查表），
+// 所以这里断言的是"码 → 静默"这条链，而不是某个活动名。
+func TestSchoolOfflineIsQuietlySkipped(t *testing.T) {
+	svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == codebuddy.CodeBuddySchoolTasksPath {
+			// 上游以业务码表达"活动已下线"（HTTP 200 + 非零码也常见）。
+			_, _ = w.Write([]byte(`{"code":41000,"msg":"activity not started or ended"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	})
+
+	status := svc.FetchCodeBuddyGrowthSchoolStatus(context.Background(), newGrowthTestAccount(1))
+
+	require.Empty(t, status.Error, "活动下线不是故障，不该记成错误")
+	require.True(t, status.Offline, "应识别为下线")
+	require.NotEmpty(t, status.OfflineReason, "日志/回执里要说清是活动下线")
+	require.False(t, status.InPeriod)
+	// 只读盘点：下线时也不该有别的写请求。
+	require.Len(t, recorder.snapshot(), 1)
+}
+
+// Scenario：需人工完成的环节（50300 学生认证不可用）同样静默——它不是账号故障。
+func TestSchoolManualOnlyCodesAreQuietlySkipped(t *testing.T) {
+	for _, code := range []int{
+		41000, // 活动未开始或已结束（活动已下线）
+		40901, // 任务暂不可领取（未完成或已领）
+		83400, // 验证码已过期（需人工完成该环节）
+		50300, // 学生认证服务暂不可用（上游侧问题）
+	} {
+		reason := codebuddy.CodeBuddyGrowthOfflineReason(code)
+		if reason == "" {
+			reason = codebuddy.CodeBuddyGrowthManualOnlyReason(code)
+		}
+		require.NotEmpty(t, reason,
+			"业务码 %d 应被判为「静默跳过」（活动不可服务或需人工），否则会当账号故障重试", code)
+	}
+}
+
+// --- 必写测试 ②：领养前置（门槛**达到**时应真的发出去）---
+
+// Scenario：无猫 + 门槛已达 → 发 agreement + buddy/first，并如实记账到账积分。
+//
+// 与 `TestBuddyThresholdNotMetIsRecognised` 是一对：只测"门槛未达跳过"
+// 会退化成"领养永远不发"也算通过。
+func TestAdoptProceedsWhenThresholdMet(t *testing.T) {
+	svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case codebuddy.CodeBuddyBuddyInfoPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"buddy":null}}`)) // 无猫
+		case codebuddy.CodeBuddyBuddyFirstPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"credit":300,"energy":8}}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0}`))
+		}
+	})
+	account := newGrowthTestAccount(1)
+
+	result := svc.RunCodeBuddyGrowthAdoptNow(context.Background(), account, "2026-09-23")
+
+	require.Empty(t, result.Error)
+	require.True(t, result.Adopted, "门槛已达且无猫时应真的领养")
+	require.Equal(t, 300, result.Credit, "领养送 300 分（参考实现 travel.go:122-125）")
+	require.Equal(t, 8, result.Energy)
+
+	paths := map[string]bool{}
+	for _, req := range recorder.snapshot() {
+		paths[req.Path] = true
+	}
+	require.True(t, paths[codebuddy.CodeBuddyBuddyAgreementPath],
+		"应先同意协议（幂等）")
+	require.True(t, paths[codebuddy.CodeBuddyBuddyFirstPath], "应发领养请求")
+}

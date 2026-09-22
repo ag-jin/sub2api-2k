@@ -164,3 +164,64 @@ func TestCodeBuddyGrowthChannelRegistryIsInternallyConsistent(t *testing.T) {
 		}
 	}
 }
+
+// --- A6 P6：注释里点名的守门测试（此前注释引用了它，但测试并不存在）---
+
+// Scenario：`AutoSchedulableChannelKeys()` 返回的**每个**通道都不得是 full 级。
+//
+// ⚠️ 这个测试名此前被 `growth_tasks.go` 的注释引用（"改这里会被
+// TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull 拦住"），
+// **但测试文件里并没有它**——即注释承诺了一道不存在的防线。
+// 这是本项目反复出现的一类问题（码表 `11-128` 被"测过"实则求值错、
+// A5 的"间隔"从未被断言）：**读注释的人会以为边界已被守住**。
+// 本次把它真正补上。
+//
+// 断言三层：
+//  1. 返回列表里每一项的 Tier 都不是 full；
+//  2. 反向：所有 full 级通道都不在列表里（防"过滤写反了返回空集"）；
+//  3. 列表非空（防"返回空集"这种最隐蔽的假绿）。
+func TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull(t *testing.T) {
+	autoKeys := CodeBuddyGrowthAutoSchedulableChannelKeys()
+
+	requireNotEmpty(t, autoKeys)
+
+	autoSet := map[string]bool{}
+	for _, key := range autoKeys {
+		autoSet[key] = true
+		spec, ok := CodeBuddyGrowthChannelSpecByKey(key)
+		requireTrue(t, ok, "自动通道 %s 未在注册表里", key)
+		if spec.Tier == GrowthTierFull {
+			t.Errorf("full 级通道 %s（%s）不得出现在自动排程列表里",
+				key, spec.Rationale)
+		}
+	}
+
+	// 反向：每一个 full 级通道都必须**不在**自动列表里。
+	fullCount := 0
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if spec.Tier != GrowthTierFull {
+			continue
+		}
+		fullCount++
+		if autoSet[spec.Key] {
+			t.Errorf("full 级通道 %s 混进了自动排程列表", spec.Key)
+		}
+	}
+	requireTrue(t, fullCount > 0,
+		"注册表里应有 full 级通道（否则本测试失去意义——它靠 full 的存在来验证过滤）")
+}
+
+// requireNotEmpty / requireTrue 本地断言（避免为两条断言引入额外 import）。
+func requireNotEmpty(t *testing.T, values []string) {
+	t.Helper()
+	if len(values) == 0 {
+		t.Fatal("自动可调度通道列表为空——要么注册表空了，要么过滤写反了（假绿高发区）")
+	}
+}
+
+func requireTrue(t *testing.T, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Fatalf(format, args...)
+	}
+}
