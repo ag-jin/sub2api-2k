@@ -52,6 +52,9 @@ func (t GrowthTier) IsValid() bool {
 	}
 }
 
+// String 便于日志与端点回执展示分级（回执带上级别，运维一眼能确认跑的是什么）。
+func (t GrowthTier) String() string { return string(t) }
+
 func (t GrowthTier) AutoSchedulable() bool {
 	switch t {
 	case GrowthTierPreview, GrowthTierClaim:
@@ -380,3 +383,31 @@ const CodeBuddySchoolShareCompletePath = CodeBuddySchoolPortalPrefix + "/tasks/s
 // 依据：参考实现 task_runner.py 任务表注释原文——"小程序成长任务（growth 域小程序
 // 限定）：列表/accept/claim 均需 X-Client-Platform: miniprogram"。
 const CodeBuddySchoolClientPlatform = "miniprogram"
+
+// GrowthChannelSpecForAPI 通道规格的**对外形态**（管理端点渲染用）。
+//
+// 与内部 `CodeBuddyGrowthChannelSpec` 分开：内部结构以后可能要加调度相关字段，
+// 而对外契约不该跟着变。这里显式挑出"管理端需要知道的"四项。
+type GrowthChannelSpecForAPI struct {
+	Key string `json:"key"`
+	// Tier 合规分级（preview / claim / full）。
+	Tier string `json:"tier"`
+	// AutoRunnable 是否允许自动排程（false = full 级，仅手动）。
+	AutoRunnable bool `json:"auto_runnable"`
+	// Rationale 分级理由（写给人看）。
+	Rationale string `json:"rationale"`
+}
+
+// GrowthChannelSpecsForAPI 返回全部通道的对外形态（顺序与内部声明一致）。
+func GrowthChannelSpecsForAPI() []GrowthChannelSpecForAPI {
+	out := make([]GrowthChannelSpecForAPI, 0, len(CodeBuddyGrowthChannelSpecs))
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		out = append(out, GrowthChannelSpecForAPI{
+			Key:          spec.Key,
+			Tier:         spec.Tier.String(),
+			AutoRunnable: spec.Tier.AutoSchedulable(),
+			Rationale:    spec.Rationale,
+		})
+	}
+	return out
+}

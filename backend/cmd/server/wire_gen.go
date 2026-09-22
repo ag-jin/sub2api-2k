@@ -226,7 +226,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codeBuddyAdminService := service.ProvideCodeBuddyAdminService(adminService, accountRepository, redisClient, httpUpstream)
 	auditLogRepository := repository.NewAuditLogRepository(db)
 	auditLogService := service.ProvideAuditLogService(auditLogRepository, settingService)
-	codeBuddyAdminHandler := admin.NewCodeBuddyAdminHandler(codeBuddyAdminService, auditLogService)
+	codeBuddyActivityScheduler := service.ProvideCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepository, settingService)
+	codeBuddyAdminHandler := admin.NewCodeBuddyAdminHandler(codeBuddyAdminService, auditLogService, codeBuddyActivityScheduler)
 	cnProviderQuotaService := service.ProvideCNProviderQuotaService(accountRepository, proxyRepository, httpUpstream, configConfig)
 	cnProviderBalanceService := service.ProvideCNProviderBalanceService(accountRepository, proxyRepository, httpUpstream, configConfig)
 	cnProviderHandler := admin.NewCNProviderHandler(cnProviderQuotaService, cnProviderBalanceService)
@@ -351,8 +352,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	channelMonitorV2Aggregator := service.ProvideChannelMonitorV2Aggregator(channelMonitorV2Repository, db, settingService)
 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
 	codeBuddyCheckinScheduler := service.ProvideCodeBuddyCheckinScheduler(codeBuddyAdminService, settingService, openAIGatewayService)
-	codeBuddyActivityScheduler := service.ProvideCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepository, settingService)
-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler)
+	codeBuddyGrowthScheduler := service.ProvideCodeBuddyGrowthScheduler(codeBuddyAdminService, accountRepository, settingService)
+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler)
 	application := &Application{
 		Server:        httpServer,
 		PromptAudit:   promptService,
@@ -438,6 +439,7 @@ func provideCleanup(
 	pluginManager *service.PluginManager,
 	codeBuddyCheckin *service.CodeBuddyCheckinScheduler,
 	codeBuddyActivity *service.CodeBuddyActivityScheduler,
+	codeBuddyGrowth *service.CodeBuddyGrowthScheduler,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -514,6 +516,13 @@ func provideCleanup(
 
 				if codeBuddyActivity != nil {
 					codeBuddyActivity.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyGrowthScheduler", func() error {
+
+				if codeBuddyGrowth != nil {
+					codeBuddyGrowth.Stop()
 				}
 				return nil
 			}},

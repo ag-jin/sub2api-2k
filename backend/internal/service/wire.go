@@ -100,6 +100,30 @@ func ProvideCodeBuddyActivityScheduler(
 	return NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
 }
 
+// ProvideCodeBuddyGrowthScheduler 构造并启动成长链调度器（A6 批 P5）。
+//
+// # 它与活跃上报的关键区别：**它可以自动，但只能自动一部分**
+//
+// 成长链里 `preview` / `claim` 级通道（旅行、连登、礼包、trial）是幂等领奖，
+// 按用户裁定的三级分级**可以自动**；而 `full` 级（领养 / 夜猫子 / 开学季点亮）
+// 含伪造活跃上报语义，**仅手动**。
+//
+// 这条边界不是靠"开发者记得别加"，而是靠调度器取通道列表的**唯一入口**：
+// `codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()` 按
+// `GrowthTier.AutoSchedulable()` 过滤——full 级在类型层面进不来。
+// 守它的是 `TestCodeBuddyGrowthSchedulerNeverRunsFullTierChannels`。
+//
+// 所以这里**可以**调 Start()（与活跃上报不同），因为它的通道集合已被分级约束。
+func ProvideCodeBuddyGrowthScheduler(
+	codeBuddyAdminService *CodeBuddyAdminService,
+	accountRepo AccountRepository,
+	settingService *SettingService,
+) *CodeBuddyGrowthScheduler {
+	scheduler := NewCodeBuddyGrowthScheduler(codeBuddyAdminService, accountRepo, settingService)
+	scheduler.Start()
+	return scheduler
+}
+
 // BuildInfo contains build information
 type BuildInfo struct {
 	Version   string
@@ -937,6 +961,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodeBuddyAdminService,
 	ProvideCodeBuddyCheckinScheduler,
 	ProvideCodeBuddyActivityScheduler,
+	ProvideCodeBuddyGrowthScheduler,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,

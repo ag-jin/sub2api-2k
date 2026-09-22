@@ -33,6 +33,20 @@ const (
 	CodeBuddyActivityDefaultStartMinute = 0
 	CodeBuddyActivityDefaultEndHour     = 11
 	CodeBuddyActivityDefaultEndMinute   = 0
+
+	// CodeBuddyGrowthFeatureKey 成长任务链功能标识（A6 批 P5）。
+	//
+	// ⚠️ 该开关**只覆盖自动可跑的那部分**（preview / claim 级通道）。
+	// `full` 级通道（领养 / 夜猫子 / 开学季点亮）不受它控制——那些只能手动触发，
+	// 手动端点不读这个开关（人明确要求执行，不该被自动排程的开关挡住）。
+	CodeBuddyGrowthFeatureKey = "growth"
+
+	// CodeBuddyGrowthDefaultStartHour 默认成长链窗口起点 09:00（对齐参考实现
+	// 旅行排程 travel_hours=[9,21] 的白天档）；到 11:00 结束，给连登链多步动作留余量。
+	CodeBuddyGrowthDefaultStartHour   = 9
+	CodeBuddyGrowthDefaultStartMinute = 0
+	CodeBuddyGrowthDefaultEndHour     = 11
+	CodeBuddyGrowthDefaultEndMinute   = 0
 )
 
 // codeBuddyTimeZone 积分/签到口径统一按 UTC+8（与 A2 的积分到期解析同源）。
@@ -82,6 +96,26 @@ func init() {
 				DefaultEnd: TimeOfDay{
 					Hour:   CodeBuddyActivityDefaultEndHour,
 					Minute: CodeBuddyActivityDefaultEndMinute,
+				},
+			},
+			{
+				Key:   CodeBuddyGrowthFeatureKey,
+				Kind:  PlatformFeatureTimeRange,
+				Title: "成长任务",
+				Description: "在设定时间段内自动执行**幂等领奖类**成长动作" +
+					"（旅行派出与领奖、连登补签/兑换/礼包/补偿、国际版 trial）。" +
+					"含伪造活跃上报语义的动作（领养、夜猫子、开学季点亮）**不在此列**，" +
+					"仅可手动触发。默认为关闭。",
+				// 默认关闭：这些都是对上游的写操作。
+				EnabledByDefault: false,
+				Timezone:         codeBuddyTimeZone,
+				DefaultStart: TimeOfDay{
+					Hour:   CodeBuddyGrowthDefaultStartHour,
+					Minute: CodeBuddyGrowthDefaultStartMinute,
+				},
+				DefaultEnd: TimeOfDay{
+					Hour:   CodeBuddyGrowthDefaultEndHour,
+					Minute: CodeBuddyGrowthDefaultEndMinute,
 				},
 			},
 		},
