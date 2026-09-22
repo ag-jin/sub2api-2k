@@ -71,6 +71,21 @@ func ProvideCodeBuddyCheckinScheduler(
 	return scheduler
 }
 
+// ProvideCodeBuddyActivityScheduler 构造并启动活跃上报调度器（5.2）。
+//
+// 与签到调度器同款形态（每分钟 tick + 窗口内一次 + 当日去重），默认关闭。
+// accountRepo 用于按候选 ID 取回完整账号——候选列表只带 ID/名字，而上报需要
+// 凭据（access_token / uid），所以必须再取一次完整账号。
+func ProvideCodeBuddyActivityScheduler(
+	codeBuddyAdminService *CodeBuddyAdminService,
+	accountRepo AccountRepository,
+	settingService *SettingService,
+) *CodeBuddyActivityScheduler {
+	scheduler := NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
+	scheduler.Start()
+	return scheduler
+}
+
 // BuildInfo contains build information
 type BuildInfo struct {
 	Version   string
@@ -907,6 +922,7 @@ var ProviderSet = wire.NewSet(
 	ProvideGrokOAuthService,
 	ProvideCodeBuddyAdminService,
 	ProvideCodeBuddyCheckinScheduler,
+	ProvideCodeBuddyActivityScheduler,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
