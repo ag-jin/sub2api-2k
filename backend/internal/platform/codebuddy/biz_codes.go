@@ -27,12 +27,12 @@ import (
 // 0，导致该提示在真实错误上从未生效。同名坑在参考实现里出现过
 // （Python 字典键未加引号被算成 -117，它们专门写了测试防回归）。
 var codeBuddyBizCodeHints = map[string]string{
-	"0":     "成功",
-	"10001": "今日已签到",
-	"11101": "上游不接受非流式请求",
+	"0":      "成功",
+	"10001":  "今日已签到",
+	"11101":  "上游不接受非流式请求",
 	"11-128": "上游安全策略拦截（第三方客户端提示词指纹，或 developer 角色未归一化）",
-	"11217": "登录进行中（未扫码）",
-	"12153": "会话已失效，需重新登录",
+	"11217":  "登录进行中（未扫码）",
+	"12153":  "会话已失效，需重新登录",
 	// 14018 上游自 2026-09-20 起新增：积分耗尽。是唯一的结构化"欠费"判据
 	// （上游不靠"额度不足"这类跨计费/限流两界的文案猜）。
 	"14018": "账号积分耗尽（等签到恢复或更换账号）",
@@ -126,4 +126,53 @@ func rawValue(r gjson.Result) any {
 // 数字形态去掉小数尾），避免 "11-128" 被显示成 0 或 11。
 func codeBuddyBizCodeDisplay(r gjson.Result) string {
 	return codeBuddyNormalizeBizCode(rawValue(r))
+}
+
+// CodeBuddyNumericBizCode 从上游信封里取**数值**业务码，供冷却/限流这类需要
+// int 比较的决策消费。
+//
+// 与 CodeBuddyBizCodeHint 的查表入口分开：码表要的是"原值"（字符串 "11-128"
+// 必须保持原样才能查到），决策要的是"能比大小的数字"。非数字形态
+// （"11-128"、空、缺失）一律返回 ok=false —— 调用方据此走通用规则链，
+// 而不是把 0 当成真实业务码去匹配。
+//
+// ⚠️ 不要用 gjson .Int()：它对非数字串返回 0，无法与真实 code=0（成功）区分，
+// 会把"未知码"静默变成"成功码"（批 1 的 L3 教训）。
+func CodeBuddyNumericBizCode(body []byte) (int, bool) {
+	res := gjson.GetBytes(body, "code")
+	if !res.Exists() {
+		return 0, false
+	}
+	switch res.Type {
+	case gjson.Number:
+		// JSON 数字统一落成 float64：只接受整数值，1.5 这种不构成业务码。
+		number := res.Num
+		if number != float64(int64(number)) {
+			return 0, false
+		}
+		return int(number), true
+	case gjson.String:
+		return parseStrictInt(res.String())
+	default:
+		return 0, false
+	}
+}
+
+// parseStrictInt 严格解析十进制非负整数（多余字符一律拒，不静默截断）。
+func parseStrictInt(raw string) (int, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, false
+	}
+	value := 0
+	for _, r := range trimmed {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		value = value*10 + int(r-'0')
+		if value > 1<<31 {
+			return 0, false
+		}
+	}
+	return value, true
 }

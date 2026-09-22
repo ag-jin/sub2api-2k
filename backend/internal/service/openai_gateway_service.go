@@ -470,6 +470,10 @@ type OpenAIGatewayService struct {
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
+	// codeBuddyCooldownApplier 按 CodeBuddy 上游业务码施加冷却（4.6）。
+	// 用窄接口注入，避免 gateway 直接依赖 CodeBuddyAdminService 的具体类型。
+	codeBuddyCooldownApplier codeBuddyCooldownApplier
+
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
 	openaiSchedulerOnce            sync.Once

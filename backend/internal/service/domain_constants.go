@@ -730,6 +730,10 @@ const (
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
+
+	// 平台级功能设置（签到等）：JSON，map[platform]map[feature]value。
+	// 形态、注册表与校验见 platform_feature_settings.go。
+	SettingKeyPlatformFeatures = "platform_features"
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。

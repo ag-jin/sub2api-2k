@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tidwall/gjson"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 )
 
 const (
@@ -99,11 +99,27 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		return false
 	}
 	// CodeBuddy 单列错误归类分支：确认性 401/403 → StatusError + 提示重录
-	// auth JSON；其余状态沿用通用 upstream 错误链（temp-unsched / failover）。
+	// auth JSON；业务码命中冷却表 → 按码施加冷却；其余状态沿用通用 upstream
+	// 错误链（temp-unsched / failover）。
 	if account != nil && account.IsCodeBuddy() {
+		// 业务码按**原值**解析（4.6）：字符串形态的码用 gjson .Int() 会被吞成 0，
+		// 与真实的 code=0（成功）不可区分（L3）。解不出来就走通用链，不瞎猜。
+		bizCode, hasBizCode := codebuddy.CodeBuddyNumericBizCode(responseBody)
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
-			s.handleCodeBuddyAccountUpstreamError(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody), int(gjson.GetBytes(responseBody, "code").Int()))
+			bizCodeArg := 0
+			if hasBizCode {
+				bizCodeArg = bizCode
+			}
+			s.handleCodeBuddyAccountUpstreamError(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody), bizCodeArg)
 			return true
+		}
+		// 积分耗尽 / 模型级超限等：由业务码决定冷却范围。6004 只冷模型不冷账号。
+		if hasBizCode && s.codeBuddyCooldownApplier != nil {
+			if s.codeBuddyCooldownApplier.ApplyCodeBuddyBizCodeCooldown(
+				ctx, account, bizCode, firstRequestedModel(canonicalModel),
+			) {
+				return true
+			}
 		}
 		return false
 	}

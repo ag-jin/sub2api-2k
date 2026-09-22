@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -52,6 +53,9 @@ type CodeBuddyAdminService struct {
 	qrBase      string
 	testBaseURL string
 	client      *http.Client
+	// creditsFetcher 解冻闭环（4.5）用：签到成功后查一次实时积分，判是否解除
+	// 积分耗尽冷却。可空 —— 未注入时解冻判定整体跳过（宁可不解除，不误解除）。
+	creditsFetcher *CodeBuddyCreditsFetcher
 }
 
 func NewCodeBuddyAdminService(
@@ -72,6 +76,14 @@ func NewCodeBuddyAdminService(
 func (s *CodeBuddyAdminService) WithTestBaseURL(baseURL string) *CodeBuddyAdminService {
 	s.testBaseURL = strings.TrimRight(baseURL, "/")
 	return s
+}
+
+// SetCreditsFetcher 注入积分查询器（解冻闭环 4.5 用，A2 同款追加式 DI）。
+func (s *CodeBuddyAdminService) SetCreditsFetcher(fetcher *CodeBuddyCreditsFetcher) {
+	if s == nil {
+		return
+	}
+	s.creditsFetcher = fetcher
 }
 
 func (s *CodeBuddyAdminService) qrBaseURL() string {
@@ -403,6 +415,8 @@ type CodeBuddyCheckinResult struct {
 	AlreadyCheckedIn bool    `json:"already_checked_in"`
 	Credit           float64 `json:"credit"`
 	StreakDays       int64   `json:"streak_days"`
+	// CreditsRecovered 本次签到是否触发了"积分耗尽冷却"的解除（4.5 解冻闭环）。
+	CreditsRecovered bool `json:"credits_recovered"`
 }
 
 // Checkin 每日签到（POST /admin/codebuddy/accounts/:id/checkin 手动触发）。
@@ -453,12 +467,251 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 			slog.Warn("codebuddy checkin extra write failed",
 				slog.String("error", logredact.RedactText(err.Error())))
 		}
+		// 解冻闭环（4.5）：签到正是"积分耗尽"账号补回积分的路径，签到成功
+		// 就该顺势解除本模块写入的硬冷却，否则账号要一直等到人工恢复。
+		s.unfreezeAfterCheckin(ctx, account, result)
 		return result, nil
 	default:
 		return nil, infraerrors.Newf(http.StatusBadRequest, "CODEBUDDY_CHECKIN_REJECTED",
 			"codebuddy checkin rejected (code %v): %s", codebuddyEnvelopeCodeRaw(raw),
 			codebuddy.CodeBuddyBizCodeMessage(codebuddyEnvelopeCodeRaw(raw), codebuddyEnvelopeMsg(raw)))
 	}
+}
+
+// unfreezeAfterCheckin 签到成功后按最新余额决定是否解除积分耗尽冷却。
+//
+// 只有**真的拿到余额**才判定：查不到余额时保持现状。用签到返回的 credit 字段
+// 猜余额是错的 —— 它只是"本次签到得了多少分"，账号总分可能仍是 0。
+func (s *CodeBuddyAdminService) unfreezeAfterCheckin(
+	ctx context.Context,
+	account *Account,
+	result *CodeBuddyCheckinResult,
+) {
+	if account == nil || result == nil || !account.HasCodeBuddyCreditsExhaustedCooldown() {
+		return
+	}
+	remain, ok := s.queryCodeBuddyCreditsRemain(ctx, account)
+	if !ok {
+		return
+	}
+	result.CreditsRecovered = s.ReenableCodeBuddyIfCreditsRecovered(ctx, account, remain)
+}
+
+// queryCodeBuddyCreditsRemain 查一次实时积分余额（只读，不改任何账号状态）。
+// 未注入 fetcher 时返回 ok=false（解冻判定跳过，而不是误判为 0 分）。
+func (s *CodeBuddyAdminService) queryCodeBuddyCreditsRemain(ctx context.Context, account *Account) (float64, bool) {
+	if s == nil || s.creditsFetcher == nil || account == nil {
+		return 0, false
+	}
+	token := account.GetCodeBuddyAccessToken()
+	if strings.TrimSpace(token) == "" {
+		return 0, false
+	}
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, codeBuddyBillingRequestTimeout)
+	defer cancel()
+	snapshot, err := s.creditsFetcher.FetchCredits(fetchCtx, &CodeBuddyCreditsFetchOptions{
+		AccessToken: token,
+		ProxyURL:    proxyURL,
+		AccountID:   account.ID,
+		Account:     account,
+	})
+	// Balance 是指针：nil 表示"余额不可用"，与"余额为 0"是两件事，
+	// 不能混为一谈（把 nil 当 0 会让本可解冻的账号继续停调）。
+	if err != nil || snapshot == nil || snapshot.Status != "ok" || snapshot.Balance == nil {
+		return 0, false
+	}
+	return *snapshot.Balance, true
+}
+
+// CodeBuddyCheckinBatchResult 批量签到汇总。
+// 四态互斥：Succeeded / AlreadyCheckedIn / Failed / Skipped，
+// Total = 四态之和（即本轮考虑过的全部候选账号）。
+type CodeBuddyCheckinBatchResult struct {
+	Total            int     `json:"total"`
+	Succeeded        int     `json:"succeeded"`
+	AlreadyCheckedIn int     `json:"already_checked_in"`
+	Failed           int     `json:"failed"`
+	Skipped          int     `json:"skipped"`
+	CreditEarned     float64 `json:"credit_earned"`
+}
+
+// CodeBuddyCheckinAccountNote 单账号的非成功明细（失败原因 / 跳过原因）。
+// 对外只带可读信息，不带凭据。
+type CodeBuddyCheckinAccountNote struct {
+	AccountID   int64  `json:"account_id"`
+	AccountName string `json:"account_name"`
+	Message     string `json:"message"`
+}
+
+// CodeBuddyCheckinBatchResponse 批量签到响应：汇总 + 失败明细 + 跳过明细。
+type CodeBuddyCheckinBatchResponse struct {
+	CodeBuddyCheckinBatchResult
+	Errors       []CodeBuddyCheckinAccountNote `json:"errors"`
+	SkippedNotes []CodeBuddyCheckinAccountNote `json:"skipped_notes"`
+}
+
+// CodeBuddyCheckinCandidate 一个签到候选账号。
+type CodeBuddyCheckinCandidate struct {
+	AccountID int64
+	Name      string
+	// SkipReason 非空 = 本轮不发上游请求，直接计入 skipped。
+	// 与"失败"区分开：跳过是我们**故意**不发的（账号已被停调 / 压根没凭据），
+	// 不是签到本身出错，混进 Failed 会让失败率虚高、掩盖真实故障。
+	SkipReason string
+}
+
+const (
+	// codeBuddyCheckinBatchConcurrency 批量签到的并发上限（参考实现默认 5）。
+	// 上游对同 IP 的并发敏感，串行又太慢（签到账号可能上百）。
+	codeBuddyCheckinBatchConcurrency = 5
+
+	// codeBuddyCheckinBatchMaxAccounts 单次批量请求处理的账号上限。
+	codeBuddyCheckinBatchMaxAccounts = 500
+)
+
+// ListCodeBuddyCheckinCandidates 列出签到候选账号（含跳过标记）。
+//
+// 复用既有的 AccountRepository.ListByPlatform（它已经只返回 StatusActive 账号），
+// 不新增仓储方法。候选一律返回，"不该发"的用 SkipReason 标出来而不是就地丢掉：
+// 调度的汇总需要如实反映"这个账号为什么没签上"。
+func (s *CodeBuddyAdminService) ListCodeBuddyCheckinCandidates(ctx context.Context, limit int) ([]CodeBuddyCheckinCandidate, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, infraerrors.InternalServer("CODEBUDDY_ACCOUNT_REPO_UNAVAILABLE", "codebuddy account repository not configured")
+	}
+	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformCodeBuddy)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > codeBuddyCheckinBatchMaxAccounts {
+		limit = codeBuddyCheckinBatchMaxAccounts
+	}
+
+	now := time.Now()
+	candidates := make([]CodeBuddyCheckinCandidate, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if !account.IsCodeBuddy() {
+			continue
+		}
+		candidate := CodeBuddyCheckinCandidate{AccountID: account.ID, Name: account.Name}
+		switch {
+		case !account.IsSchedulable():
+			candidate.SkipReason = "账号已停调"
+		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
+			candidate.SkipReason = "账号处于临时停调冷却期"
+		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
+			candidate.SkipReason = "账号缺少 access token"
+		}
+		candidates = append(candidates, candidate)
+		if len(candidates) >= limit {
+			break
+		}
+	}
+	return candidates, nil
+}
+
+// CheckinAll 批量签到：并发执行 + 逐账号汇总（成功 / 已签到 / 失败 / 跳过）。
+//
+// 复用 Checkin 的既有实现，不重复实现签到逻辑（端点、realm 分流、幂等判定全在那边）。
+// 单账号失败不影响其他账号；失败明细回传给调用方，而不是只给一个计数。
+func (s *CodeBuddyAdminService) CheckinAll(ctx context.Context) (*CodeBuddyCheckinBatchResponse, error) {
+	candidates, err := s.ListCodeBuddyCheckinCandidates(ctx, codeBuddyCheckinBatchMaxAccounts)
+	if err != nil {
+		return nil, err
+	}
+	return s.checkinCandidates(ctx, candidates), nil
+}
+
+// checkinCandidates 对已取好的候选批量签到并汇总（调度器与端点共用，
+// 避免两处各写一份并发与汇总逻辑）。
+func (s *CodeBuddyAdminService) checkinCandidates(
+	ctx context.Context,
+	candidates []CodeBuddyCheckinCandidate,
+) *CodeBuddyCheckinBatchResponse {
+	response := &CodeBuddyCheckinBatchResponse{}
+	response.Total = len(candidates)
+	if len(candidates) == 0 {
+		return response
+	}
+
+	type outcome struct {
+		accountID int64
+		name      string
+		already   bool
+		credit    float64
+		err       error
+	}
+
+	// 跳过的候选不进并发池：它们本来就不该发请求，占额度会拖慢真正要签的那批。
+	toCheck := make([]CodeBuddyCheckinCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.SkipReason == "" {
+			toCheck = append(toCheck, candidate)
+			continue
+		}
+		response.Skipped++
+		response.SkippedNotes = append(response.SkippedNotes, CodeBuddyCheckinAccountNote{
+			AccountID:   candidate.AccountID,
+			AccountName: candidate.Name,
+			Message:     candidate.SkipReason,
+		})
+	}
+	if len(toCheck) == 0 {
+		return response
+	}
+
+	sem := make(chan struct{}, codeBuddyCheckinBatchConcurrency)
+	results := make(chan outcome, len(toCheck))
+	var wg sync.WaitGroup
+	for _, candidate := range toCheck {
+		wg.Add(1)
+		go func(c CodeBuddyCheckinCandidate) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result, checkinErr := s.Checkin(ctx, c.AccountID)
+			item := outcome{accountID: c.AccountID, name: c.Name, err: checkinErr}
+			if checkinErr == nil && result != nil {
+				item.already = result.AlreadyCheckedIn
+				item.credit = result.Credit
+			}
+			results <- item
+		}(candidate)
+	}
+	wg.Wait()
+	close(results)
+
+	for item := range results {
+		switch {
+		case item.err != nil:
+			response.Failed++
+			response.Errors = append(response.Errors, CodeBuddyCheckinAccountNote{
+				AccountID:   item.accountID,
+				AccountName: item.name,
+				Message:     codeBuddyCheckinErrorMessage(item.err),
+			})
+		case item.already:
+			response.AlreadyCheckedIn++
+			response.CreditEarned += item.credit
+		default:
+			response.Succeeded++
+			response.CreditEarned += item.credit
+		}
+	}
+	return response
+}
+
+// codeBuddyCheckinErrorMessage 把单账号失败折算成可读文案。
+// 批量汇总会把明细回给管理员，错误体可能回显请求内容 → 统一脱敏。
+func codeBuddyCheckinErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return logredact.RedactText(err.Error())
 }
 
 // checkinWithFallback 按 realm 的路径候选序列发签到请求，**仅 HTTP 404**

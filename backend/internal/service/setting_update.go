@@ -546,6 +546,15 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		updates[SettingKeyAccountSchedulingThresholds] = string(blob)
 	}
 
+	// 平台级功能设置：整体替换语义（与 platform quota 同款——调用方提交的是完整
+	// 表单，未提交的平台即视为"未配置"，落到注册声明的默认值）。
+	// 归一化会丢弃注册表里不存在的平台/功能键，避免旧版本残留键被写回。
+	platformFeatures, err := MarshalPlatformFeatureSettings(settings.PlatformFeatures)
+	if err != nil {
+		return nil, err
+	}
+	updates[SettingKeyPlatformFeatures] = platformFeatures
+
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
 	return updates, nil
