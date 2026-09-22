@@ -31,10 +31,23 @@ type GrowthTier string
 const (
 	// GrowthTierPreview 只读预览：不发任何写请求。可自动。
 	GrowthTierPreview GrowthTier = "preview"
-	// GrowthTierClaim 幂等领奖：可自动（重复调用无副作用，最坏情况是一次被上游
-	// 幂等挡下的请求）。
+	// GrowthTierClaim 幂等领奖：可自动。
+	//
+	// 定义（团队负责人 2026-09-23 明确）：**重复调用无副作用**。
+	// 最坏情况是一次被上游幂等挡下的请求（如 409 duplicate、或只回 code=0 不带 data）。
 	GrowthTierClaim GrowthTier = "claim"
-	// GrowthTierFull 含伪造活跃上报语义：**仅手动**，自动排程必须绕开。
+	// GrowthTierFull **仅手动**，自动排程必须绕开。
+	//
+	// 定义（团队负责人 2026-09-23 **扩展**，原定义只含"伪造上报"）：
+	// **含伪造上报语义 *或* 不可逆消耗**。
+	//
+	// 判据：**该动作一旦执行就无法撤销 / 回退**——消耗次数、送出积分、
+	// 提交不可逆请求。两类后果都需要有人在场担责，所以都不进自动排程。
+	//
+	// 为什么必须扩展：抽奖 `lottery/draw` **既不幂等**（每次都新 `client_token`
+	// 以确保真抽，且次数不可恢复）、**又不含伪造上报**——按原定义它两头都不属于，
+	// 会出现一个**分级空档**（既不能自动、也没有理由说它仅手动）。
+	// 扩展后它归 full，且理由自洽：消耗不可逆。
 	GrowthTierFull GrowthTier = "full"
 )
 
@@ -80,7 +93,12 @@ const (
 	// CodeBuddyGrowthChannelTravel 猫猫旅行（C 通道，**业务域聚合键**）。
 	// 仅用于标识业务域；**排程请用下面的动作级键**。
 	CodeBuddyGrowthChannelTravel = "travel"
-	// CodeBuddyGrowthChannelStreak 连登奖励链（D 通道：补签/兑换/抽奖/礼包/补偿）。
+	// CodeBuddyGrowthChannelStreak 连登奖励链的**幂等领奖部分**
+	// （补签 / 兑换 / 礼包 / 补偿）。
+	//
+	// ⚠️ **抽奖已从本通道拆出**（见 CodeBuddyGrowthChannelLottery）：
+	// 它不幂等（不可逆消耗），按扩展后的 full 定义归 full。
+	// 把抽奖留在 claim 通道里会让整条通道的"可自动"结论变错。
 	CodeBuddyGrowthChannelStreak = "streak"
 	// CodeBuddyGrowthChannelNightCat 夜猫子（E 通道）。
 	CodeBuddyGrowthChannelNightCat = "night_cat"
@@ -90,7 +108,7 @@ const (
 	CodeBuddyGrowthChannelTrial = "trial"
 )
 
-// 猫猫旅行的**动作级**通道键（"按动作拆"的落地）。
+// 动作级通道键（"按动作拆"的落地）。
 const (
 	// CodeBuddyGrowthChannelTravelStatus 查旅行状态：只读。
 	CodeBuddyGrowthChannelTravelStatus = "travel_status"
@@ -99,6 +117,19 @@ const (
 	// CodeBuddyGrowthChannelAdopt 领养（buddy/first）：依赖伪造的 chat_5 门槛，
 	// 且到达门槛后直接送 300 分。
 	CodeBuddyGrowthChannelAdopt = "adopt"
+
+	// CodeBuddyGrowthChannelLottery 抽奖（lottery/draw）：**不可逆消耗**。
+	//
+	// 从 streak 拆出来的理由（团队负责人 2026-09-23 裁定）：
+	//   - 它**不幂等**：参考实现 `scheduler.go:637` 原文「client_token 每次 draw
+	//     必须新键（security-relevant）」——该键的用途是**确保每次都真抽**；
+	//   - 抽一次消耗一次次数且**不可恢复**；
+	//   - 全仓无 `lotteryMu|lotteryDrew|drewToday` → 抽奖**没有**任何去重机制。
+	//
+	// 归 full 的判据是"**执行后不可撤销**"（扩展后的 full 定义），
+	// 不是"含伪造上报"——它并不伪造上报。这个区别写在这里，
+	// 免得下一个人看到"抽奖归 full"时以为是笔误。
+	CodeBuddyGrowthChannelLottery = "lottery"
 )
 
 // CodeBuddyGrowthChannelSpec 一条成长通道的**分级契约**。
@@ -130,9 +161,11 @@ type CodeBuddyGrowthChannelSpec struct {
 //     上游均幂等，重复调用无副作用。
 //   - adopt（C-领养）：**full**。前置 `chat_5` 只能靠 `/v2/report` 伪造 5 轮对话
 //     满足，且到达门槛后直接送 300 分——"猫会自己出现"不是真实发生的事。
-//   - streak（D）：**claim**。补签（有卡才补、无卡静默）、兑换（409 幂等）、
-//     抽奖（无次数跳过）、礼包/补偿（有则领）——全部是幂等领奖。
-//     ⚠️ 唯一例外见下方「抽奖」的待议条目。
+//   - streak（D，**幂等领奖部分**）：**claim**。补签（有卡才补、无卡静默）、
+//     兑换（409 幂等）、礼包/补偿（有则领）——全部是幂等领奖。
+//   - lottery（D-抽奖）：**full**。**不可逆消耗**——抽一次消耗一次次数且不可恢复，
+//     且每次 draw 必须新 `client_token`（确保真抽），所以**不幂等**。
+//     它**不含伪造上报**；归 full 的判据是「执行后不可撤销」（2026-09-23 扩展定义）。
 //   - night_cat（E）：**full**。没有任何"领奖"端点，唯一的动作就是发
 //     `chat_request_send`（mode=night）去点亮任务——**纯伪造活跃上报**。
 //   - school（F）：**full**。同类：完成判据靠伪造 chat_request_send 循环上报
@@ -145,12 +178,9 @@ type CodeBuddyGrowthChannelSpec struct {
 // `CodeBuddyGrowthAutoSchedulableChannelKeys()` 这一**唯一**入口——
 // 调度器只能通过后者取通道列表。
 //
-// ⚠️ **待议**：streak 里的**抽奖 `lottery/draw`** 目前随通道归 `claim`，但它
-// 实际上**不幂等**——参考实现 `scheduler.go:637` 原文「client_token 每次 draw
-// 必须新键（security-relevant）」，即该键是用来**确保每次都真抽**；且抽一次
-// 消耗一次次数、**不可恢复**。它既不是严格的 `claim`（非幂等），也不含伪造上报。
-// 已上报团队负责人待裁定是否单列 `full`（并相应扩展 full 的定义为
-// "含伪造上报 **或** 不可逆消耗"）。裁定前**不要**把它当 claim 自动跑。
+// ⚠️ **抽奖已单列为 full 级通道**（`lottery`，2026-09-23 裁定）：
+// 判据是「执行后不可撤销」。**不要**把它挪回 streak——一条通道的级别取决于
+// 其**最严**成员，挪回去会让整条 streak 通道的"可自动"结论变错。
 var CodeBuddyGrowthChannelSpecs = []CodeBuddyGrowthChannelSpec{
 	{
 		Key:       CodeBuddyGrowthChannelTravelStatus,
@@ -169,9 +199,19 @@ var CodeBuddyGrowthChannelSpecs = []CodeBuddyGrowthChannelSpec{
 			"——属「猫会自己出现」式的伪造事实",
 	},
 	{
-		Key:       CodeBuddyGrowthChannelStreak,
-		Tier:      GrowthTierClaim,
-		Rationale: "补签/兑换/礼包/补偿是幂等领奖；⚠️ 其中抽奖不幂等，见表上方待议",
+		Key:  CodeBuddyGrowthChannelStreak,
+		Tier: GrowthTierClaim,
+		Rationale: "补签（上游对 target_date 幂等）、兑换（409 幂等）、" +
+			"礼包/补偿（有则领）——全部是幂等领奖，重复调用无副作用。" +
+			"⚠️ 抽奖已拆出为独立通道（见 lottery）",
+	},
+	{
+		Key:  CodeBuddyGrowthChannelLottery,
+		Tier: GrowthTierFull,
+		Rationale: "**不可逆消耗**：抽一次消耗一次次数且不可恢复；" +
+			"每次 draw 必须新 client_token（scheduler.go:637「security-relevant」= 确保每次都真抽），" +
+			"所以它**不幂等**。归 full 的判据是「执行后不可撤销」，不是伪造上报——" +
+			"抽奖并不伪造上报，别把它与 night_cat 混为一谈",
 	},
 	{
 		Key:       CodeBuddyGrowthChannelNightCat,

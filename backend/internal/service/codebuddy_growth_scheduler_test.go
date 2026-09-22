@@ -330,3 +330,72 @@ func TestDispatchSkipsUnknownChannelKey(t *testing.T) {
 
 // 确保 strings 被用到（提取函数体时用）。
 var _ = strings.TrimSpace
+
+// Scenario：抽奖是 `full` 级（不可逆消耗），**自动排程不得执行它**。
+//
+// 2026-09-23 裁定：抽奖不幂等（每次 draw 必须新 client_token、次数不可恢复），
+// 按扩展后的 full 定义归 full。它已从 streak 通道拆出——此用例锁住"拆出"这个事实，
+// 防有人图省事把它挪回 streak（那会让整条 streak 的"可自动"结论变错，
+// 且抽奖会开始自动消耗次数）。
+func TestCodeBuddyGrowthSchedulerNeverRunsLottery(t *testing.T) {
+	env := newCodeBuddyGrowthSchedulerTestEnv(t, growthEnabledWindow,
+		newCodeBuddyActivityAccount(1, "u-1", "t-1"))
+	env.runner.candidates = []codeBuddyGrowthCandidate{{AccountID: 1, Name: "cb-1"}}
+	env.runner.summary = CodeBuddyGrowthAccountSummary{AccountID: 1}
+
+	env.at(t, "2026-09-23", "09:00")
+
+	for _, key := range env.runner.seenKeys {
+		require.NotEqual(t, codebuddy.CodeBuddyGrowthChannelLottery, key,
+			"抽奖是不可逆消耗，属 full 级，不得进自动排程")
+	}
+	// 且 streak 通道仍在（确认"拆出抽奖"没把整条链一起拆掉）。
+	require.Contains(t, env.runner.seenKeys, codebuddy.CodeBuddyGrowthChannelStreak)
+}
+
+// Scenario：抽奖手动入口在有次数时真的抽，无次数时跳过（不谎报）。
+func TestRunLotteryNowDrawsAndSkips(t *testing.T) {
+	t.Run("有次数则抽光", func(t *testing.T) {
+		svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == codebuddy.CodeBuddyGrowthLotteryChancesPath {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"balance":2}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"prize_type":"credit","credit_amount":5}}`))
+		})
+
+		result := svc.RunCodeBuddyGrowthLotteryNow(context.Background(), newGrowthTestAccount(1))
+
+		require.Empty(t, result.Error)
+		require.Equal(t, 2, result.Chances)
+		require.Equal(t, 2, result.Drawn, "有 2 次就抽 2 次")
+
+		draws := 0
+		for _, req := range recorder.snapshot() {
+			if req.Path == codebuddy.CodeBuddyGrowthLotteryDrawPath {
+				draws++
+			}
+		}
+		require.Equal(t, 2, draws)
+	})
+
+	t.Run("无次数则不抽", func(t *testing.T) {
+		svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == codebuddy.CodeBuddyGrowthLotteryChancesPath {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"balance":0}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0}`))
+		})
+
+		result := svc.RunCodeBuddyGrowthLotteryNow(context.Background(), newGrowthTestAccount(1))
+
+		require.Empty(t, result.Error)
+		require.Equal(t, 0, result.Drawn)
+		require.Contains(t, result.SkipReason, "无抽奖次数")
+		for _, req := range recorder.snapshot() {
+			require.NotEqual(t, codebuddy.CodeBuddyGrowthLotteryDrawPath, req.Path,
+				"无次数时不该发抽奖请求")
+		}
+	})
+}

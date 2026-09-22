@@ -209,6 +209,33 @@ func TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull(t *testing.T) {
 	}
 	requireTrue(t, fullCount > 0,
 		"注册表里应有 full 级通道（否则本测试失去意义——它靠 full 的存在来验证过滤）")
+
+	// 逐个点名：这几个**必须**是 full 且不在自动列表里。
+	//
+	// 为什么在通用断言之外还要点名：通用断言在"某个通道被误降级"时信息太弱——
+	// 它只说"该通道在自动列表里"，不说"它本该是哪一级、依据是什么"。
+	// 点名版把 rationale 打出来，让改错的人当场看到依据。
+	//
+	// ⚠️ 这条是**变异测试逼出来的**：我先前以为加了它，实际脚本替换的锚点
+	// 没匹配上（静默 no-op），于是"把 lottery 降级成 claim"的变异**没被抓到**。
+	// 是事后跑变异才发现断言根本没写进去——"绿了 ≠ 测到了"的又一例。
+	mustBeFull := []string{
+		CodeBuddyGrowthChannelAdopt,    // 伪造 chat_5 门槛
+		CodeBuddyGrowthChannelNightCat, // 纯伪造上报
+		CodeBuddyGrowthChannelSchool,   // 完成判据靠伪造上报
+		CodeBuddyGrowthChannelLottery,  // 不可逆消耗（2026-09-23 裁定归 full）
+	}
+	for _, key := range mustBeFull {
+		spec, ok := CodeBuddyGrowthChannelSpecByKey(key)
+		requireTrue(t, ok, "通道 %s 未注册", key)
+		if spec.Tier != GrowthTierFull {
+			t.Errorf("通道 %s 应为 full 级，实际是 %s。依据：%s",
+				key, spec.Tier, spec.Rationale)
+		}
+		if autoSet[key] {
+			t.Errorf("通道 %s 是 full 级，不得出现在自动排程列表里", key)
+		}
+	}
 }
 
 // requireNotEmpty / requireTrue 本地断言（避免为两条断言引入额外 import）。

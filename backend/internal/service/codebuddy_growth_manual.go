@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -80,6 +81,12 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannelNow(
 		}
 	case codebuddy.CodeBuddyGrowthChannelNightCat:
 		detail := s.runCodeBuddyGrowthNightCatNow(ctx, account, localDay)
+		result.Detail = detail
+		if detail.Error != "" {
+			result.Error = detail.Error
+		}
+	case codebuddy.CodeBuddyGrowthChannelLottery:
+		detail := s.RunCodeBuddyGrowthLotteryNow(ctx, account)
 		result.Detail = detail
 		if detail.Error != "" {
 			result.Error = detail.Error
@@ -311,4 +318,65 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAllNow(ctx context.Context) Co
 		summary.Succeeded++
 	}
 	return summary
+}
+
+// --- 抽奖（full 级，仅手动）---
+
+// CodeBuddyGrowthLotteryResult 抽奖结果。
+type CodeBuddyGrowthLotteryResult struct {
+	// Chances 抽之前的次数余额。
+	Chances int `json:"chances"`
+	// Drawn 本次成功抽出的次数。
+	Drawn int `json:"drawn"`
+	// SkipReason 未抽的原因（无次数等，属正常态）。
+	SkipReason string `json:"skip_reason,omitempty"`
+	// Error 失败原因。
+	Error string `json:"error,omitempty"`
+}
+
+// RunCodeBuddyGrowthLotteryNow 手动抽奖（消耗抽奖次数）。
+//
+// ⚠️ **分级 `full`（仅手动）**：抽奖**不幂等**——每次 `draw` 必须新
+// `client_token`（参考实现 `scheduler.go:637` 原文「必须新键（security-relevant）」，
+// 该键用于**确保每次都真抽**），且抽一次消耗一次次数、**不可恢复**。
+// 归 full 的判据是「**执行后不可撤销**」——它并不伪造上报，
+// 别与 night_cat 那类混为一谈。
+//
+// 用法：先查次数余额，为 0 直接跳过（无次数是上游 400 正常态，
+// 但少一次无谓请求）。**一次调用会抽光当前所有次数**——这是有意的：
+// 次数来自兑换赠送，留着不用只是积压。
+func (s *CodeBuddyAdminService) RunCodeBuddyGrowthLotteryNow(
+	ctx context.Context,
+	account *Account,
+) CodeBuddyGrowthLotteryResult {
+	result := CodeBuddyGrowthLotteryResult{}
+	if s == nil || account == nil || !account.IsCodeBuddy() {
+		result.Error = "not a codebuddy account"
+		return result
+	}
+
+	chances, err := s.fetchCodeBuddyLotteryChances(ctx, account)
+	if err != nil {
+		if reason, quiet := codeBuddyGrowthQuietReason(err); quiet {
+			result.SkipReason = reason
+			return result
+		}
+		result.Error = "fetch lottery chances failed"
+		return result
+	}
+	result.Chances = chances
+	if chances <= 0 {
+		result.SkipReason = "无抽奖次数"
+		return result
+	}
+
+	drawn, drawErr := s.drawCodeBuddyLotteryTimes(ctx, account, chances)
+	result.Drawn = drawn
+	if drawErr != nil {
+		// 中途失败：如实报出已抽到的次数 + 错误（不谎报全成功）。
+		result.Error = "lottery draw failed"
+		slog.Warn("codebuddy_growth.lottery_failed",
+			"account_id", account.ID, "drawn", drawn, "chances", chances, "error", drawErr)
+	}
+	return result
 }

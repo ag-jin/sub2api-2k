@@ -7,22 +7,23 @@ import (
 	"time"
 )
 
-// D 通道：连登奖励链（补签 → 兑换 → 抽奖 → 礼包/补偿）。
+// D 通道：连登奖励链（补签 → 兑换 → 礼包/补偿）。
 //
-// 分级：**`claim`**（幂等领奖，可自动）——**但抽奖是例外，见下方 ⚠️**。
+// 分级：**`claim`**（幂等领奖，可自动）。
+// **抽奖已拆出为独立通道**（`full`，不可逆消耗，仅手动）——见下方 ⚠️。
 // 依据：补签有卡才补（上游对 target_date 幂等）、兑换 409 幂等、
 // 礼包/补偿"有则领"（无则业务错误，属正常态）。重复调用均无副作用。
 //
-// ⚠️ **抽奖 `lottery/draw` 不幂等**：参考实现 `scheduler.go:637` 原文
-// 「client_token 每次 draw 必须新键（security-relevant）」——该键的用途是
-// **确保每次都真抽**；抽一次消耗一次次数且**不可恢复**。它既非严格 claim，
-// 也不含伪造上报，归属待团队负责人裁定（已上报）。
-// 在裁定前：本实现把它放在同一轮里执行，**依赖调度侧的当日去重台账**
-// （`ledgerStreakClaimed`）保证每号每天只跑一轮，不额外放大消耗。
+// ⚠️ **抽奖已拆出本通道**（2026-09-23 裁定）：它**不幂等**——参考实现
+// `scheduler.go:637` 原文「client_token 每次 draw 必须新键（security-relevant）」，
+// 该键的用途是**确保每次都真抽**；且抽一次消耗一次次数、**不可恢复**。
+// 按扩展后的 full 定义（含伪造上报 **或** 不可逆消耗）归 `full`，仅手动。
+// 手动入口：`RunCodeBuddyGrowthLotteryNow`。
 //
-// 执行顺序刻意固定：**补签 → 兑换 → 抽奖 → 礼包/补偿**。
-// 理由：兑换会**送抽奖次数**（`chances_granted`），所以兑换必须在抽奖之前，
-// 否则当天新得的次数要等到次日才用得上。
+// 执行顺序刻意固定：**补签 → 兑换 → 礼包/补偿**。
+// 兑换排在补签之后：补签可能让连登天数达标新档位，先补再兑能当场领到。
+// （抽奖已拆出，但顺序理由仍记在这里：兑换会**送抽奖次数**，
+//   所以手动抽奖应该安排在兑换之后，否则新得的次数要等下一轮才能用。）
 
 // CodeBuddyGrowthStreakResult 连登链一轮的结果（供日志与端点回执）。
 type CodeBuddyGrowthStreakResult struct {
@@ -123,20 +124,10 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthStreak(
 		}
 	}
 
-	// 3) 抽奖（兑换送的次数在这一轮就用掉；⚠️ 不幂等，见文件头）。
-	//    只在**有次数**时才发 draw：无次数是 400 正常态，但少一次无谓请求。
-	if chances, err := s.fetchCodeBuddyLotteryChances(ctx, account); err == nil && chances > 0 {
-		drawn, err := s.drawCodeBuddyLotteryTimes(ctx, account, chances)
-		result.LotteryDrawn = drawn
-		if err != nil {
-			if reason, quiet := codeBuddyGrowthQuietReason(err); quiet {
-				result.QuietNotes = append(result.QuietNotes, reason)
-			} else {
-				slog.Warn("codebuddy_growth.lottery_failed",
-					"account_id", account.ID, "drawn", drawn, "error", err)
-			}
-		}
-	}
+	// 3) 抽奖**不在这里**：它是 `full` 级（不可逆消耗），只能由手动入口触发
+	//    （`RunCodeBuddyGrowthLotteryNow`）。2026-09-23 裁定从本通道拆出——
+	//    留在自动路径里会让整条 streak 的"可自动"结论变错。
+	//    ⚠️ 兑换送的次数会**留在账户里**，等下次手动抽奖时用掉，不会丢。
 
 	// 4) 礼包 / 补偿（有则领，无则业务错误 = 正常态）。
 	if credit, err := s.claimCodeBuddyGrowthGift(ctx, account); err == nil {
