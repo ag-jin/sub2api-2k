@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/codebuddyqr"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	logredact "github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/tidwall/gjson"
@@ -45,7 +45,7 @@ const (
 type CodeBuddyAdminService struct {
 	admin       AdminService
 	accountRepo AccountRepository
-	qrStore     codebuddyqr.Store
+	qrStore     codebuddy.Store
 	qrFlight    singleflight.Group // 上游 token 调用 single-flight（per-state）
 	// qrBase 扫码流程上游 base（chat 网关同域 copilot.tencent.com）；
 	// qr 无账号上下文 → plain client + testBaseURL 注入字段（A6）。
@@ -57,7 +57,7 @@ type CodeBuddyAdminService struct {
 func NewCodeBuddyAdminService(
 	admin AdminService,
 	accountRepo AccountRepository,
-	qrStore codebuddyqr.Store,
+	qrStore codebuddy.Store,
 ) *CodeBuddyAdminService {
 	return &CodeBuddyAdminService{
 		admin:       admin,
@@ -114,7 +114,7 @@ func (s *CodeBuddyAdminService) Start(ctx context.Context, actorID string) (*Cod
 	if state == "" {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_QR_STATE_MISSING", "upstream qr state missing")
 	}
-	rec := codebuddyqr.StateRecord{
+	rec := codebuddy.StateRecord{
 		ActorID:   actorID,
 		CreatedAt: time.Now().UnixMilli(),
 	}
@@ -181,7 +181,7 @@ func (s *CodeBuddyAdminService) Poll(ctx context.Context, actorID, state string)
 		return nil, infraerrors.TooManyRequests("CODEBUDDY_QR_POLL_THROTTLED", "poll interval too short (min 2s)")
 	}
 	// lastPolledAt 记账：保持剩余 TTL（ouncill 刷新由逻辑过期控制）。
-	remaining := time.Until(time.UnixMilli(rec.CreatedAt).Add(codebuddyqr.RecordTTL))
+	remaining := time.Until(time.UnixMilli(rec.CreatedAt).Add(codebuddy.RecordTTL))
 	if remaining > 0 {
 		rec.LastPolledAt = now.UnixMilli()
 		_ = s.qrStore.Save(ctx, state, *rec, remaining)
@@ -227,7 +227,7 @@ func (s *CodeBuddyAdminService) Poll(ctx context.Context, actorID, state string)
 }
 
 // finalizeQRLogin 焚毁 state → Bearer 取账号信息 → CAS upsert 落库。
-func (s *CodeBuddyAdminService) finalizeQRLogin(ctx context.Context, state string, rec *codebuddyqr.StateRecord, tokenData []byte) (*CodeBuddyQRPollResult, error) {
+func (s *CodeBuddyAdminService) finalizeQRLogin(ctx context.Context, state string, rec *codebuddy.StateRecord, tokenData []byte) (*CodeBuddyQRPollResult, error) {
 	// 取到 token 当刻即焚（写库之前）。
 	if dropErr := s.qrStore.Drop(ctx, state); dropErr != nil {
 		slog.Warn("codebuddy qr state drop failed (best-effort)", slog.String("error", logredact.RedactText(dropErr.Error())))
@@ -453,8 +453,8 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 		return result, nil
 	default:
 		return nil, infraerrors.Newf(http.StatusBadRequest, "CODEBUDDY_CHECKIN_REJECTED",
-			"codebuddy checkin rejected (code %d): %s", code,
-			CodeBuddyBizCodeMessage(int(code), codebuddyEnvelopeMsg(raw)))
+			"codebuddy checkin rejected (code %v): %s", codebuddyEnvelopeCodeRaw(raw),
+			codebuddy.CodeBuddyBizCodeMessage(codebuddyEnvelopeCodeRaw(raw), codebuddyEnvelopeMsg(raw)))
 	}
 }
 
@@ -492,6 +492,26 @@ func codebuddyEnvelopeCode(raw []byte) int64 {
 	return gjson.GetBytes(raw, "code").Int()
 }
 
+// codebuddyEnvelopeCodeRaw 取信封 code 的**原值**（保留字符串/数字区别）。
+//
+// ⚠️ 上游的 code 不保证是数字：实测 "11-128" 是字符串形态，而 gjson .Int()
+// 对非数字串返回 0——用它查码表/拼接文案会把真实拒因吞成 "code 0"。
+// 凡是要展示或查码表的地方，都必须用这个函数而不是 codebuddyEnvelopeCode。
+func codebuddyEnvelopeCodeRaw(raw []byte) any {
+	res := gjson.GetBytes(raw, "code")
+	if !res.Exists() {
+		return int64(0)
+	}
+	switch res.Type {
+	case gjson.String:
+		return res.String()
+	case gjson.Number:
+		return res.Num
+	default:
+		return res.String()
+	}
+}
+
 // codebuddyEnvelopeMsg 提取信封 msg 并脱敏（上游错误体可能回显请求内容）。
 func codebuddyEnvelopeMsg(raw []byte) string {
 	msg := strings.TrimSpace(gjson.GetBytes(raw, "msg").String())
@@ -504,6 +524,6 @@ func codebuddyEnvelopeMsg(raw []byte) string {
 // codebuddyUpstreamBizError 上游非 0 业务码 → 502 报错（仅 code+msg 语义）。
 func codebuddyUpstreamBizError(raw []byte) error {
 	return infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_UPSTREAM_REJECTED",
-		"codebuddy upstream rejected (code %d): %s", codebuddyEnvelopeCode(raw),
-		CodeBuddyBizCodeMessage(int(codebuddyEnvelopeCode(raw)), codebuddyEnvelopeMsg(raw)))
+		"codebuddy upstream rejected (code %v): %s", codebuddyEnvelopeCodeRaw(raw),
+		codebuddy.CodeBuddyBizCodeMessage(codebuddyEnvelopeCodeRaw(raw), codebuddyEnvelopeMsg(raw)))
 }

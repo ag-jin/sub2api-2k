@@ -1,4 +1,4 @@
-package service
+package codebuddy
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ import (
 // cleanupCodeBuddySdkFields 对齐官方 SdkFieldCleanupRule：出站体删除 SDK 内部字段
 // `verbosity` 与 `reasoning_summary`（官方 CLI 的 ModelRequestProcessor 首个规则，
 // matches 恒真）。这两个字段由客户端 SDK 生成、上游不消费，官方一律剥离。
-func cleanupCodeBuddySdkFields(out []byte) []byte {
+func CleanupCodeBuddySdkFields(out []byte) []byte {
 	for _, field := range []string{"verbosity", "reasoning_summary"} {
 		if gjson.GetBytes(out, field).Exists() {
 			out = deleteCodeBuddyJSONField(out, field)
@@ -37,7 +37,7 @@ func cleanupCodeBuddySdkFields(out []byte) []byte {
 //   - {"type":"auto"|"required"} → 字符串 "auto"/"required"
 //   - {"type":"function","function":{"name":"x"}} → 字符串 "x"（无名字段时回落 "auto"）
 //   - 其它对象/非标量 → 删 tool_choice
-func normalizeCodeBuddyToolChoice(out []byte) ([]byte, error) {
+func NormalizeCodeBuddyToolChoice(out []byte) ([]byte, error) {
 	tc := gjson.GetBytes(out, "tool_choice")
 	if !tc.Exists() {
 		return out, nil
@@ -190,7 +190,7 @@ func isCodeBuddyDeepSeekModel(model string) bool {
 //   - 客户端把档位放在 thinking.type 里（六档之一）→ 转写成 reasoning_effort（尊重选择且真正开启）；
 //   - 其余：有目录默认档 → 注入该档；deepseek 无档位时兜底 "high"；deepseek 补 type="enabled"；
 //   - 既非 deepseek、目录也无默认档 → 零改动。
-func injectCodeBuddyDeepSeekThinking(out []byte) ([]byte, error) {
+func InjectCodeBuddyDeepSeekThinking(out []byte) ([]byte, error) {
 	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(out, "model").String()))
 	if model == "" {
 		return out, nil
@@ -301,7 +301,7 @@ func hasCodeBuddyReasoningEffort(out []byte) bool {
 //   - 任一 assistant 有非空 `reasoning`（string）或已有 `reasoning_content` 字段 → 触发；
 //   - 触发后每个 assistant：已有 reasoning_content 保留；否则复制 `reasoning` 值；两者皆无 → 补空串；
 //   - 无任何痕迹 → 零改动（不白白加字段）；非 deepseek 模型 → 零改动。
-func backfillCodeBuddyReasoningContent(out []byte) ([]byte, error) {
+func BackfillCodeBuddyReasoningContent(out []byte) ([]byte, error) {
 	model := gjson.GetBytes(out, "model").String()
 	if !isCodeBuddyDeepSeekModel(model) {
 		return out, nil
@@ -352,8 +352,8 @@ func backfillCodeBuddyReasoningContent(out []byte) ([]byte, error) {
 // ensureCodeBuddyConsoleSystem 全局域（workbuddy.ai）console 兜底：首条消息非 system 时，
 // 在 messages 最前补一条 fallback system（对齐官方客户端；参考实现吸收自上游 PR #45，
 // 防 console 域上游按 11128 拦截）。仅 global realm 生效，CN 现状零改动。
-func ensureCodeBuddyConsoleSystem(out []byte, account *Account) ([]byte, error) {
-	if codeBuddyAccountRealm(account) != codeBuddyRealmKindGlobal {
+func EnsureCodeBuddyConsoleSystem(out []byte, account CodeBuddyAccount) ([]byte, error) {
+	if ResolveRealm(account) != RealmGlobal {
 		return out, nil
 	}
 	arr := gjson.GetBytes(out, "messages")

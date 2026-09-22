@@ -1,4 +1,4 @@
-package service
+package codebuddy
 
 import (
 	"strconv"
@@ -38,8 +38,8 @@ var codeBuddyStreamEmptyStringDeltaKeys = []string{"content", "reasoning_content
 //
 // 非 data 行、[DONE]、空 payload、JSON 解析失败或无需改写的行原样返回（ok=false），
 // 调用方可据此跳过写入替换。改写是幂等的：对归一化后的行再次调用返回 ok=false。
-func normalizeCodeBuddyChatStreamLine(line string) (string, bool) {
-	payload, ok := extractOpenAISSEDataLine(line)
+func NormalizeCodeBuddyChatStreamLine(line string) (string, bool) {
+	payload, ok := extractCodeBuddySSEDataLine(line)
 	if !ok {
 		return line, false
 	}
@@ -110,4 +110,23 @@ func normalizeCodeBuddyChatStreamLine(line string) (string, bool) {
 		return line, false
 	}
 	return "data: " + string(out), true
+}
+
+// extractCodeBuddySSEDataLine 低开销提取 SSE `data:` 行内容，兼容
+// `data: xxx` 与 `data:xxx` 两种格式。
+//
+// 本包自带一份（而非复用 service 包的同名函数）是为了保持 platform/codebuddy
+// 对 service 包的零依赖——该函数只有 10 行且形态稳定，重复的代价远低于反向依赖。
+func extractCodeBuddySSEDataLine(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	start := len("data:")
+	for start < len(line) {
+		if line[start] != ' ' && line[start] != '\t' {
+			break
+		}
+		start++
+	}
+	return line[start:], true
 }

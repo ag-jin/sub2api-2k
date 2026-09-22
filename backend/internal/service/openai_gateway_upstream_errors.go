@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -809,7 +810,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		// 客户端会只看到不可诊断的 "Upstream error: 400"；此处补全为
 		// "Upstream error: 400 (code 11128: Illegal API invocation from an unapproved channel)"。
 		if account != nil && account.IsCodeBuddy() {
-			if envelope := codeBuddyUpstreamEnvelopeMessage(body); envelope != "" {
+			if envelope := codebuddy.CodeBuddyUpstreamEnvelopeMessage(body); envelope != "" {
 				upstreamMsg = fmt.Sprintf("Upstream error: %d (%s)", resp.StatusCode, envelope)
 			}
 		}

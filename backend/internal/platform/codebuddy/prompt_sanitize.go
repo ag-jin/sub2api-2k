@@ -1,4 +1,4 @@
-package service
+package codebuddy
 
 import (
 	"fmt"
@@ -129,7 +129,7 @@ func codeBuddyBodyMayContainFingerprint(body []byte) bool {
 
 // sanitizeCodeBuddyBodyFingerprints 净化消息体：所有角色的 content（字符串/parts 数组）与
 // tool_calls[].function.arguments。无命中时原字节返回。
-func sanitizeCodeBuddyBodyFingerprints(body []byte) ([]byte, error) {
+func SanitizeCodeBuddyBodyFingerprints(body []byte) ([]byte, error) {
 	if !codeBuddyBodyMayContainFingerprint(body) {
 		return body, nil
 	}

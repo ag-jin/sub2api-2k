@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
@@ -180,7 +181,7 @@ func (r *CodeBuddyTokenRefresher) callRefreshEndpoint(ctx context.Context, accou
 			return nil, newCodeBuddyRefreshAuthError(resp.StatusCode, msg)
 		}
 		return nil, fmt.Errorf("codebuddy refresh failed: code %d %s", codeValue.Int(),
-			CodeBuddyBizCodeMessage(int(codeValue.Int()), logredact.RedactText(msg))) // 管理面日志附业务码说明（A4）
+			codebuddy.CodeBuddyBizCodeMessage(int(codeValue.Int()), logredact.RedactText(msg))) // 管理面日志附业务码说明（A4）
 	}
 	data := gjson.GetBytes(body, "data")
 	if !data.IsObject() {

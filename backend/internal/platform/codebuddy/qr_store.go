@@ -1,6 +1,6 @@
 // Package codebuddyqr 提供后台 CodeBuddy 扫码登录流程的 state 存储实现
 // （Redis，go-redis v9）：记录发起者绑定、节流时间戳、并发的每发起者上限。
-package codebuddyqr
+package codebuddy
 
 import (
 	"context"

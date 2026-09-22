@@ -1,4 +1,4 @@
-package service
+package codebuddy
 
 import (
 	"testing"
@@ -20,7 +20,7 @@ const (
 )
 
 func TestNormalizeCodeBuddyChatStreamLine_ReasoningFrame(t *testing.T) {
-	out, ok := normalizeCodeBuddyChatStreamLine(cbStreamFrameReasoning)
+	out, ok := NormalizeCodeBuddyChatStreamLine(cbStreamFrameReasoning)
 	require.True(t, ok, "空壳字段帧必须被改写")
 	require.True(t, gjson.Valid(out[6:]), "输出仍是合法 JSON 行")
 
@@ -41,7 +41,7 @@ func TestNormalizeCodeBuddyChatStreamLine_ReasoningFrame(t *testing.T) {
 }
 
 func TestNormalizeCodeBuddyChatStreamLine_RoleFrameKeepsEmptyContent(t *testing.T) {
-	out, ok := normalizeCodeBuddyChatStreamLine(cbStreamFrameRole)
+	out, ok := NormalizeCodeBuddyChatStreamLine(cbStreamFrameRole)
 	require.True(t, ok)
 
 	delta := gjson.Get(out, "choices.0.delta")
@@ -55,7 +55,7 @@ func TestNormalizeCodeBuddyChatStreamLine_RoleFrameKeepsEmptyContent(t *testing.
 }
 
 func TestNormalizeCodeBuddyChatStreamLine_FinishFrame(t *testing.T) {
-	out, ok := normalizeCodeBuddyChatStreamLine(cbStreamFrameFinish)
+	out, ok := NormalizeCodeBuddyChatStreamLine(cbStreamFrameFinish)
 	require.True(t, ok)
 
 	assert.Equal(t, "stop", gjson.Get(out, "choices.0.finish_reason").String(), "真实 finish_reason 不被改写")
@@ -68,7 +68,7 @@ func TestNormalizeCodeBuddyChatStreamLine_FinishFrame(t *testing.T) {
 
 func TestNormalizeCodeBuddyChatStreamLine_RealToolCallPreserved(t *testing.T) {
 	line := `data: {"id":"x","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"content":"","reasoning_content":"","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\""}}],"refusal":"","extra_fields":null,"function_call":null},"logprobs":null,"finish_reason":""}],"usage":null}`
-	out, ok := normalizeCodeBuddyChatStreamLine(line)
+	out, ok := NormalizeCodeBuddyChatStreamLine(line)
 	require.True(t, ok)
 
 	tc := gjson.Get(out, "choices.0.delta.tool_calls")
@@ -86,7 +86,7 @@ func TestNormalizeCodeBuddyChatStreamLine_CleanFrameUntouched(t *testing.T) {
 	// opencode 等标准上游形状（content:null、无空壳字段）不做任何改写——
 	// 归一化只服务 codebuddy 账号，且必须对健康流零副作用。
 	line := `data: {"id":"935591df","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","created":1789632203,"choices":[{"index":0,"delta":{"content":null,"reasoning_content":"We"},"finish_reason":null}],"usage":null}`
-	out, ok := normalizeCodeBuddyChatStreamLine(line)
+	out, ok := NormalizeCodeBuddyChatStreamLine(line)
 	assert.False(t, ok, "无空壳字段的帧不应发生改写")
 	assert.Equal(t, line, out)
 }
@@ -102,7 +102,7 @@ func TestNormalizeCodeBuddyChatStreamLine_NonDataAndSentinel(t *testing.T) {
 		`data: {"id":"x","choices":[]}`,
 		`data: {"id":"x"}`,
 	} {
-		out, ok := normalizeCodeBuddyChatStreamLine(line)
+		out, ok := NormalizeCodeBuddyChatStreamLine(line)
 		assert.False(t, ok, "不应改写: %q", line)
 		assert.Equal(t, line, out, "原样返回: %q", line)
 	}
@@ -110,7 +110,7 @@ func TestNormalizeCodeBuddyChatStreamLine_NonDataAndSentinel(t *testing.T) {
 
 func TestNormalizeCodeBuddyChatStreamLine_MultipleChoices(t *testing.T) {
 	line := `data: {"id":"x","choices":[{"index":0,"delta":{"content":"","reasoning_content":"a","tool_calls":[],"extra_fields":null},"finish_reason":""},{"index":1,"delta":{"content":"b","tool_calls":[],"refusal":""},"finish_reason":""}],"usage":null}`
-	out, ok := normalizeCodeBuddyChatStreamLine(line)
+	out, ok := NormalizeCodeBuddyChatStreamLine(line)
 	require.True(t, ok)
 
 	assert.False(t, gjson.Get(out, "choices.0.delta.tool_calls").Exists())
@@ -123,9 +123,9 @@ func TestNormalizeCodeBuddyChatStreamLine_MultipleChoices(t *testing.T) {
 }
 
 func TestNormalizeCodeBuddyChatStreamLine_Idempotent(t *testing.T) {
-	first, ok := normalizeCodeBuddyChatStreamLine(cbStreamFrameReasoning)
+	first, ok := NormalizeCodeBuddyChatStreamLine(cbStreamFrameReasoning)
 	require.True(t, ok)
-	second, ok2 := normalizeCodeBuddyChatStreamLine(first)
+	second, ok2 := NormalizeCodeBuddyChatStreamLine(first)
 	assert.False(t, ok2, "二次归一化不应再改写")
 	assert.Equal(t, first, second)
 }
@@ -135,7 +135,7 @@ func TestNormalizeCodeBuddyChatStreamLine_Idempotent(t *testing.T) {
 func TestNormalizeCodeBuddyChatStreamLine_NoTriggerFieldsLeft(t *testing.T) {
 	frames := []string{cbStreamFrameRole, cbStreamFrameReasoning, cbStreamFrameFinish}
 	for _, frame := range frames {
-		out, _ := normalizeCodeBuddyChatStreamLine(frame)
+		out, _ := NormalizeCodeBuddyChatStreamLine(frame)
 		delta := gjson.Get(out, "choices.0.delta")
 		assert.False(t, delta.Get("tool_calls").Exists(), "tool_calls 不得残留（空数组即触发）")
 		assert.False(t, delta.Get("extra_fields").Exists())

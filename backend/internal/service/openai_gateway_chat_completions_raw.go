@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -580,7 +581,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		// 透传会让下游客户端误判帧边界（详见 codebuddy_stream_normalize.go）。
 		// 归一化放在 usage/首 token/静默拒绝观测之后，只影响写出给客户端的内容。
 		if account.IsCodeBuddy() {
-			if normalized, ok := normalizeCodeBuddyChatStreamLine(line); ok {
+			if normalized, ok := codebuddy.NormalizeCodeBuddyChatStreamLine(line); ok {
 				line = normalized
 			}
 		}

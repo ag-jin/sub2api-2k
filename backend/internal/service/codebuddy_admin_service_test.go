@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/codebuddyqr"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -117,7 +117,7 @@ type codebuddyAdminTestEnv struct {
 	stub   *codebuddyAdminStubAdmin
 	mux    *codebuddyUpstreamStub
 	server *httptest.Server
-	store  codebuddyqr.Store
+	store  codebuddy.Store
 }
 
 func newCodebuddyAdminTestEnv(t *testing.T, accounts ...*Account) *codebuddyAdminTestEnv {
@@ -127,7 +127,7 @@ func newCodebuddyAdminTestEnv(t *testing.T, accounts ...*Account) *codebuddyAdmi
 	t.Cleanup(server.Close)
 
 	redisServer := miniredis.RunT(t)
-	store := codebuddyqr.NewRedisStore(redis.NewClient(&redis.Options{Addr: redisServer.Addr()}))
+	store := codebuddy.NewRedisStore(redis.NewClient(&redis.Options{Addr: redisServer.Addr()}))
 	repo := newCodebuddyAdminTestRepo(accounts...)
 	stub := &codebuddyAdminStubAdmin{repo: repo, nextID: 100}
 	svc := NewCodeBuddyAdminService(stub, repo, store).WithTestBaseURL(server.URL)
@@ -277,7 +277,7 @@ func TestCodeBuddyQRPollExpired(t *testing.T) {
 	t.Parallel()
 	env := newCodebuddyAdminTestEnv(t)
 	// 直接写入逻辑已过期的 state 记录（绕过 Start 时序）。
-	err := env.store.Create(context.Background(), "st-expired", codebuddyqr.StateRecord{
+	err := env.store.Create(context.Background(), "st-expired", codebuddy.StateRecord{
 		ActorID:   "actor-1",
 		CreatedAt: time.Now().Add(-301 * time.Second).UnixMilli(),
 	})
@@ -455,18 +455,6 @@ func requireUpdatedAtRFC3339(t *testing.T, raw any) time.Time {
 	parsed, err := time.Parse(time.RFC3339, text)
 	require.NoError(t, err)
 	return parsed
-}
-
-// Scenario: 码表映射（A4）。
-func TestCodeBuddyBizCodeHints(t *testing.T) {
-	t.Parallel()
-
-	for _, code := range []int{0, 10001, 11101, 11128, 11217, 12153} {
-		require.NotEmpty(t, CodeBuddyBizCodeHint(code))
-	}
-	require.Empty(t, CodeBuddyBizCodeHint(99999))
-	require.Equal(t, "raw msg", CodeBuddyBizCodeMessage(99999, "raw msg"))
-	require.Contains(t, CodeBuddyBizCodeMessage(10001, "已签过"), "今日已签到")
 }
 
 // 场景守卫：凭据串需不会被打印（走 logredact 由调用处保证；此断言防未来回归）。

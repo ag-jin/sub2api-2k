@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -66,40 +67,40 @@ func transformCodeBuddyRequestBody(body []byte, account *Account) ([]byte, error
 	}
 
 	// 2'. 官方 SdkFieldCleanupRule：剥离 SDK 内部字段（verbosity / reasoning_summary）。
-	if cleaned := cleanupCodeBuddySdkFields(out); len(cleaned) != len(out) {
+	if cleaned := codebuddy.CleanupCodeBuddySdkFields(out); len(cleaned) != len(out) {
 		out = cleaned
 	}
 
 	// 2. tool_choice 归一化。
-	updated, err := normalizeCodeBuddyToolChoice(out)
+	updated, err := codebuddy.NormalizeCodeBuddyToolChoice(out)
 	if err != nil {
 		return nil, err
 	}
 	out = updated
 
 	// 3. DeepSeek 思维链开关（含默认 effort 档）。
-	updated, err = injectCodeBuddyDeepSeekThinking(out)
+	updated, err = codebuddy.InjectCodeBuddyDeepSeekThinking(out)
 	if err != nil {
 		return nil, err
 	}
 	out = updated
 
 	// 4. DeepSeek assistant reasoning_content 回填。
-	updated, err = backfillCodeBuddyReasoningContent(out)
+	updated, err = codebuddy.BackfillCodeBuddyReasoningContent(out)
 	if err != nil {
 		return nil, err
 	}
 	out = updated
 
 	// 5. 全局域 console 兜底 system。
-	updated, err = ensureCodeBuddyConsoleSystem(out, account)
+	updated, err = codebuddy.EnsureCodeBuddyConsoleSystem(out, account)
 	if err != nil {
 		return nil, err
 	}
 	out = updated
 
 	// 6. 提示词指纹净化（放在最后：覆盖前面步骤可能触及的文本）。
-	updated, err = sanitizeCodeBuddyBodyFingerprints(out)
+	updated, err = codebuddy.SanitizeCodeBuddyBodyFingerprints(out)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +324,7 @@ func (s *OpenAIGatewayService) handleCodeBuddyAccountUpstreamError(ctx context.C
 
 // codeBuddyBizCodeSuffix 已知业务码 → 追加 "（hint）" 说明（未知码返回空串）。
 func codeBuddyBizCodeSuffix(code int) string {
-	hint := CodeBuddyBizCodeHint(code)
+	hint := codebuddy.CodeBuddyBizCodeHint(code)
 	if hint == "" {
 		return ""
 	}

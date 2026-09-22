@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -1237,12 +1238,12 @@ func TestTransformCodeBuddyRequestBody_GlobalRealmConsoleSystem(t *testing.T) {
 func TestCodeBuddyUpstreamEnvelopeMessage(t *testing.T) {
 	envelope := `{"code":11128,"displayMsg":{"en":"blocked"},"msg":"Illegal API invocation from an unapproved channel","requestId":"c7df365e"}`
 	assert.Equal(t, "code 11128: Illegal API invocation from an unapproved channel",
-		codeBuddyUpstreamEnvelopeMessage([]byte(envelope)))
+		codebuddy.CodeBuddyUpstreamEnvelopeMessage([]byte(envelope)))
 
 	assert.Equal(t, "session expired",
-		codeBuddyUpstreamEnvelopeMessage([]byte(`{"code":0,"msg":"session expired"}`)))
+		codebuddy.CodeBuddyUpstreamEnvelopeMessage([]byte(`{"code":0,"msg":"session expired"}`)))
 
-	assert.Equal(t, "", codeBuddyUpstreamEnvelopeMessage([]byte(`{"error":{"message":"boom"}}`)),
+	assert.Equal(t, "", codebuddy.CodeBuddyUpstreamEnvelopeMessage([]byte(`{"error":{"message":"boom"}}`)),
 		"非 CodeBuddy 信封形态返回空串，避免覆盖通用提取结果")
-	assert.Equal(t, "", codeBuddyUpstreamEnvelopeMessage(nil))
+	assert.Equal(t, "", codebuddy.CodeBuddyUpstreamEnvelopeMessage(nil))
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/codebuddyqr"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/google/wire"
@@ -35,9 +35,9 @@ func ProvideCodeBuddyAdminService(
 	accountRepo AccountRepository,
 	redisClient *redis.Client,
 ) *CodeBuddyAdminService {
-	var store codebuddyqr.Store
+	var store codebuddy.Store
 	if redisClient != nil {
-		store = codebuddyqr.NewRedisStore(redisClient)
+		store = codebuddy.NewRedisStore(redisClient)
 	}
 	return NewCodeBuddyAdminService(adminSvc, accountRepo, store)
 }
