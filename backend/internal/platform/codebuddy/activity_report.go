@@ -28,6 +28,19 @@ import (
 // "report /v2/report 不参与"）。所以这里是**单一固定路径**，别照 L8 去加回落候选。
 const CodeBuddyActivityReportPath = "/v2/report"
 
+// CodeBuddyActivityStreakPath 连登状态回读端点。
+//
+// ⚠️ 域与上行**不同**：上报走 billing 域（`{billingBase}/v2/report`），
+// 连登回读走 **chat 域**（`{chatBase}/activity/growth/streak`）。参考实现里
+// `GrowthStreak` 用 chatBase + BillingHeaders、`ReportChatActivity` 用 billingBase
+// ——两者不是同一个 base，混用会打到错的主机。
+//
+// 字面量定义在 platform 包（service 侧的同名常量已改为指向本常量的别名）：
+// 成长链（A6）的 `CodeBuddyGrowthStreakPath` 也要引用**同一个**字面量，
+// 而 platform 包不能反向 import service（会成环）。两份字面量一旦分叉
+// （比如一方被改成带 /v2 前缀），只会在线上表现为"其中一条链路莫名 404"。
+const CodeBuddyActivityStreakPath = "/activity/growth/streak"
+
 // CodeBuddyActivityEventCode 事件码：对话请求发送。
 const CodeBuddyActivityEventCode = "chat_request_send"
 
