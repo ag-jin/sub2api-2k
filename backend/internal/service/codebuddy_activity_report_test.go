@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,4 +272,51 @@ func TestReportCodeBuddyActivityVerifiesHealthyStreak(t *testing.T) {
 	require.Equal(t, 3, result.StreakDays)
 	require.True(t, result.Verified)
 	require.False(t, result.SelfCheckFailed)
+}
+
+// --- 5.3：域分离（上报走 billing、自检走 chat）---
+
+// Scenario：上报与自检落在**两个不同域**上。
+//
+// ⚠️ 为什么必须单独测这个：两个端点在实现上只差一个"用哪个 base"的参数，
+// 而测试若只用单一 testBaseURL，两条请求会打到同一个 httptest server——
+// **把自检错写成 billing 域，所有用例照样全绿**（已用变异实测确认）。
+// 这里绕开 testBaseURL，直接断言两个纯函数解析出的 host。
+func TestCodeBuddyActivityEndpointsUseDifferentDomains(t *testing.T) {
+	svc := NewCodeBuddyAdminService(nil, nil, nil)
+
+	cn := newCodeBuddyActivityAccount(1, "u-1", "t-1")
+	report := svc.codeBuddyActivityReportEndpoint(cn)
+	streak := svc.codeBuddyActivityStreakEndpoint(cn)
+
+	require.Equal(t, CodeBuddyBillingBaseCN+codebuddy.CodeBuddyActivityReportPath, report,
+		"上报必须走 billing 域（签到/积分同域）")
+	require.Equal(t, CodeBuddyChatBaseCN+CodeBuddyActivityStreakPath, streak,
+		"自检必须走 chat 域（与上报**不同**主机）")
+
+	// 两条端点的 host 必须不同——这是本用例的核心断言。
+	reportHost := strings.Split(strings.TrimPrefix(report, "https://"), "/")[0]
+	streakHost := strings.Split(strings.TrimPrefix(streak, "https://"), "/")[0]
+	require.NotEqual(t, reportHost, streakHost,
+		"上报与自检不得落在同一主机（CN 下 billing=www.codebuddy.cn、chat=copilot.tencent.com）")
+}
+
+// Scenario：global 账号两个域同样分离（base 按 realm 切换后依然不同）。
+func TestCodeBuddyActivityEndpointsSeparateDomainsForGlobalRealm(t *testing.T) {
+	svc := NewCodeBuddyAdminService(nil, nil, nil)
+
+	global := newCodeBuddyActivityAccount(2, "u-2", "t-2")
+	global.Credentials["realm"] = "global"
+
+	require.Equal(t, CodeBuddyBillingBaseGlobal+codebuddy.CodeBuddyActivityReportPath,
+		svc.codeBuddyActivityReportEndpoint(global))
+	require.Equal(t, CodeBuddyChatBaseGlobal+CodeBuddyActivityStreakPath,
+		svc.codeBuddyActivityStreakEndpoint(global))
+}
+
+// Scenario：路径本身固定且各自唯一（上报不带 /v2 回落族、自检在 growth 族）。
+func TestCodeBuddyActivityEndpointPathsAreFixed(t *testing.T) {
+	require.Equal(t, "/v2/report", codebuddy.CodeBuddyActivityReportPath)
+	require.Equal(t, "/activity/growth/streak", CodeBuddyActivityStreakPath)
+	require.NotEqual(t, codebuddy.CodeBuddyActivityReportPath, CodeBuddyActivityStreakPath)
 }

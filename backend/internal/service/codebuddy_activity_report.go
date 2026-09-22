@@ -157,6 +157,37 @@ func (s *CodeBuddyAdminService) ReportCodeBuddyActivity(
 }
 
 // sendCodeBuddyActivity 发一条上报（body 是**数组**，参考实现即 `[]chatRequestEvent`）。
+// codeBuddyActivityReportEndpoint 上报端点：**billing 域** + 固定路径 /v2/report。
+//
+// ⚠️ 单一路径，无 realm 回落：/v2/report **不在** billing/meter 回落族
+// （参考实现 client.go:880 原文"report /v2/report 不参与"）。别照 L8 加候选。
+func (s *CodeBuddyAdminService) codeBuddyActivityReportEndpoint(account *Account) string {
+	return activityEndpointBase(s, account, CodeBuddyBillingBase) + codebuddy.CodeBuddyActivityReportPath
+}
+
+// codeBuddyActivityStreakEndpoint 连登回读端点：**chat 域** + /activity/growth/streak。
+//
+// ⚠️ 与上报**不同域**：上报走 billing（www.codebuddy.cn），连登走 chat
+// （copilot.tencent.com）。参考实现里两者分别是 billingBase 与 chatBase——
+// 混用会打到错的主机，且两端都用同一个 testBaseURL 时测试**看不出来**。
+func (s *CodeBuddyAdminService) codeBuddyActivityStreakEndpoint(account *Account) string {
+	return activityEndpointBase(s, account, CodeBuddyChatBase) + CodeBuddyActivityStreakPath
+}
+
+// activityEndpointBase 取端点 base：测试注入优先，否则按 realm 走传入的解析器。
+// 抽出来是为了让"哪个域"这件事可单测——两个 endpoint 函数的**差异只在解析器参数**，
+// 混淆两者是本模块最容易犯且最难发现的错（testBaseURL 会同时覆盖两边）。
+func activityEndpointBase(
+	s *CodeBuddyAdminService,
+	account *Account,
+	resolve func(*Account) string,
+) string {
+	if s != nil && s.testBaseURL != "" {
+		return strings.TrimRight(s.testBaseURL, "/")
+	}
+	return strings.TrimRight(resolve(account), "/")
+}
+
 func (s *CodeBuddyAdminService) sendCodeBuddyActivity(
 	ctx context.Context,
 	account *Account,
@@ -167,13 +198,7 @@ func (s *CodeBuddyAdminService) sendCodeBuddyActivity(
 	if err != nil {
 		return err
 	}
-	baseURL := CodeBuddyBillingBase(account)
-	if s.testBaseURL != "" {
-		baseURL = s.testBaseURL
-	}
-	// ⚠️ 单一路径，无 realm 回落：/v2/report **不在** billing/meter 回落族
-	// （参考实现 client.go:880 原文"report /v2/report 不参与"）。
-	endpoint := strings.TrimRight(baseURL, "/") + codebuddy.CodeBuddyActivityReportPath
+	endpoint := s.codeBuddyActivityReportEndpoint(account)
 
 	reqCtx, cancel := context.WithTimeout(ctx, codeBuddyActivityRequestTimeout)
 	defer cancel()
@@ -222,11 +247,7 @@ func (s *CodeBuddyAdminService) checkCodeBuddyActivityStreak(
 	account *Account,
 	accessToken string,
 ) (days int, verified bool, failed bool) {
-	baseURL := CodeBuddyChatBase(account)
-	if s.testBaseURL != "" {
-		baseURL = s.testBaseURL
-	}
-	endpoint := strings.TrimRight(baseURL, "/") + CodeBuddyActivityStreakPath
+	endpoint := s.codeBuddyActivityStreakEndpoint(account)
 
 	reqCtx, cancel := context.WithTimeout(ctx, codeBuddyActivityStreakTimeout)
 	defer cancel()

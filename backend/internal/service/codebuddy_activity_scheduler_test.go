@@ -315,3 +315,43 @@ func TestCodeBuddyActivitySchedulerHonoursConfiguredWindow(t *testing.T) {
 	env.at(t, "2026-09-22", "21:00")
 	require.Equal(t, 1, env.runner.rounds(), "应按配置的 21 点档触发")
 }
+
+// --- 5.3：自检结果必须如实反映，不得谎报成功 ---
+
+// Scenario：账号上报成功但**自检异常**（days=0，坑 1 的静默丢弃信号）时，
+// 调度器必须把它计入 selfCheckFailed，而不是并进 reported 当成功。
+//
+// 这条守的是"不谎报成功"：上报返回 200 可能什么都没发生，只看 reported
+// 会把静默丢弃读成正常轮次。
+func TestCodeBuddyActivitySchedulerCountsSelfCheckFailure(t *testing.T) {
+	env := newCodeBuddyActivitySchedulerTestEnv(t,
+		`{"codebuddy":{"activity":{"enabled":true,"start":{"hour":10,"minute":0},"end":{"hour":11,"minute":0}}}}`,
+		newCodeBuddyActivityAccount(1, "u-1", "t-1"))
+	env.runner.candidates = []CodeBuddyCheckinCandidate{{AccountID: 1, Name: "cb-1"}}
+	// 上报成功（无 Err）但自检可疑。
+	env.runner.result = CodeBuddyActivityReportResult{
+		Reported: 5, Expected: 5, Verified: true, SelfCheckFailed: true,
+	}
+
+	env.at(t, "2026-09-22", "10:00")
+
+	require.Equal(t, 1, env.runner.reportCount(), "请求确实发出去了")
+	require.Equal(t, 1, env.scheduler.codeBuddyActivitySelfCheckFailedForTest(),
+		"自检可疑必须单独计数，不能并进成功数")
+}
+
+// Scenario：自检健康时不计入异常。
+func TestCodeBuddyActivitySchedulerHealthySelfCheckNotCountedAsFailure(t *testing.T) {
+	env := newCodeBuddyActivitySchedulerTestEnv(t,
+		`{"codebuddy":{"activity":{"enabled":true,"start":{"hour":10,"minute":0},"end":{"hour":11,"minute":0}}}}`,
+		newCodeBuddyActivityAccount(1, "u-1", "t-1"))
+	env.runner.candidates = []CodeBuddyCheckinCandidate{{AccountID: 1, Name: "cb-1"}}
+	env.runner.result = CodeBuddyActivityReportResult{
+		Reported: 5, Expected: 5, StreakDays: 3, Verified: true, SelfCheckFailed: false,
+	}
+
+	env.at(t, "2026-09-22", "10:00")
+
+	require.Equal(t, 0, env.scheduler.codeBuddyActivitySelfCheckFailedForTest())
+	require.Equal(t, 3, env.runner.result.StreakDays)
+}

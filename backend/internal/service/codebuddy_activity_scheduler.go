@@ -119,6 +119,9 @@ type CodeBuddyActivityScheduler struct {
 
 	// lastRunDate 记录"已执行过的当地日期"（UTC+8，与签到同口径）。
 	lastRunDate string
+
+	// lastSelfCheckFailed 最近一轮的自检异常账号数（仅测试断言用；生产只看日志）。
+	lastSelfCheckFailed int
 }
 
 // NewCodeBuddyActivityScheduler 构造活跃上报调度器。
@@ -279,15 +282,34 @@ func (s *CodeBuddyActivityScheduler) runOnce(localDate string, start, end TimeOf
 		}
 	}
 
-	slog.Info("codebuddy_activity.window_run",
+	// ⚠️ 有自检异常或失败时**降到 WARN**：`reported` 只表示"请求发出去了"，
+	// 而自检异常恰恰是"发出去了但可能被上游静默丢弃"的信号（坑 1）。
+	// 一律 Info 会让运维在日志里看到一条"成功"汇总，把可疑轮次当正常。
+	attrs := []any{
 		"local_date", localDate,
-		"window", start.Format()+"-"+end.Format(),
+		"window", start.Format() + "-" + end.Format(),
 		"total", len(candidates),
 		"reported", reported,
 		"skipped", skipped,
 		"failed", failed,
 		"self_check_failed", selfCheckFailed,
-	)
+	}
+	s.mu.Lock()
+	s.lastSelfCheckFailed = selfCheckFailed
+	s.mu.Unlock()
+
+	if failed > 0 || selfCheckFailed > 0 {
+		slog.Warn("codebuddy_activity.window_run_degraded", attrs...)
+		return
+	}
+	slog.Info("codebuddy_activity.window_run", attrs...)
+}
+
+// codeBuddyActivitySelfCheckFailedForTest 暴露最近一轮的自检异常数（仅测试用）。
+func (s *CodeBuddyActivityScheduler) codeBuddyActivitySelfCheckFailedForTest() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSelfCheckFailed
 }
 
 // CodeBuddyActivitySchedulerLastRunDate 暴露当日去重状态（仅测试用）。
