@@ -502,11 +502,16 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 //   - POST /admin/codebuddy/qr/start          发起扫码纳管（{state, authUrl}）
 //   - GET  /admin/codebuddy/qr/poll?state=    轮询扫码（发起者绑定 + ≥2s 节流）
 //   - POST /admin/codebuddy/accounts/:id/checkin  每日签到（0/10001 幂等）
+//   - POST /admin/codebuddy/accounts/checkin-all  批量签到（四态汇总）
+//
+// checkin-all 注册在 /accounts/:id/checkin **之前**：两者在同一段位置，
+// 静态段优先于具名参数，顺序写死在这里避免后续插路由时被 :id 吃掉。
 func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	codebuddy := admin.Group("/codebuddy")
 	{
 		codebuddy.POST("/qr/start", h.Admin.CodeBuddy.QRStart)
 		codebuddy.GET("/qr/poll", h.Admin.CodeBuddy.QRPoll)
+		codebuddy.POST("/accounts/checkin-all", h.Admin.CodeBuddy.CheckinAll)
 		codebuddy.POST("/accounts/:id/checkin", h.Admin.CodeBuddy.Checkin)
 	}
 }
@@ -613,6 +618,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("/web-search-emulation", h.Admin.Setting.UpdateWebSearchEmulationConfig)
 		adminSettings.POST("/web-search-emulation/test", h.Admin.Setting.TestWebSearchEmulation)
 		adminSettings.POST("/web-search-emulation/reset-usage", h.Admin.Setting.ResetWebSearchUsage)
+		// 平台功能设置（按平台分组的平台级功能开关；各平台自行注册，设置页聚合展示）
+		adminSettings.GET("/platform-features", h.Admin.Setting.GetPlatformFeatures)
+		adminSettings.PUT("/platform-features", h.Admin.Setting.UpdatePlatformFeatures)
 	}
 }
 
