@@ -81,14 +81,23 @@ func TestFilterGrokFreeQuotaAccountsOnlyBlocksExplicitFreeOAuth(t *testing.T) {
 	filtered := scheduler.filterGrokFreeQuotaAccounts(context.Background(), accounts)
 	require.Equal(t, []int64{1, 2, 3, 4}, accountIDs(filtered), "miss fails open on hot path")
 
+	// 等**缓存真正写入**，而不是等"查询已开始"。
+	//
+	// 原实现等的是 `repo.calls >= 1`，但 stub 在**进入时**就自增（见 stub 的
+	// GetAccountWindowStatsBatch 首行），而生产代码是在 query **返回之后**才
+	// `cache.Store(...)`。两者之间有一个窗口：等待条件已满足、缓存却还是空的，
+	// 于是下一遍读到 miss → 继续 fail-open → 断言随机失败
+	// （实测 198 上约 1/5、194 基线上约 1/8，负载越高越易撞上）。
+	//
+	// 现在改为等待**被测行为本身**：反复查询直到该账号被闸门拦下。
+	// 这样同步点与断言一致，且若闸门真的坏了（永远不拦），Eventually 超时仍会失败
+	// ——不会把"缺陷"掩盖成"通过"。
 	require.Eventually(t, func() bool {
-		repo.mu.Lock()
-		defer repo.mu.Unlock()
-		return repo.calls >= 1
-	}, 2*time.Second, 10*time.Millisecond)
+		filtered = scheduler.filterGrokFreeQuotaAccounts(context.Background(), accounts)
+		return len(accountIDs(filtered)) == 3
+	}, 2*time.Second, 10*time.Millisecond, "缓存刷新后，超阈值的 free OAuth 账号应被拦下")
 
-	// Second pass: uses refreshed cache and blocks over-gate free OAuth.
-	filtered = scheduler.filterGrokFreeQuotaAccounts(context.Background(), accounts)
+	// 最终断言（此时已确认被拦下）。
 	require.Equal(t, []int64{2, 3, 4}, accountIDs(filtered), "paid and unknown fail-open; API-key free marker is not gated")
 	require.Equal(t, []int64{1}, repo.lastIDs, "paid, unknown, and API-key accounts must not enter the local free-tier query")
 	require.WithinDuration(t, time.Now().UTC().Add(-24*time.Hour), repo.start, time.Second)
