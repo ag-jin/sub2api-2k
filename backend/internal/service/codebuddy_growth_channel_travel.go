@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -278,9 +279,23 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 }
 
 // codeBuddyBuddy 猫档案（nil = 无猫）。
+//
+// ⚠️ **存在性判据不落在任何具体字段上**——上游实测（2026-09-23T06:44Z，dev 账号 11，
+// GET `copilot.tencent.com/activity/growth/buddy/info`）的 `data.buddy` 顶层键为：
+// appearance / base_animated_url / base_static_url / full_animated_url /
+// instance_id / name / personality / rarity / soul_desc / thumbnail_url。
+//
+// **上游从不发 `id`**。曾按 `ID != 0` 判存在性，导致真机上"已有猫"被误判成"无猫"，
+// 短路失效、重复走 agreement + buddy/first 两个写上游请求；而单测用臆造的
+// `{"id":42}` fixture 因此全绿（"绿了 ≠ 测到了"）。
+//
+// 现在改为与参考实现 `workbuddy2api/internal/upstream/travel.go:BuddyInfo` 同款口径：
+// **只判 `data.buddy` 是不是 null / 缺字段 / 空对象**，是则为无猫，否则即有猫。
+// 这样以后上游增删字段都不会再让判据失效——不再依赖猜字段名。
 type codeBuddyBuddy struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID         int64  `json:"id"`
+	InstanceID int64  `json:"instance_id"`
+	Name       string `json:"name"`
 }
 
 // fetchCodeBuddyBuddyInfo 查当前猫档案；**返回 (nil, nil) 表示无猫**。
@@ -295,16 +310,25 @@ func (s *CodeBuddyAdminService) fetchCodeBuddyBuddyInfo(
 	if err != nil {
 		return nil, err
 	}
-	var payload struct {
-		Buddy *codeBuddyBuddy `json:"buddy"`
+	// 先用 RawMessage 拿到 `buddy` 的**原始 JSON**，再判空——不靠任何字段名。
+	var envelope struct {
+		Buddy json.RawMessage `json:"buddy"`
 	}
-	if err := codeBuddyGrowthData(result, &payload); err != nil {
+	if err := codeBuddyGrowthData(result, &envelope); err != nil {
 		return nil, err
 	}
-	if payload.Buddy == nil || payload.Buddy.ID == 0 {
+	trimmed := strings.TrimSpace(string(envelope.Buddy))
+	// 缺字段 / 显式 null / 空对象 → 无猫。
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
 		return nil, nil
 	}
-	return payload.Buddy, nil
+	var buddy codeBuddyBuddy
+	if err := json.Unmarshal(envelope.Buddy, &buddy); err != nil {
+		// `buddy` 存在但不是对象（如字符串/数组）：按无猫处理而**不是**报错，
+		// 与"把没有猫当错误会让首次领养走不到"同一考量。
+		return nil, nil
+	}
+	return &buddy, nil
 }
 
 // agreeCodeBuddyBuddyAgreement 同意领养协议（幂等）。

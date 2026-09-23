@@ -250,10 +250,26 @@ func TestBuddyThresholdNotMetIsRecognised(t *testing.T) {
 }
 
 // Scenario：已有猫 → 跳过（不发 buddy/first）。
+//
+// ⚠️ 本用例的 fixture 刻意用**真实上游形状**（`instance_id`，**无 `id` 键**）。
+//
+// 上游实测（2026-09-23T06:44Z，dev 账号 11，GET copilot.tencent.com/activity/growth/buddy/info）：
+// `data.buddy` 顶层键为 appearance / base_animated_url / base_static_url / full_animated_url /
+// instance_id / name / personality / rarity / soul_desc / thumbnail_url —— **没有 `id`**。
+//
+// 历史缺陷：原 fixture 写的是 `{"buddy":{"id":42}}`，那是**桩的形状、不是上游的形状**，
+// 于是"已有猫短路"在真机上失效（`ID == 0` → 误判无猫）而测试仍然全绿。
+// 这就是本项目反复出现的"绿了 ≠ 测到了"：断言测的是替身，不是上游。
+// 本用例锁住真实形状，防止 fixture 再漂回臆造形状。
 func TestAdoptSkipsWhenBuddyAlreadyExists(t *testing.T) {
 	svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == codebuddy.CodeBuddyBuddyInfoPath {
-			_, _ = w.Write([]byte(`{"code":0,"data":{"buddy":{"id":42,"name":"咪咪"}}}`))
+			// 真实上游响应：有猫，但顶层的存在性标识是 instance_id，没有 id。
+			_, _ = w.Write([]byte(`{"code":0,"data":{"buddy":{` +
+				`"appearance":"default","base_animated_url":"https://x/a.gif",` +
+				`"base_static_url":"https://x/a.png","full_animated_url":"https://x/f.gif",` +
+				`"instance_id":3306174,"name":"暗影喵","personality":"quiet",` +
+				`"rarity":"rare","soul_desc":"desc","thumbnail_url":"https://x/t.png"}}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"code":0}`))
@@ -262,11 +278,41 @@ func TestAdoptSkipsWhenBuddyAlreadyExists(t *testing.T) {
 	result := svc.RunCodeBuddyGrowthAdoptNow(context.Background(), newGrowthTestAccount(1), "2026-09-22")
 
 	require.False(t, result.Adopted)
-	require.Contains(t, result.SkipReason, "已有猫")
+	require.Contains(t, result.SkipReason, "已有猫",
+		"真实上游只发 instance_id 不发 id；按 id 判存在性会把「已有猫」误判成「无猫」")
 	for _, req := range recorder.snapshot() {
 		require.NotEqual(t, codebuddy.CodeBuddyBuddyFirstPath, req.Path,
 			"已有猫时不该再发领养请求")
 	}
+}
+
+// Scenario：`data.buddy` 为**空对象** `{}` → 按无猫处理（走领养）。
+//
+// 与上一例配对：保证"空对象也算有猫"这种过度收紧不会出现。
+// 上游无猫时 `buddy` 为 null；空对象属边界形态，按参考实现口径归入"无猫"。
+func TestAdoptProceedsWhenBuddyIsEmptyObject(t *testing.T) {
+	svc, recorder := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == codebuddy.CodeBuddyBuddyInfoPath {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"buddy":{}}}`))
+			return
+		}
+		if r.URL.Path == codebuddy.CodeBuddyBuddyFirstPath {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"credit":300}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	})
+
+	result := svc.RunCodeBuddyGrowthAdoptNow(context.Background(), newGrowthTestAccount(1), "2026-09-22")
+
+	require.True(t, result.Adopted, "空对象不应被当成「已有猫」而永久跳过领养")
+	sent := false
+	for _, req := range recorder.snapshot() {
+		if req.Path == codebuddy.CodeBuddyBuddyFirstPath {
+			sent = true
+		}
+	}
+	require.True(t, sent, "无猫时应真实发出领养请求")
 }
 
 // --- trial：仅 global，且幂等码算正常态 ---
