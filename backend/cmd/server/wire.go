@@ -129,6 +129,7 @@ func provideCleanup(
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
 	codeBuddyCheckin *service.CodeBuddyCheckinScheduler,
+	codeBuddyActivity *service.CodeBuddyActivityScheduler,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -200,6 +201,13 @@ func provideCleanup(
 				// 遗留后台 goroutine（且 Stop 是幂等的，重复调用安全）。
 				if codeBuddyCheckin != nil {
 					codeBuddyCheckin.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyActivityScheduler", func() error {
+				// 活跃上报调度器同款：每分钟 tick 的 cron，同样要显式 Stop。
+				if codeBuddyActivity != nil {
+					codeBuddyActivity.Stop()
 				}
 				return nil
 			}},

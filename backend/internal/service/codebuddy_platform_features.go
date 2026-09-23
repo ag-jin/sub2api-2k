@@ -18,6 +18,21 @@ const (
 	CodeBuddyAutoCheckinStartMinute = 0
 	CodeBuddyAutoCheckinEndHour     = 11
 	CodeBuddyAutoCheckinEndMinute   = 0
+
+	// CodeBuddyActivityFeatureKey 活跃上报功能标识（A5 批 5.4）。
+	CodeBuddyActivityFeatureKey = "activity"
+
+	// CodeBuddyActivityDefaultStartHour 默认上报时点 10 点（对齐参考实现
+	// activity_hours=[10]）。
+	//
+	// 为什么不是"10:00 整这一个时刻"：窗口语义（而非时点语义）才能容忍进程重启——
+	// 参考实现用一次性定时器算 nextFire，重启在 10:30 就会把当天跳过去；
+	// 窗口模式下 10:30 起来仍能补报当天。因此这里把"10 点"表达为
+	// **10:00–11:00 这个小时窗口**，语义上仍是"每号每天 1 次、10 点档"。
+	CodeBuddyActivityDefaultStartHour   = 10
+	CodeBuddyActivityDefaultStartMinute = 0
+	CodeBuddyActivityDefaultEndHour     = 11
+	CodeBuddyActivityDefaultEndMinute   = 0
 )
 
 // codeBuddyTimeZone 积分/签到口径统一按 UTC+8（与 A2 的积分到期解析同源）。
@@ -32,6 +47,11 @@ func init() {
 			{
 				Key:  CodeBuddyCheckinFeatureKey,
 				Kind: PlatformFeatureTimeRange,
+				// Title/Description 直接下发到设置页（前端 feature.title || feature.key
+				// 兜底）。留空会让用户看到裸 key，所以必须给文案。
+				Title: "每日签到",
+				Description: "在设定时间段内自动为账号签到一次，补回积分。" +
+					"默认为关闭：开启后会对上游发出签到请求。",
 				// 默认关闭：签到是对上游的写操作（会真实改动账号积分状态），
 				// 按"显式开启"原则，没被管理员打开前调度器一个请求都不发。
 				EnabledByDefault: false,
@@ -43,6 +63,25 @@ func init() {
 				DefaultEnd: TimeOfDay{
 					Hour:   CodeBuddyAutoCheckinEndHour,
 					Minute: CodeBuddyAutoCheckinEndMinute,
+				},
+			},
+			{
+				Key:   CodeBuddyActivityFeatureKey,
+				Kind:  PlatformFeatureTimeRange,
+				Title: "活跃上报",
+				Description: "在设定时间段内为每个账号上报一次对话活跃（每号每天 1 次），" +
+					"点亮连登并补满领养猫所需的对话门槛。默认为关闭。",
+				// 默认关闭：活跃上报同样是对上游的写操作（会改动账号连登状态），
+				// 与签到一个原则——没显式开启前一个请求都不发。
+				EnabledByDefault: false,
+				Timezone:         codeBuddyTimeZone,
+				DefaultStart: TimeOfDay{
+					Hour:   CodeBuddyActivityDefaultStartHour,
+					Minute: CodeBuddyActivityDefaultStartMinute,
+				},
+				DefaultEnd: TimeOfDay{
+					Hour:   CodeBuddyActivityDefaultEndHour,
+					Minute: CodeBuddyActivityDefaultEndMinute,
 				},
 			},
 		},
