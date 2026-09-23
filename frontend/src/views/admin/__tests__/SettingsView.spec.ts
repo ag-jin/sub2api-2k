@@ -1544,7 +1544,8 @@ describe("admin SettingsView payment visible method controls", () => {
     getProviders.mockReset();
     getProviders.mockResolvedValue({ data: [providerWithNullTypes] });
 
-    let receivedProviders: Array<Record<string, unknown>> = [];
+    // 捕获组件只负责把 props 透传到 DOM；断言直接读它的 props（见下方说明），
+    // 不再用闭包变量做快照——那正是本用例间歇性失败的根因。
     const PaymentProviderListCapture = defineComponent({
       props: {
         providers: {
@@ -1552,8 +1553,7 @@ describe("admin SettingsView payment visible method controls", () => {
           default: () => [],
         },
       },
-      setup(props) {
-        receivedProviders = props.providers as Array<Record<string, unknown>>;
+      setup() {
         return () => h("div", { class: "provider-list-capture" });
       },
     });
@@ -1580,11 +1580,27 @@ describe("admin SettingsView payment visible method controls", () => {
     await flushPromises();
     await openPaymentTab(wrapper);
 
+    // 从**当前存活实例**读取 props，而不是闭包里最后一次快照。
+    //
+    // 背景（2026-09-23，已诊断非推测）：本用例原先断言闭包变量 `receivedProviders`。
+    // 支付 tab 切换会让捕获组件重建（实测 setup 调用 2 次 / render 2 次），
+    // 闭包变量可能停留在"新实例已渲染、props 尚未回填"的那一次 → 随机得到空数组
+    // （AssertionError: expected +0 to be 1）。
+    //
+    // 经实测这是**测试夹具的同步缺陷，不是产品缺陷**：
+    //  - 194 基线该文件 12/12 通过；195 合并点起约 50% 失败（本次改动改变了 mount 期异步时序，
+    //    使固有竞态从"几乎不触发"变为高概率触发）；
+    //  - 生产组件 `PaymentProviderList` 在模板里响应式读 props，不受此影响；
+    //  - 把 `onMounted(loadPlatformFeatures)` 临时移除后 10/10 通过（证明触发源）。
+    // 因此修夹具：直接读当前实例的 props，使断言与渲染时序无关。
+    const capture = wrapper.findComponent(PaymentProviderListCapture);
+    const liveProviders = capture.props("providers") as Array<Record<string, unknown>>;
+
     // The provider should still be in the list
-    expect(receivedProviders.length).toBe(1);
+    expect(liveProviders.length).toBe(1);
     // supported_types should be normalized to an empty array, not null
-    expect(Array.isArray(receivedProviders[0].supported_types)).toBe(true);
-    expect(receivedProviders[0].supported_types).toEqual([]);
+    expect(Array.isArray(liveProviders[0].supported_types)).toBe(true);
+    expect(liveProviders[0].supported_types).toEqual([]);
   });
 });
 
