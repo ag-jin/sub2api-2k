@@ -289,9 +289,19 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 // 短路失效、重复走 agreement + buddy/first 两个写上游请求；而单测用臆造的
 // `{"id":42}` fixture 因此全绿（"绿了 ≠ 测到了"）。
 //
-// 现在改为与参考实现 `workbuddy2api/internal/upstream/travel.go:BuddyInfo` 同款口径：
-// **只判 `data.buddy` 是不是 null / 缺字段 / 空对象**，是则为无猫，否则即有猫。
-// 这样以后上游增删字段都不会再让判据失效——不再依赖猜字段名。
+// 现在改为"只判 `data.buddy` 是不是 null / 缺字段 / 空对象"的口径：是则为无猫，
+// 否则即有猫。这样以后上游增删字段都不会再让判据失效——不再依赖猜字段名。
+//
+// ⚠️ 与参考实现有两处**有意差异**（复核者 2026-09-23 指出，已实测确认）：
+//
+//  1. 空对象 `{}`：参考实现的**代码**判"有猫"（`trimmed` 非空即继续反序列化，
+//     得到零值 `&Buddy{}` 并返回非 nil），但它的**注释**（`travel.go:110`
+//     "null / 缺字段 / 空对象都按无猫处理"）说的是无猫
+//     —— **参考实现自身注释与代码不一致**。
+//     本实现跟随其**注释意图**，把 `{}` 归为无猫：宁可多走一次领养，
+//     也不要因一次误判而**永久跳过**领养。
+//  2. `buddy` 为非对象（字符串/数组）：参考实现会**返回错误**；本实现按无猫处理。
+//     理由同上——这类形态真实上游是否出现未知，把它当错误会让领养整条走不到。
 type codeBuddyBuddy struct {
 	ID         int64  `json:"id"`
 	InstanceID int64  `json:"instance_id"`
@@ -300,8 +310,8 @@ type codeBuddyBuddy struct {
 
 // fetchCodeBuddyBuddyInfo 查当前猫档案；**返回 (nil, nil) 表示无猫**。
 //
-// `data.buddy` 为 null / 缺字段 / 空对象都按无猫处理（参考实现
-// `BuddyInfo` 的口径）——把"没有猫"当错误会让首次领养永远走不到。
+// `data.buddy` 为 null / 缺字段 / 空对象都按无猫处理——把"没有猫"当错误
+// 会让首次领养永远走不到。（与参考实现 `BuddyInfo` 的差异见上方类型注释。）
 func (s *CodeBuddyAdminService) fetchCodeBuddyBuddyInfo(
 	ctx context.Context,
 	account *Account,
