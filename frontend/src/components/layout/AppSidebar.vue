@@ -46,6 +46,7 @@
                   'sidebar-link-collapsed': sidebarCollapsed
                 }"
                 :title="sidebarCollapsed ? item.label : undefined"
+                :id="onboardingAnchorId(item.path)"
                 @click="handleGroupClick(item)"
               >
                 <component :is="item.icon" class="h-5 w-5 flex-shrink-0" />
@@ -65,10 +66,10 @@
               <div v-if="!sidebarCollapsed && isGroupExpanded(item)" class="mb-1 ml-4 border-l border-gray-200 pl-2 dark:border-dark-600">
                 <router-link
                   v-for="child in item.children"
-                  :key="child.path"
-                  :to="child.path"
+                  :key="childKey(child)"
+                  :to="childTo(child)"
                   class="sidebar-link mb-0.5 py-1.5 text-sm"
-                  :class="{ 'sidebar-link-active': route.path === child.path }"
+                  :class="{ 'sidebar-link-active': isChildActive(child) }"
                   @click="handleMenuItemClick(child.path)"
                 >
                   <component :is="child.icon" class="h-4 w-4 flex-shrink-0" />
@@ -83,15 +84,7 @@
               class="sidebar-link mb-1"
               :class="{ 'sidebar-link-active': isActive(item.path), 'sidebar-link-collapsed': sidebarCollapsed }"
               :title="sidebarCollapsed ? item.label : undefined"
-              :id="
-                item.path === '/admin/accounts'
-                  ? 'sidebar-channel-manage'
-                  : item.path === '/admin/groups'
-                    ? 'sidebar-group-manage'
-                    : item.path === '/admin/redeem'
-                      ? 'sidebar-wallet'
-                      : undefined
-              "
+              :id="onboardingAnchorId(item.path)"
               @click="handleMenuItemClick(item.path)"
             >
               <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
@@ -198,6 +191,12 @@ import { sanitizeSvg } from '@/utils/sanitize'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 import { resolveSiteBillingMode } from '@/utils/siteBillingMode'
+import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
+import {
+  ACCOUNTS_PATH,
+  PLATFORM_QUERY_PARAM,
+  readPlatformFilterFromQuery
+} from '@/views/admin/accountPlatformFilter'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
 
 interface NavItem {
@@ -212,6 +211,14 @@ interface NavItem {
    * does NOT navigate to its `path`. The `path` is purely a stable key.
    */
   expandOnly?: boolean
+  /**
+   * 该子项对应的账号列表平台筛选值（链接形如 `/admin/accounts?platform=<value>`）。
+   *
+   * 平台子项的 `path` 全都相同、只靠这个值区分，所以它同时参与链接渲染、激活判定，
+   * 以及"哪些分组需要清理 URL 筛选"的识别。未声明该字段的子项保持原有 path-only
+   * 判定（含前缀匹配），行为不变。
+   */
+  platformFilter?: string
   /**
    * 可选的功能开关 getter。返回 false 时菜单项被隐藏；返回 undefined/true 时显示。
    * 宽容策略（undefined → 显示）避免 public settings 未加载完成时菜单闪烁消失。
@@ -712,6 +719,19 @@ const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
 const flagBatchImageAccess = () => canUseBatchImage.value
 
+// 账号管理的平台子项：全部指向同一路径 /admin/accounts，靠 ?platform= 区分，
+// 由 constants/platforms.ts 的目录派生（该目录也是各平台选择器的唯一来源，
+// 新增平台时侧边栏不会静默漏项）。文案复用 admin.accounts.platforms，不再维护第二份平台名。
+function buildAccountsPlatformChildren(): NavItem[] {
+  return CONCRETE_PLATFORM_OPTIONS.map((option) => ({
+    path: ACCOUNTS_PATH,
+    label: t(`admin.accounts.platforms.${option.value}`),
+    // 平台子项靠文案区分，逐个配图标只会变成一整列重复图形（与自定义菜单项同款处理）。
+    icon: null,
+    platformFilter: option.value
+  }))
+}
+
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
 // withDashboard=true 时包含仪表盘（用户端），false 时不含（管理员的个人区已经有独立仪表盘入口）。
 //
@@ -792,7 +812,15 @@ const adminNavItems = computed((): NavItem[] => {
     },
     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
-    { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
+    {
+      path: ACCOUNTS_PATH,
+      label: t('nav.accounts'),
+      icon: GlobeIcon,
+      // 父项只负责展开/收起（与「渠道管理」同款）：账号列表始终可经子项进入，
+      // 父项自身不再直跳。
+      expandOnly: true,
+      children: buildAccountsPlatformChildren()
+    },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
@@ -873,6 +901,18 @@ function closeMobile() {
   appStore.setMobileOpen(false)
 }
 
+// Onboarding steps (Guide/steps.ts) locate sidebar entries by `#sidebar-*` ids.
+// 这些 id 必须跟着条目一起走：条目无论是普通可点项还是可展开组，锚点都落在它的父级元素上。
+const ONBOARDING_ANCHOR_IDS: Record<string, string> = {
+  '/admin/accounts': 'sidebar-channel-manage',
+  '/admin/groups': 'sidebar-group-manage',
+  '/admin/redeem': 'sidebar-wallet'
+}
+
+function onboardingAnchorId(itemPath: string): string | undefined {
+  return ONBOARDING_ANCHOR_IDS[itemPath]
+}
+
 function handleMenuItemClick(itemPath: string) {
   if (mobileOpen.value) {
     setTimeout(() => {
@@ -880,14 +920,8 @@ function handleMenuItemClick(itemPath: string) {
     }, 150)
   }
 
-  // Map paths to tour selectors
-  const pathToSelector: Record<string, string> = {
-    '/admin/groups': '#sidebar-group-manage',
-    '/admin/accounts': '#sidebar-channel-manage',
-    '/keys': '[data-tour="sidebar-my-keys"]'
-  }
-
-  const selector = pathToSelector[itemPath]
+  const anchor = ONBOARDING_ANCHOR_IDS[itemPath]
+  const selector = anchor ? `#${anchor}` : itemPath === '/keys' ? '[data-tour="sidebar-my-keys"]' : undefined
   if (selector && onboardingStore.isCurrentStep(selector)) {
     onboardingStore.nextStep(500)
   }
@@ -897,9 +931,27 @@ function isActive(path: string): boolean {
   return route.path === path || route.path.startsWith(path + '/')
 }
 
+// 平台子项的 path 全都等于父项路径，只看 path 会让整组子项同时高亮，
+// 必须连 ?platform= 一起比；其余子项沿用原有 path-only 判定。
+function childTo(child: NavItem): string | { path: string; query: Record<string, string> } {
+  if (!child.platformFilter) return child.path
+  return { path: child.path, query: { [PLATFORM_QUERY_PARAM]: child.platformFilter } }
+}
+
+function isChildActive(child: NavItem): boolean {
+  if (!child.platformFilter) return route.path === child.path
+  if (route.path !== child.path) return false
+  return readPlatformFilterFromQuery(route.query as Record<string, unknown> | undefined) === child.platformFilter
+}
+
+// 平台子项 path 相同，列表 key 必须带上筛选值才唯一。
+function childKey(child: NavItem): string {
+  return child.platformFilter ? `${child.path}?${PLATFORM_QUERY_PARAM}=${child.platformFilter}` : child.path
+}
+
 function isGroupActive(item: NavItem): boolean {
   if (!item.children) return false
-  return item.children.some(child => route.path === child.path)
+  return item.children.some(child => isChildActive(child))
 }
 
 function isGroupExpanded(item: NavItem): boolean {
@@ -922,7 +974,13 @@ function toggleGroup(item: NavItem) {
 function handleGroupClick(item: NavItem) {
   if (sidebarCollapsed.value) return
   if (item.expandOnly) {
+    const wasExpanded = isGroupExpanded(item)
     toggleGroup(item)
+    // 收起按平台筛选的分组（账号管理）时同时清掉筛选：子项收起后用户看不到
+    // "当前看的是哪个平台"，留着筛选会变成隐形状态 —— 回到全部平台。
+    if (wasExpanded && item.children?.some(child => child.platformFilter)) {
+      clearPlatformFilter()
+    }
     return
   }
   // Push to path and ensure expanded
@@ -930,6 +988,15 @@ function handleGroupClick(item: NavItem) {
     router.push(item.path)
   }
   groupExpandOverrides.value.set(item.path, true)
+}
+
+// 只清掉平台筛选这一个 query 键，其它 query 一律保留（同路径上可能有别的参数）。
+function clearPlatformFilter() {
+  if (readPlatformFilterFromQuery(route.query as Record<string, unknown> | undefined) === '') return
+
+  const nextQuery = { ...route.query }
+  delete nextQuery[PLATFORM_QUERY_PARAM]
+  void router.replace({ path: route.path, query: nextQuery })
 }
 
 // Initialize theme

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
+import { createAccountsViewTestRouter } from './accountsViewTestRouter'
 
 const {
   listAccounts,
@@ -92,6 +93,7 @@ const DataTableStub = {
 function mountView() {
   return mount(AccountsView, {
     global: {
+      plugins: [createAccountsViewTestRouter()],
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: {

@@ -553,10 +553,12 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { readPlatformFilterFromQuery } from './accountPlatformFilter'
 import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
@@ -602,6 +604,7 @@ import { formatMultiplier } from '@/utils/formatters'
 import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
 
 const { t } = useI18n()
+const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
@@ -1171,6 +1174,10 @@ const syncAccountListDerivedParams = () => {
   requestParams.include_scheduler_score = shouldIncludeSchedulerScore() ? '1' : '0'
 }
 
+// 侧边栏的平台子项链接到同一路由、只改 ?platform=，组件不会重新挂载，
+// 所以初值必须取自当前 URL，后续变化靠下面的 watch 同步。
+const initialPlatformFilter = readPlatformFilterFromQuery(route.query as Record<string, unknown>)
+
 const {
   items: accounts,
   loading,
@@ -1184,7 +1191,7 @@ const {
 } = useTableLoader<AccountListItem, any>({
   fetchFn: adminAPI.accounts.list,
   initialParams: {
-    platform: '',
+    platform: initialPlatformFilter,
     type: '',
     status: '',
     privacy_mode: '',
@@ -1196,6 +1203,20 @@ const {
     sort_order: sortState.sort_order
   }
 })
+
+// URL 里的平台筛选是列表筛选的权威来源：从侧边栏切平台时组件不重新挂载，
+// useTableLoader 的 initialParams 只读一次，必须在这里跟随 route.query 同步，
+// 否则点第二个平台不会重新筛选。只在真的变了时才重查，避免和页内筛选互相打架。
+watch(
+  () => readPlatformFilterFromQuery(route.query as Record<string, unknown>),
+  (platformFilter) => {
+    if (params.platform === platformFilter) return
+    params.platform = platformFilter
+    reload().catch((error) => {
+      console.error('Failed to reload accounts after platform filter changed:', error)
+    })
+  }
+)
 
 const {
   selectedSet,

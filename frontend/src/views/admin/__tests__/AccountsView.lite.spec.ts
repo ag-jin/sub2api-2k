@@ -4,6 +4,7 @@ import { defineComponent } from 'vue'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+import { createAccountsViewTestRouter } from './accountsViewTestRouter'
 
 const {
   listAccounts,
@@ -97,6 +98,7 @@ function mountView(stubActionMenu = true) {
   return mount(AccountsView, {
     attachTo: document.body,
     global: {
+      plugins: [createAccountsViewTestRouter()],
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>' },
