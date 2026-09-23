@@ -1400,6 +1400,13 @@ export interface UpstreamBalanceStats {
   output_tokens?: number
 }
 
+export interface UpstreamBalanceExpiry {
+  /** 到期时刻（ISO8601，后端按上游 UTC+8 墙钟解释后输出） */
+  at: string
+  /** 该到期批次当前仍有余额的积分量 */
+  amount: number
+}
+
 export interface UpstreamBalanceSnapshot {
   balance?: number | null
   remaining?: number | null
@@ -1411,6 +1418,11 @@ export interface UpstreamBalanceSnapshot {
   status?: string
   stale?: boolean
   error?: string | null
+  /** 到期列表（仅 codebuddy 积分产出；仅含仍有余额的套餐，升序） */
+  expiries?: UpstreamBalanceExpiry[] | null
+  /** 本次响应是否来自缓存；cached_age_seconds 为缓存年龄（秒，0=实时） */
+  cached?: boolean
+  cached_age_seconds?: number
 }
 
 export interface AccountUsageInfo {

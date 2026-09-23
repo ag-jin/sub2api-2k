@@ -20,10 +20,14 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) =>
-        key === 'admin.accounts.codebuddy.usage.creditsValue'
-          ? `${params?.value} credits`
-          : key
+      t: (key: string, params?: Record<string, unknown>) => {
+        if (key === 'admin.accounts.codebuddy.usage.creditsValue') return `${params?.value} credits`
+        if (key === 'admin.accounts.codebuddy.usage.cachedHint') return `cached ${params?.seconds}s ago`
+        if (key === 'admin.accounts.codebuddy.usage.expiresValue') {
+          return `${params?.amount} credits @ ${params?.at}`
+        }
+        return key
+      }
     })
   }
 })
@@ -216,6 +220,52 @@ describe('AccountUsageCell — CodeBuddy 单值余额分支（A2）', () => {
 
     expect(wrapper.text()).not.toContain('10 req')
     expect(wrapper.get('[data-testid="codebuddy-balance-value"]').text()).toContain('3')
+  })
+
+  it('缓存可见性：cached 命中时标注缓存年龄，实时值不标注', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: { balance: 500, status: 'ok', cached: true, cached_age_seconds: 42 }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7110 }))
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="codebuddy-balance-cached"]').text()).toContain('cached 42s ago')
+
+    // 实时值（默认形态）不得出现缓存标注（对照）。
+    getUsage.mockResolvedValue({
+      upstream_balance: { balance: 500, status: 'ok' }
+    })
+    const live = mountCell(makeAccount({ id: 7111 }))
+    await flushPromises()
+    expect(live.find('[data-testid="codebuddy-balance-cached"]').exists()).toBe(false)
+  })
+
+  it('到期列表：逐条渲染到期时间与金额；无 expiries 时不渲染', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: {
+        balance: 30,
+        status: 'ok',
+        expiries: [
+          { at: '2026-09-28T01:30:00Z', amount: 20 },
+          { at: '2026-10-01T04:00:00Z', amount: 10 }
+        ]
+      }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7112 }))
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-testid="codebuddy-balance-expiry"]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.text()).toContain('20 credits')
+    expect(rows[1]!.text()).toContain('10 credits')
+
+    // 对照：无 expiries 的账号不渲染该块。
+    getUsage.mockResolvedValue({ upstream_balance: { balance: 30, status: 'ok' } })
+    const plain = mountCell(makeAccount({ id: 7113 }))
+    await flushPromises()
+    expect(plain.findAll('[data-testid="codebuddy-balance-expiry"]')).toHaveLength(0)
   })
 
   it('积分形态：整数余额无小数位，且渲染不含 $ 货币符号', async () => {

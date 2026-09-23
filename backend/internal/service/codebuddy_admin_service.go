@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	logredact "github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/tidwall/gjson"
 	"golang.org/x/sync/singleflight"
@@ -425,13 +425,16 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 			"codebuddy account has no access token")
 	}
 
-	// 计费恒用常量 TENCENT_BILLING_BASE（不跟 base_url，base_url 仅 chat）；
-	// testBaseURL 仅测试注入。
-	checkinURL := TENCENT_BILLING_BASE + CodeBuddyDailyCheckinPath
+	// 计费 base 与路径族按账号 realm 分发（P0-3）：CN → www.codebuddy.cn +
+	// /v2/billing/meter/daily-checkin；global → www.workbuddy.ai +
+	// /billing/meter/daily-checkin，404 回落 /v2/...（两域顺序相反，见
+	// codebuddy_realm_endpoints.go）。base 不跟 base_url（base_url 仅 chat）。
+	// ⚠️ global 分支**未经真机验证**（本轮无 global 测试账号）。
+	baseURL := CodeBuddyBillingBase(account)
 	if s.testBaseURL != "" {
-		checkinURL = s.testBaseURL + CodeBuddyDailyCheckinPath
+		baseURL = s.testBaseURL
 	}
-	raw, err := s.upstreamCall(ctx, http.MethodPost, checkinURL, "{}", "Bearer "+accessToken)
+	raw, err := s.checkinWithFallback(ctx, baseURL, account, accessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -456,6 +459,69 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 			"codebuddy checkin rejected (code %v): %s", codebuddyEnvelopeCodeRaw(raw),
 			codebuddy.CodeBuddyBizCodeMessage(codebuddyEnvelopeCodeRaw(raw), codebuddyEnvelopeMsg(raw)))
 	}
+}
+
+// checkinWithFallback 按 realm 的路径候选序列发签到请求，**仅 HTTP 404**
+// 换下一候选（上游"该域没有无 /v2 形式"的确切信号）；其他状态码/网络故障
+// 立即返回，不做无谓重试（与计费查询同款回落口径）。
+//
+// 注意：`upstreamCall` 把非 2xx/网络故障都折算成 502 语义错误，因此这里需要
+// 一层薄封装把「HTTP 404」与「其他失败」区分开——用 rawStatusCode 旁路通道
+// 拿真实状态码，不改 upstreamCall 既有错误语义。
+func (s *CodeBuddyAdminService) checkinWithFallback(ctx context.Context, baseURL string, account *Account, accessToken string) ([]byte, error) {
+	paths := CodeBuddyDailyCheckinPaths(account)
+	var lastErr error
+	for i, path := range paths {
+		if i > 0 {
+			// 候选路径共享同一个请求 ctx：这里不额外加超时（调用方已有）。
+			slog.Debug("codebuddy checkin falling back to versioned path",
+				slog.Int64("account_id", account.ID), slog.String("path", path))
+		}
+		raw, status, err := s.upstreamCallWithStatus(ctx, http.MethodPost, baseURL+path, "{}", "Bearer "+accessToken)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+		if i < len(paths)-1 && status == http.StatusNotFound {
+			continue
+		}
+		return nil, err
+	}
+	return nil, lastErr
+}
+
+// upstreamCallWithStatus 同 upstreamCall，但额外返回上游 HTTP 状态码（供路径回落
+// 判定消费）。返回的 err 语义与 upstreamCall 完全一致。
+func (s *CodeBuddyAdminService) upstreamCallWithStatus(ctx context.Context, method, requestURL string, body string, bearer string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, strings.NewReader(body))
+	if err != nil {
+		return nil, 0, infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_UPSTREAM_REQUEST_BUILD",
+			"build codebuddy upstream request failed")
+	}
+	for k, v := range TENCENT_BILLING_HEADERS {
+		req.Header[k] = []string{v}
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", bearer)
+	}
+	resp, doErr := s.client.Do(req)
+	if doErr != nil {
+		return nil, 0, infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_UPSTREAM_UNREACHABLE",
+			"codebuddy upstream request failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, resp.StatusCode, infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_UPSTREAM_UNREACHABLE",
+			"read codebuddy upstream response failed")
+	}
+	// 上游也可能用 HTTP 4xx 承载业务信封（与参考实现 _envelope 口径一致）：
+	// 只有 404 是"路径不存在"的确定性信号，其余一律按原样返回给调用方解析信封。
+	if resp.StatusCode == http.StatusNotFound {
+		return raw, resp.StatusCode, infraerrors.Newf(http.StatusBadGateway, "CODEBUDDY_UPSTREAM_PATH_NOT_FOUND",
+			"codebuddy upstream path not found")
+	}
+	return raw, resp.StatusCode, nil
 }
 
 // --- 共用上游调用 ---

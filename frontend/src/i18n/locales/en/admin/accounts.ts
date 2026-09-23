@@ -154,7 +154,10 @@ export default {
         },
         usage: {
           balanceLabel: 'Balance',
-          creditsValue: '{value} credits'
+          creditsValue: '{value} credits',
+          cachedHint: 'cached {seconds}s ago',
+          expiresLabel: 'Expires',
+          expiresValue: '{amount} credits · {at}'
         },
         checkin: {
           action: 'Daily check-in',
