@@ -159,8 +159,14 @@ func TestReportCodeBuddyActivitySendsFiveEventsInOneConversation(t *testing.T) {
 		// 坑 1 + 坑 3：userId 在场；同会话共用 conversationId；requestId 各异。
 		require.Equal(t, "u-1", event["userId"])
 		require.Equal(t, "chat_request_send", event["eventCode"])
-		conversationIDs[event["conversationId"].(string)] = true
-		requestIDs[event["requestId"].(string)] = true
+		// 用 comma-ok 断言：直接 `.(string)` 在类型不符时会 panic，
+		// 而这里要的是"如实报出形状不符"，不是崩在测试里（errcheck 也要求检查）。
+		conversationID, ok := event["conversationId"].(string)
+		require.True(t, ok, "conversationId 必须是字符串")
+		requestID, ok := event["requestId"].(string)
+		require.True(t, ok, "requestId 必须是字符串")
+		conversationIDs[conversationID] = true
+		requestIDs[requestID] = true
 	}
 	require.Len(t, conversationIDs, 1, "N 条必须共用同一 conversationId")
 	require.Len(t, requestIDs, 5, "requestId 必须各条独立")

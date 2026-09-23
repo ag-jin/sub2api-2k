@@ -185,10 +185,3 @@ func (s *CodeBuddyCheckinScheduler) runOnce(localDate string, start, end TimeOfD
 		"skipped", summary.Skipped,
 	)
 }
-
-// codeBuddyCheckinLastRunDateForTest 暴露当日去重状态（仅测试用）。
-func (s *CodeBuddyCheckinScheduler) codeBuddyCheckinLastRunDateForTest() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastRunDate
-}

@@ -82,14 +82,6 @@ func (r *unfreezeTestRepo) SetModelRateLimit(_ context.Context, id int64, scope 
 	return nil
 }
 
-func (r *unfreezeTestRepo) hasPendingCooldown(id int64) bool {
-	account, ok := r.accounts[id]
-	if !ok {
-		return false
-	}
-	return account.TempUnschedulableUntil != nil
-}
-
 // newCodeBuddyAccountWithCooldown 造一个"处于本模块积分耗尽硬冷却中"的 codebuddy 账号。
 func newCodeBuddyAccountWithCooldown(id int64) *Account {
 	until := time.Now().Add(6 * time.Hour)

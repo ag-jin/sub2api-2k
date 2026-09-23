@@ -267,10 +267,3 @@ func (s *CodeBuddyGrowthScheduler) codeBuddyGrowthSchedulerSummaryForTest() Code
 	defer s.mu.Unlock()
 	return s.lastSummary
 }
-
-// codeBuddyGrowthSchedulerLastRunDateForTest 暴露当日去重状态（仅测试用）。
-func (s *CodeBuddyGrowthScheduler) codeBuddyGrowthSchedulerLastRunDateForTest() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastRunDate
-}

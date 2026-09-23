@@ -27,10 +27,6 @@ const (
 	// codeBuddyGrowthAccountDelay 账号之间的间隔。
 	// 与签到/活跃上报同口径（参考实现 travelAccountDelay = 800ms）。
 	codeBuddyGrowthAccountDelay = 800 * time.Millisecond
-
-	// codeBuddyGrowthEventGap 同一账号内多条活跃上报之间的间隔。
-	// 对齐 A5 的 codeBuddyActivityReportGap（1.5s，避免秒发风控）。
-	codeBuddyGrowthEventGap = codeBuddyActivityReportGap
 )
 
 // codeBuddyGrowthUpstreamError 上游返回的错误（含业务码原值，供幂等/下线判定）。

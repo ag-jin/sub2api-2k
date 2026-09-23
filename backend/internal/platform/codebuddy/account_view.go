@@ -66,7 +66,7 @@ func isNilAccount(a CodeBuddyAccount) bool {
 	}
 	v := reflect.ValueOf(a)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func:
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func:
 		return v.IsNil()
 	default:
 		return false

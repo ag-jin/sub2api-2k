@@ -21,10 +21,9 @@ import (
 
 // codeBuddyCheckinRunnerStub 记录 CheckinAll 调用次数，并可注入错误。
 type codeBuddyCheckinRunnerStub struct {
-	calls     atomic.Int64
-	lastCands int
-	resp      *CodeBuddyCheckinBatchResponse
-	err       error
+	calls atomic.Int64
+	resp  *CodeBuddyCheckinBatchResponse
+	err   error
 	// onCall 在 CheckinAll 执行**期间**调用（用于模拟"执行慢于 tick 间隔"时的重入）。
 	onCall func()
 }
@@ -95,14 +94,6 @@ func (e *codeBuddyCheckinSchedulerTestEnv) at(t *testing.T, day, hhmm string) {
 
 // tickWithClock 用指定时刻 tick（测试模拟"执行期间时钟仍停在当前分钟"）。
 func (s *CodeBuddyCheckinScheduler) tickWithClock(_ time.Time) { s.tick() }
-
-// tickAt 只设置时间不触发（供需要连续多次触发的用例复用同一时刻）。
-func (e *codeBuddyCheckinSchedulerTestEnv) setTime(t *testing.T, day, hhmm string) {
-	t.Helper()
-	parsed, err := time.ParseInLocation("2006-01-02 15:04", day+" "+hhmm, e.zone)
-	require.NoError(t, err)
-	e.current = parsed
-}
 
 // SettingFeatureStorageKeyForTest 暴露平台功能落库 key（避免测试里硬编码字符串）。
 func SettingFeatureStorageKeyForTest() string { return SettingKeyPlatformFeatures }
