@@ -264,8 +264,11 @@ func (h *CodeBuddyAdminHandler) GrowthRunAll(c *gin.Context) {
 	}
 	summary := h.codeBuddyService.RunCodeBuddyGrowthAllNow(c.Request.Context())
 	middleware.SetAuditAction(c, "admin.codebuddy.growth.run_all")
+	// 只记汇总计数：`channels` 是 `[]string`，而 SetAuditExtra 只接收标量
+	// （`isAuditExtraScalar` 拒绝切片），传进去会被静默丢弃——留着会让人
+	// 误以为审计里有通道清单。通道集合可由 `auto_runnable` 语义反推，
+	// 且 run-all 只跑自动级通道（full 级结构上进不来）。
 	middleware.SetAuditExtra(c, map[string]any{
-		"channels":  summary.Channels,
 		"attempted": summary.Attempted,
 		"succeeded": summary.Succeeded,
 		"failed":    summary.Failed,

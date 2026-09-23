@@ -188,3 +188,107 @@ func TestOllamaCloudUsageSessionRouteOmitsAuditBody(t *testing.T) {
 	require.Equal(t, "<credential-bearing body omitted>", logs[0].RequestBody)
 	require.NotContains(t, logs[0].RequestBody, "audit-canary")
 }
+
+// Scenario（2026-09-23 回归）：codebuddy 成长链的**合规分级**必须真正落进审计。
+//
+// 真实缺陷：handler 注释写着「分级入审计是刻意的：事后追查"谁在什么时候手动跑了
+// 伪造上报类动作"时，这一条是唯一线索」，并确实传了 channel/tier/auto_runnable——
+// 但这三个键当时不在 auditExtraAllowedKeys 里，被**静默丢弃**，落库 extra 为空。
+// 后果：事后仅凭审计表无法区分"手动跑了 full 级 adopt"与"跑了 preview 级 travel_status"。
+//
+// 本用例把"注释承诺"变成可执行断言：full 级手动动作必须在审计里留下分级痕迹。
+func TestCodeBuddyGrowthAuditKeepsComplianceTier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repository := &auditCaptureRepository{}
+	auditService := service.NewAuditLogService(repository, nil)
+	auditService.Start()
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+		c.Set(string(ContextKeyUserRole), "admin")
+		c.Next()
+	})
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+	// 模拟 full 级手动通道（adopt）。
+	router.POST("/api/v1/admin/codebuddy/accounts/:id/growth/run", func(c *gin.Context) {
+		SetAuditAction(c, "admin.codebuddy.growth.run")
+		SetAuditExtra(c, map[string]any{
+			"channel":       "adopt",
+			"tier":          "full",
+			"auto_runnable": false,
+		})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/codebuddy/accounts/11/growth/run",
+		bytes.NewBufferString(`{"channel":"adopt"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	auditService.Stop()
+
+	repository.mu.Lock()
+	logs := append([]*service.AuditLog(nil), repository.logs...)
+	repository.mu.Unlock()
+	require.Len(t, logs, 1)
+
+	entry := logs[0]
+	require.Equal(t, "admin.codebuddy.growth.run", entry.Action)
+	// 核心断言：分级三要素必须在审计里（此前被静默丢弃，extra 为空）。
+	require.Equal(t, "adopt", entry.Extra["channel"],
+		"审计必须记录通道；缺失则无法区分 full 与 preview 级动作")
+	require.Equal(t, "full", entry.Extra["tier"],
+		"审计必须记录合规分级——这是事后追查 full 级动作的唯一线索")
+	require.Equal(t, false, entry.Extra["auto_runnable"])
+}
+
+// Scenario：白名单**不得**因此放松——非标量与未登记键仍被拒绝。
+//
+// 与上一例配对：防止"为了记分级"把白名单敞开（那是安全边界）。
+func TestCodeBuddyGrowthAuditStillRejectsNonScalarsAndUnknownKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repository := &auditCaptureRepository{}
+	auditService := service.NewAuditLogService(repository, nil)
+	auditService.Start()
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+		c.Set(string(ContextKeyUserRole), "admin")
+		c.Next()
+	})
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+	router.POST("/api/v1/admin/codebuddy/growth/run-all", func(c *gin.Context) {
+		SetAuditExtra(c, map[string]any{
+			// 切片：非标量，必须被拒（channels 属此类）
+			"channels": []string{"travel_run", "streak"},
+			// 未登记键：必须被拒
+			"secret_looking_key": "audit-canary",
+			// 嵌套 map：必须被拒
+			"nested": map[string]any{"unsafe": true},
+			// 已登记标量：应被接收
+			"attempted": 3,
+		})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/codebuddy/growth/run-all",
+		bytes.NewBufferString(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	auditService.Stop()
+
+	repository.mu.Lock()
+	logs := append([]*service.AuditLog(nil), repository.logs...)
+	repository.mu.Unlock()
+	require.Len(t, logs, 1)
+
+	entry := logs[0]
+	require.NotContains(t, entry.Extra, "channels", "切片非标量，不得进审计")
+	require.NotContains(t, entry.Extra, "secret_looking_key", "未登记键不得进审计")
+	require.NotContains(t, entry.Extra, "nested", "嵌套 map 不得进审计")
+	require.EqualValues(t, 3, entry.Extra["attempted"], "已登记的标量仍应正常记录")
+}

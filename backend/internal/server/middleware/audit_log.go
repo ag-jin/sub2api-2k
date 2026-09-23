@@ -60,6 +60,19 @@ var auditExtraAllowedKeys = map[string]struct{}{
 	"matched_count": {}, "snapshot_max_id": {}, "filter_hash": {}, "confirm": {},
 	// codebuddy 扫码纳管显式审计字段（actor/uid/nickname/create|update，A1）。
 	"uid": {}, "nickname": {},
+	// codebuddy 成长链/签到：**合规分级与汇总计数**（2026-09-23 修复"静默丢弃"）。
+	//
+	// 背景：handler 的注释写着「分级入审计是刻意的：事后追查"谁在什么时候手动跑了
+	// 伪造上报类动作"时，这一条是唯一线索」，并确实调用了 SetAuditExtra 传
+	// channel/tier/auto_runnable——但这三个键当时不在白名单里，被**静默丢弃**，
+	// 落库 extra 为空。于是事后仅凭审计表无法区分"手动跑了 full 级 adopt"
+	// 与"跑了 preview 级 travel_status"，那句"唯一线索"落空（属"注释承诺≠行为"）。
+	//
+	// 这些仍是**标量、非密**的操作摘要，不放松本白名单的既有约束：
+	// request body 与任意嵌套 map 依然不予接收（见下方 isAuditExtraScalar 与既有测试）。
+	"channel": {}, "tier": {}, "auto_runnable": {},
+	"total": {}, "succeeded": {}, "already": {},
+	"failed": {}, "skipped": {}, "attempted": {}, "reported": {},
 }
 
 // SetAuditExtra adds allowlisted, scalar details to the current audit entry.
