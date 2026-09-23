@@ -603,6 +603,91 @@ func TestSettingServicePlatformFeaturesNormalizesOnWrite(t *testing.T) {
 	require.Equal(t, "11:00", parsed["write-platform"]["win"].End.Format())
 }
 
+// Scenario（D1 回归，2026-09-23）：**整表单保存不得清空平台功能开关**。
+//
+// 真实事故：管理员在设置页打开签到开关后，只要因**其它**设置点一次"保存设置"
+// （整表单 PUT /admin/settings），`platform_features` 就被写成 `{}`，
+// 三个开关静默回关闭——而前端只在 onMounted 加载一次、保存后不回刷，
+// **界面仍显示"已开启"**。这会让 dev 验收结论依赖操作顺序
+// （"开关看起来开着但调度器不跑"被误判成调度器 bug）。
+//
+// 三处叠加（缺一不成）：① buildSystemSettingsUpdates 无条件写入，无 nil 守卫
+// （相邻 DefaultPlatformQuotas/AccountSchedulingThresholds 都有）
+// ② handler 组装 SystemSettings 时从不设置该字段 → 恒传 nil
+// ③ UpdateSettingsRequest 无该 JSON 字段 → 永远进不了 omitted 保护
+//
+// 本用例锁住 ①②：handler 路径传 nil 时，**已存的开关必须保留**。
+func TestUpdateSettingsNilPlatformFeaturesKeepsStoredSwitches(t *testing.T) {
+	queueQueuedPlatformFeatureRegistryCleanup(t, "keep-platform")
+	RegisterPlatformFeatureSpec(PlatformFeatureSpec{
+		Platform: "keep-platform",
+		Features: []PlatformFeatureDefinition{
+			{Key: "checkin", Kind: PlatformFeatureBool, EnabledByDefault: false},
+		},
+	})
+
+	repo := newPlatformFeatureTestRepo()
+	svc := newPlatformFeatureTestService(t, repo)
+	ctx := context.Background()
+
+	// ① 管理员打开开关（走真实 UpdateSettings 路径）。
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{
+		PlatformFeatures: PlatformFeatureSettings{
+			"keep-platform": {"checkin": {Enabled: true}},
+		},
+	}))
+	stored := repo.vals[SettingKeyPlatformFeatures]
+	require.True(t,
+		PlatformFeatureEnabled(ParsePlatformFeatureSettings(stored), "keep-platform", "checkin"),
+		"前置条件：开关应已存为开启")
+
+	// ② 另一次整表单保存：handler 从不设置 PlatformFeatures → 传 nil。
+	//    模拟"用户只是改了别的设置就点了保存"。
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{}))
+
+	after := repo.vals[SettingKeyPlatformFeatures]
+	require.True(t,
+		PlatformFeatureEnabled(ParsePlatformFeatureSettings(after), "keep-platform", "checkin"),
+		"整表单保存（未携带平台功能）不得清空已开启的开关；"+
+			"清空会让界面显示'已开启'而实际已关闭。落库值=%q", after)
+}
+
+// Scenario（D1 配对）：显式提交空表 = 用户**有意**清空，应当被尊重。
+//
+// 与上一例配对，防止"加守卫"退化成"永远写不进去"——
+// 那样管理员将无法通过提交空表来关闭开关。
+func TestUpdateSettingsExplicitEmptyPlatformFeaturesClearsSwitches(t *testing.T) {
+	queueQueuedPlatformFeatureRegistryCleanup(t, "clear-platform")
+	RegisterPlatformFeatureSpec(PlatformFeatureSpec{
+		Platform: "clear-platform",
+		Features: []PlatformFeatureDefinition{
+			{Key: "checkin", Kind: PlatformFeatureBool, EnabledByDefault: false},
+		},
+	})
+
+	repo := newPlatformFeatureTestRepo()
+	svc := newPlatformFeatureTestService(t, repo)
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{
+		PlatformFeatures: PlatformFeatureSettings{
+			"clear-platform": {"checkin": {Enabled: true}},
+		},
+	}))
+	require.True(t, PlatformFeatureEnabled(
+		ParsePlatformFeatureSettings(repo.vals[SettingKeyPlatformFeatures]), "clear-platform", "checkin"))
+
+	// 显式空表（非 nil）：这是"有意清空"，必须生效。
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{
+		PlatformFeatures: PlatformFeatureSettings{},
+	}))
+
+	after := repo.vals[SettingKeyPlatformFeatures]
+	require.False(t,
+		PlatformFeatureEnabled(ParsePlatformFeatureSettings(after), "clear-platform", "checkin"),
+		"显式提交空表应真正清空开关（否则管理员关不掉）；落库值=%q", after)
+}
+
 // Scenario：settings 读取报错 → 平台功能按缺省（关闭）处理，不 panic、不误开。
 // fail-closed：DB 抖动绝不能把写操作功能意外打开。此处走 GetAll 失败路径。
 func TestSettingServicePlatformFeaturesReadErrorIsFailClosed(t *testing.T) {

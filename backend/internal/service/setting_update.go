@@ -546,14 +546,27 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		updates[SettingKeyAccountSchedulingThresholds] = string(blob)
 	}
 
-	// 平台级功能设置：整体替换语义（与 platform quota 同款——调用方提交的是完整
-	// 表单，未提交的平台即视为"未配置"，落到注册声明的默认值）。
-	// 归一化会丢弃注册表里不存在的平台/功能键，避免旧版本残留键被写回。
-	platformFeatures, err := MarshalPlatformFeatureSettings(settings.PlatformFeatures)
-	if err != nil {
-		return nil, err
+	// 平台级功能设置：**nil = 调用方未携带该字段 → 保持已存值**（2026-09-23 D1 修复）。
+	//
+	// 为什么必须有 nil 守卫：整表单 `PUT /admin/settings` 走的是 `UpdateSettingsRequest`，
+	// 而该 request **没有** `platform_features` 字段 → 该键永远进不了 `omitted` 保护表
+	// （`buildSettingKeyByJSONName` 只扫 request 的字段），handler 组装 SystemSettings 时
+	// 也就恒传零值 nil。若此处无条件写入，一次"只改了别的设置"的保存就会把
+	// 管理员已打开的签到/活跃上报/成长链开关**静默清空**，而前端平台功能区块
+	// 只在 onMounted 加载一次、保存后不回刷 → **界面仍显示"已开启"**，
+	// 使 dev 验收结论依赖操作顺序。相邻的 DefaultPlatformQuotas(:527)、
+	// AccountSchedulingThresholds(:537) 早已是 nil 守卫语义，此处补齐同款。
+	//
+	// 显式空表（非 nil）仍按"整体替换"语义清空——管理员提交空表是**有意**关闭，
+	// 必须被尊重（见 TestUpdateSettingsExplicitEmptyPlatformFeaturesClearsSwitches）。
+	// 平台功能的日常写入走专用端点 PUT /admin/settings/platform-features（稀疏读改写）。
+	if settings.PlatformFeatures != nil {
+		platformFeatures, err := MarshalPlatformFeatureSettings(settings.PlatformFeatures)
+		if err != nil {
+			return nil, err
+		}
+		updates[SettingKeyPlatformFeatures] = platformFeatures
 	}
-	updates[SettingKeyPlatformFeatures] = platformFeatures
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 

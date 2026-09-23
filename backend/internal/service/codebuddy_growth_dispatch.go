@@ -135,8 +135,15 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannels(
 
 // codeBuddyGrowthManualChannels 手动通道（full 级）：只能由人显式点名执行。
 //
-// 从注册表按分级**推导**而不是硬编码列表：新增 full 级通道时自动纳入，
-// 不会出现"代码里写死三个、注册表多了一个却没人能手动跑"。
+// 从注册表按分级**推导**，不硬编码列表，因此它不会漏掉新注册的 full 级通道。
+//
+// ⚠️ 澄清（2026-09-23，D3）：**"自动纳入"只保证出现在列表里，不保证端点能执行**。
+// `RunCodeBuddyGrowthChannelNow` 的分发是显式 switch，每个通道的动作各不相同、
+// 无法从注册表推导，所以新增 full 级通道**仍需手动接一个 case**。
+// 原注释写作"新增 full 级通道时自动纳入，不会出现……没人能手动跑"，
+// 对执行侧是**空头承诺**——已按事实订正。
+// 该缺口由 `TestManualChannelListAndEndpointAgree` 兜底：未接 case 的新通道
+// 必须**响亮且点名通道键**地失败（而不是静默或含糊），让人一看就知道要接哪里。
 func codeBuddyGrowthManualChannels() []codebuddy.CodeBuddyGrowthChannelSpec {
 	manual := make([]codebuddy.CodeBuddyGrowthChannelSpec, 0)
 	for _, spec := range codebuddy.CodeBuddyGrowthChannelSpecs {

@@ -62,6 +62,14 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannelNow(
 		result.Error = "not a codebuddy account"
 		return result
 	}
+	// 聚合键先判：`travel` 是**业务域聚合键**，不在通道规格表里
+	// （`CodeBuddyGrowthChannelSpecByKey` 查不到它），所以必须放在规格查询**之前**，
+	// 否则永远落到下面的泛化 "unknown growth channel" 分支，
+	// 这句针对性提示就成了死代码。
+	if channelKey == codebuddy.CodeBuddyGrowthChannelTravel {
+		result.Error = "travel 是聚合键，请指定 travel_status / travel_run / adopt"
+		return result
+	}
 	spec, ok := codebuddy.CodeBuddyGrowthChannelSpecByKey(channelKey)
 	if !ok {
 		result.Error = "unknown growth channel: " + channelKey
@@ -110,6 +118,8 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannelNow(
 		}
 	case codebuddy.CodeBuddyGrowthChannelTravel:
 		// 聚合键：不代表具体动作。手动端点要求点名具体动作，避免歧义。
+		// 注：上面已提前拦截，此分支为兜底（万一将来 specs 里真的注册了 `travel`，
+		// 语义仍是"聚合键不可直接执行"，与提前拦截一致）。
 		result.Error = "travel 是聚合键，请指定 travel_status / travel_run / adopt"
 	default:
 		result.Error = "channel has no manual entry: " + channelKey
