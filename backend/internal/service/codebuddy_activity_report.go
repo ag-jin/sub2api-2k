@@ -63,12 +63,16 @@ func gjsonGetInt(raw []byte, path string) int64 {
 	return gjson.GetBytes(raw, path).Int()
 }
 
-// CodeBuddyActivityStreakPath 连登状态回读端点。
+// CodeBuddyActivityStreakPath 连登状态回读端点（别名，字面量在 platform 包）。
 //
 // ⚠️ 注意域不同：本条走 **chat 域**（`{chatBase}/activity/growth/streak`），
 // 而上报本身走 **billing 域**。参考实现里 `GrowthStreak` 用 chatBase + BillingHeaders，
 // `ReportChatActivity` 用 billingBase——两者不是同一个 base，别混用。
-const CodeBuddyActivityStreakPath = "/activity/growth/streak"
+//
+// 保留别名（而不是让本包各处改用 `codebuddy.` 前缀）是为了不动既有调用点与测试；
+// 字面量只有一份，在 platform 包——A6 成长链的 `CodeBuddyGrowthStreakPath`
+// 必须与它共用同一个值（platform 包不能反向 import service，定义只能在那边）。
+const CodeBuddyActivityStreakPath = codebuddy.CodeBuddyActivityStreakPath
 
 // CodeBuddyActivityReportResult 单账号上报结果。
 type CodeBuddyActivityReportResult struct {

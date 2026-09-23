@@ -503,6 +503,10 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 //   - GET  /admin/codebuddy/qr/poll?state=    轮询扫码（发起者绑定 + ≥2s 节流）
 //   - POST /admin/codebuddy/accounts/:id/checkin  每日签到（0/10001 幂等）
 //   - POST /admin/codebuddy/accounts/checkin-all  批量签到（四态汇总）
+//   - GET  /admin/codebuddy/growth/channels       成长链通道与合规分级（只读）
+//   - POST /admin/codebuddy/growth/run-all        手动跑一轮可自动级通道
+//   - POST /admin/codebuddy/growth/activity-run   活跃上报（full 级唯一手动入口）
+//   - POST /admin/codebuddy/accounts/:id/growth/run  手动跑单通道
 //
 // checkin-all 注册在 /accounts/:id/checkin **之前**：两者在同一段位置，
 // 静态段优先于具名参数，顺序写死在这里避免后续插路由时被 :id 吃掉。
@@ -513,6 +517,18 @@ func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		codebuddy.GET("/qr/poll", h.Admin.CodeBuddy.QRPoll)
 		codebuddy.POST("/accounts/checkin-all", h.Admin.CodeBuddy.CheckinAll)
 		codebuddy.POST("/accounts/:id/checkin", h.Admin.CodeBuddy.Checkin)
+		// --- 成长链（A6）---
+		// 只读：列出通道与合规分级，供管理端渲染/运维核对。
+		codebuddy.GET("/growth/channels", h.Admin.CodeBuddy.GrowthChannels)
+		// 手动跑一轮"可自动级别"的通道（full 级不会被带上）。
+		codebuddy.POST("/growth/run-all", h.Admin.CodeBuddy.GrowthRunAll)
+		// ⚠️ 活跃上报（full 级）的**唯一**手动入口。它已移出自动排程，
+		// 没有这个端点该功能就等于不存在。
+		codebuddy.POST("/growth/activity-run", h.Admin.CodeBuddy.ActivityRunNow)
+		// 手动跑单个通道：body {"channel":"<key>"}。
+		// **length 用法注意**：这条必须在 /accounts/checkin-all 之类静态段之后、
+		// 且 `:id` 段只出现在本行，不会吃掉上面的静态路径。
+		codebuddy.POST("/accounts/:id/growth/run", h.Admin.CodeBuddy.GrowthRunChannel)
 	}
 }
 

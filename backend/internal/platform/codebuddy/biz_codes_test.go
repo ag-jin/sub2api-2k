@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,4 +83,172 @@ func TestCodeBuddyNormalizeBizCodeNumericForms(t *testing.T) {
 	require.Equal(t, "11-128", codeBuddyNormalizeBizCode("11-128"))
 	require.Equal(t, "11-128", codeBuddyNormalizeBizCode("  11-128  "))
 	require.Equal(t, "", codeBuddyNormalizeBizCode(nil))
+}
+
+// --- A6 P5：三级分级的调度边界（按动作拆）---
+
+// Scenario：full 级动作**只能是**领养 / 夜猫子 / 开学季；旅行领奖必须可自动。
+//
+// 这是团队负责人 2026-09-22 的裁定：分级按**动作性质**，不按通道整体。
+// 若有人把 travel_run（纯幂等领奖）也归成 full，自动排程会白白失去旅行领奖；
+// 反过来若把 adopt / night_cat / school 降级成 claim，伪造上报就会进自动排程
+// ——**那是用户裁定的合规红线**。
+func TestCodeBuddyGrowthFullTierIsExactlyTheForgeryActions(t *testing.T) {
+	needManual := map[string]bool{
+		CodeBuddyGrowthChannelAdopt:    true,
+		CodeBuddyGrowthChannelNightCat: true,
+		CodeBuddyGrowthChannelSchool:   true,
+	}
+
+	autoKeys := CodeBuddyGrowthAutoSchedulableChannelKeys()
+	autoSet := map[string]bool{}
+	for _, key := range autoKeys {
+		autoSet[key] = true
+	}
+
+	for key := range needManual {
+		if autoSet[key] {
+			t.Errorf("%s 是 full 级（含伪造活跃上报语义），不得出现在自动排程里", key)
+		}
+		if !CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			continue // 期望如此
+		}
+		t.Errorf("%s 不应允许自动调度", key)
+	}
+}
+
+// Scenario：纯幂等领奖的旅行动作**必须可自动**（不能被整条通道连坐）。
+func TestCodeBuddyGrowthTravelRunStaysAutoSchedulable(t *testing.T) {
+	for _, key := range []string{
+		CodeBuddyGrowthChannelTravelStatus,
+		CodeBuddyGrowthChannelTravelRun,
+		CodeBuddyGrowthChannelTrial,
+		CodeBuddyGrowthChannelStreak,
+	} {
+		if !CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			t.Errorf("%s 是只读或幂等领奖，应允许自动调度（按动作分级，勿连坐）", key)
+		}
+	}
+}
+
+// Scenario：未注册的通道键 fail-closed（不认识的通道不照跑）。
+func TestCodeBuddyGrowthUnknownChannelIsNeverAutoSchedulable(t *testing.T) {
+	for _, key := range []string{"", "nonexistent", "travel "} {
+		if CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key) {
+			t.Errorf("未知通道 %q 必须 fail-closed（不允许自动调度）", key)
+		}
+	}
+}
+
+// Scenario：全表自洽——每个 spec 的分级合法、键唯一、rationale 非空。
+func TestCodeBuddyGrowthChannelRegistryIsInternallyConsistent(t *testing.T) {
+	seen := map[string]bool{}
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if seen[spec.Key] {
+			t.Fatalf("通道键重复：%q（重复会让分级互相覆盖）", spec.Key)
+		}
+		seen[spec.Key] = true
+		if !spec.Tier.IsValid() {
+			t.Errorf("通道 %s 的分级 %q 非法", spec.Key, spec.Tier)
+		}
+		if strings.TrimSpace(spec.Rationale) == "" {
+			t.Errorf("通道 %s 缺少分级理由（合规裁定要求逐条标明）", spec.Key)
+		}
+	}
+	// AutoSchedulable 必须与 full 的补集一致（防止有人只改一边）。
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		want := spec.Tier != GrowthTierFull
+		if spec.Tier.AutoSchedulable() != want {
+			t.Errorf("通道 %s：Tier=%s 但 AutoSchedulable()=%v，两者不一致",
+				spec.Key, spec.Tier, spec.Tier.AutoSchedulable())
+		}
+	}
+}
+
+// --- A6 P6：注释里点名的守门测试（此前注释引用了它，但测试并不存在）---
+
+// Scenario：`AutoSchedulableChannelKeys()` 返回的**每个**通道都不得是 full 级。
+//
+// ⚠️ 这个测试名此前被 `growth_tasks.go` 的注释引用（"改这里会被
+// TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull 拦住"），
+// **但测试文件里并没有它**——即注释承诺了一道不存在的防线。
+// 这是本项目反复出现的一类问题（码表 `11-128` 被"测过"实则求值错、
+// A5 的"间隔"从未被断言）：**读注释的人会以为边界已被守住**。
+// 本次把它真正补上。
+//
+// 断言三层：
+//  1. 返回列表里每一项的 Tier 都不是 full；
+//  2. 反向：所有 full 级通道都不在列表里（防"过滤写反了返回空集"）；
+//  3. 列表非空（防"返回空集"这种最隐蔽的假绿）。
+func TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull(t *testing.T) {
+	autoKeys := CodeBuddyGrowthAutoSchedulableChannelKeys()
+
+	requireNotEmpty(t, autoKeys)
+
+	autoSet := map[string]bool{}
+	for _, key := range autoKeys {
+		autoSet[key] = true
+		spec, ok := CodeBuddyGrowthChannelSpecByKey(key)
+		requireTrue(t, ok, "自动通道 %s 未在注册表里", key)
+		if spec.Tier == GrowthTierFull {
+			t.Errorf("full 级通道 %s（%s）不得出现在自动排程列表里",
+				key, spec.Rationale)
+		}
+	}
+
+	// 反向：每一个 full 级通道都必须**不在**自动列表里。
+	fullCount := 0
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if spec.Tier != GrowthTierFull {
+			continue
+		}
+		fullCount++
+		if autoSet[spec.Key] {
+			t.Errorf("full 级通道 %s 混进了自动排程列表", spec.Key)
+		}
+	}
+	requireTrue(t, fullCount > 0,
+		"注册表里应有 full 级通道（否则本测试失去意义——它靠 full 的存在来验证过滤）")
+
+	// 逐个点名：这几个**必须**是 full 且不在自动列表里。
+	//
+	// 为什么在通用断言之外还要点名：通用断言在"某个通道被误降级"时信息太弱——
+	// 它只说"该通道在自动列表里"，不说"它本该是哪一级、依据是什么"。
+	// 点名版把 rationale 打出来，让改错的人当场看到依据。
+	//
+	// ⚠️ 这条是**变异测试逼出来的**：我先前以为加了它，实际脚本替换的锚点
+	// 没匹配上（静默 no-op），于是"把 lottery 降级成 claim"的变异**没被抓到**。
+	// 是事后跑变异才发现断言根本没写进去——"绿了 ≠ 测到了"的又一例。
+	mustBeFull := []string{
+		CodeBuddyGrowthChannelAdopt,    // 伪造 chat_5 门槛
+		CodeBuddyGrowthChannelNightCat, // 纯伪造上报
+		CodeBuddyGrowthChannelSchool,   // 完成判据靠伪造上报
+		CodeBuddyGrowthChannelLottery,  // 不可逆消耗（2026-09-23 裁定归 full）
+	}
+	for _, key := range mustBeFull {
+		spec, ok := CodeBuddyGrowthChannelSpecByKey(key)
+		requireTrue(t, ok, "通道 %s 未注册", key)
+		if spec.Tier != GrowthTierFull {
+			t.Errorf("通道 %s 应为 full 级，实际是 %s。依据：%s",
+				key, spec.Tier, spec.Rationale)
+		}
+		if autoSet[key] {
+			t.Errorf("通道 %s 是 full 级，不得出现在自动排程列表里", key)
+		}
+	}
+}
+
+// requireNotEmpty / requireTrue 本地断言（避免为两条断言引入额外 import）。
+func requireNotEmpty(t *testing.T, values []string) {
+	t.Helper()
+	if len(values) == 0 {
+		t.Fatal("自动可调度通道列表为空——要么注册表空了，要么过滤写反了（假绿高发区）")
+	}
+}
+
+func requireTrue(t *testing.T, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Fatalf(format, args...)
+	}
 }

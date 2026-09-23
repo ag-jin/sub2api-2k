@@ -130,6 +130,7 @@ func provideCleanup(
 	pluginManager *service.PluginManager,
 	codeBuddyCheckin *service.CodeBuddyCheckinScheduler,
 	codeBuddyActivity *service.CodeBuddyActivityScheduler,
+	codeBuddyGrowth *service.CodeBuddyGrowthScheduler,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -208,6 +209,13 @@ func provideCleanup(
 				// 活跃上报调度器同款：每分钟 tick 的 cron，同样要显式 Stop。
 				if codeBuddyActivity != nil {
 					codeBuddyActivity.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyGrowthScheduler", func() error {
+				// 成长链调度器（每分钟 tick 的 cron），同样要显式 Stop。
+				if codeBuddyGrowth != nil {
+					codeBuddyGrowth.Stop()
 				}
 				return nil
 			}},
