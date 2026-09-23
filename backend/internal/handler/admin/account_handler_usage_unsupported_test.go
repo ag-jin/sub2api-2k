@@ -15,6 +15,8 @@ import (
 type usageUnsupportedAccountRepo struct {
 	service.AccountRepository
 	accounts []*service.Account
+	// extraWrites 记录余额流水落盘（codebuddy_credits_ledger 会写 extra）。
+	extraWrites int
 }
 
 func (r *usageUnsupportedAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
@@ -24,6 +26,25 @@ func (r *usageUnsupportedAccountRepo) GetByID(_ context.Context, id int64) (*ser
 		}
 	}
 	return nil, service.ErrAccountNotFound
+}
+
+// UpdateExtra 必须显式实现：内嵌的 service.AccountRepository 是**未类型化 nil
+// 接口**，不 override 的话调用即空指针 panic（生产侧守卫
+// codebuddy_credits_ledger.go 只检查 s.accountRepo == nil，挡不住这种内嵌 nil）。
+//
+// 触发路径：A2 引入的积分流水（recordCodeBuddyCreditsChange）在 codebuddy 余额
+// 查询成功后会把余额基线写进 accounts.extra。本用例的 codebuddy 分支会走到那里。
+func (r *usageUnsupportedAccountRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
+	r.extraWrites++
+	for _, account := range r.accounts {
+		if account.Extra == nil {
+			account.Extra = map[string]any{}
+		}
+		for k, v := range updates {
+			account.Extra[k] = v
+		}
+	}
+	return nil
 }
 
 // Scenario（改写自原 codebuddy 400 短路语义，A2 新语义）：codebuddy 账号的

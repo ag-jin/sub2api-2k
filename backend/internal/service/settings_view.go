@@ -313,6 +313,10 @@ type SystemSettings struct {
 	// 系统全局账号自动停调阈值（key = platform，100 = disabled）
 	AccountSchedulingThresholds map[string]int `json:"account_scheduling_thresholds"`
 
+	// 平台级功能设置（key = platform → feature → value）。各平台可用的功能由该平台
+	// 自己注册（platform_feature_settings.go），这里只做聚合读写。
+	PlatformFeatures PlatformFeatureSettings `json:"platform_features"`
+
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool
 }

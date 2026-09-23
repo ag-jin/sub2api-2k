@@ -1566,6 +1566,65 @@ export async function resetWebSearchUsage(payload: {
   );
 }
 
+// ==================== Platform Feature Settings (平台功能设置) ====================
+
+/**
+ * 平台级功能的取值形态，对应后端 service.PlatformFeatureValue。
+ * 只有 kind 对应的字段有意义：bool 只用 enabled，time_range 用 enabled + start/end。
+ */
+export interface PlatformFeatureValue {
+  enabled: boolean;
+  start?: { hour: number; minute: number };
+  end?: { hour: number; minute: number };
+}
+
+/** 单个平台功能项（含渲染所需形状）。 */
+export interface PlatformFeatureItem {
+  key: string;
+  kind: "bool" | "time_range" | string;
+  title: string;
+  description: string;
+  value: PlatformFeatureValue;
+}
+
+/** 按平台分组的功能列表。 */
+export interface PlatformFeatureGroup {
+  platform: string;
+  features: PlatformFeatureItem[];
+}
+
+export interface PlatformFeaturesResponse {
+  platforms: PlatformFeatureGroup[];
+}
+
+/**
+ * 读取全部平台级功能设置（按平台分组，值已按注册默认补齐）。
+ */
+export async function getPlatformFeatures(): Promise<PlatformFeaturesResponse> {
+  const { data } = await apiClient.get<PlatformFeaturesResponse>(
+    "/admin/settings/platform-features",
+  );
+  return data;
+}
+
+/**
+ * 稀疏更新平台级功能设置：只提交要改的项，未提交项保持原值。
+ * 返回归一化之后的**生效值**（越界/零长时间点会被服务端修正回默认）。
+ */
+export async function updatePlatformFeatures(
+  features: Array<{
+    platform: string;
+    key: string;
+    value: PlatformFeatureValue;
+  }>,
+): Promise<PlatformFeaturesResponse> {
+  const { data } = await apiClient.put<PlatformFeaturesResponse>(
+    "/admin/settings/platform-features",
+    { features },
+  );
+  return data;
+}
+
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -1595,6 +1654,8 @@ export const settingsAPI = {
   updateWebSearchEmulationConfig,
   testWebSearchEmulation,
   resetWebSearchUsage,
+  getPlatformFeatures,
+  updatePlatformFeatures,
 };
 
 export default settingsAPI;

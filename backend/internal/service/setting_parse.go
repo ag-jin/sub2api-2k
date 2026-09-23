@@ -978,6 +978,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
+	// 平台级功能设置：缺省/损坏一律回落到"未配置"（nil），读取侧再用各平台注册声明的
+	// 默认值兜底 —— 设置页拿到的是空白（默认）表单，而不是残留的脏值。
+	result.PlatformFeatures = ParsePlatformFeatureSettings(settings[SettingKeyPlatformFeatures])
+
 	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true" // default false
 
 	// Publish Grok default model_mapping options for accounts with empty mapping.

@@ -545,6 +545,11 @@ export default {
         resetStatus: 'Reset Status',
         refreshToken: 'Refresh Token',
         probeUpstreamBilling: 'Probe Upstream Rate',
+        checkinCodeBuddy: 'Check in CodeBuddy',
+        checkinRunning: 'Checking in…',
+        checkinConfirm: 'Run daily check-in for all CodeBuddy accounts? Accounts already checked in today are treated as idempotent success.',
+        checkinDone: 'Check-in done: {succeeded} succeeded, {already} already, {skipped} skipped, {failed} failed',
+        checkinFailed: 'Bulk check-in failed',
         resetStatusSuccess: 'Successfully reset {count} account(s) status',
         refreshTokenSuccess: 'Successfully refreshed {count} account(s) token',
         partialSuccess: 'Partially completed: {success} succeeded, {failed} failed'

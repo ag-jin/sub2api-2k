@@ -225,6 +225,7 @@
           :total-results="pagination.total"
           :selecting-all="selectingAllResults"
           :all-results-selected="allResultsSelected"
+          :checkin-running="codeBuddyCheckinRunning"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -235,6 +236,7 @@
           @select-page="selectPage"
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
+          @checkin-codebuddy="handleBulkCheckinCodeBuddy"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
@@ -2032,6 +2034,31 @@ const handleBulkRefreshToken = async () => {
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
     appStore.showError(String(error))
+  }
+}
+// 批量签到 CodeBuddy：服务端遍历全部 codebuddy 账号并发签到（上限 5），
+// 与"选中哪些"无关——候选由服务端按平台+可调度性决定，所以不需要选中账号。
+const codeBuddyCheckinRunning = ref(false)
+const handleBulkCheckinCodeBuddy = async () => {
+  if (codeBuddyCheckinRunning.value) return
+  if (!confirm(t('admin.accounts.bulkActions.checkinConfirm'))) return
+  codeBuddyCheckinRunning.value = true
+  try {
+    const result = await adminAPI.codebuddy.checkinAll()
+    appStore.showSuccess(
+      t('admin.accounts.bulkActions.checkinDone', {
+        succeeded: result.succeeded,
+        already: result.already_checked_in,
+        skipped: result.skipped,
+        failed: result.failed
+      })
+    )
+    await reload()
+  } catch (error) {
+    console.error('Failed to bulk check in CodeBuddy accounts:', error)
+    appStore.showError(extractApiErrorMessage(error, t('admin.accounts.bulkActions.checkinFailed')))
+  } finally {
+    codeBuddyCheckinRunning.value = false
   }
 }
 const handleBulkProbeUpstreamBilling = async () => {

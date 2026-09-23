@@ -80,10 +80,26 @@ func (r *CodeBuddyTokenRefresher) CanRefresh(account *Account) bool {
 		strings.TrimSpace(account.GetCodeBuddyRefreshToken()) != ""
 }
 
+// CodeBuddyAccessTokenRefreshWindow 是 CodeBuddy accessToken 的刷新窗口。
+//
+// 为什么不是全局的 RefreshBeforeExpiryHours（0.5h）：那个默认值是按 Google 的
+// 1 小时 token 选的，而 CodeBuddy 的 accessToken 实测签发 60 天。沿用 0.5 小时
+// 等于"只剩半小时才尝试刷新"，一旦这次尝试撞上网络抖动，账号会被 temp-unsched
+// 10 分钟摘出池子——而它其实还有半小时寿命。给足 3 天窗口，让刷新在有效期尚早时
+// 就完成，抖动有充足的重试余地。
+//
+// NeedsRefresh 内部按平台改写窗口而不是改 TokenRefreshService 的调用点：刷新窗口
+// 在调度侧（processCandidatePage）和并发保护侧（RefreshIfNeeded）各判一次，把平台
+// 口径收在刷新器里才能保证两处一致，不会出现"调度说该刷、加锁后又说不该刷"。
+const CodeBuddyAccessTokenRefreshWindow = 3 * 24 * time.Hour
+
 // NeedsRefresh 判断刷新是否需要：auth.expiresAt（毫秒存储为 RFC3339）在刷新
 // 窗口内、或 access_token 缺失 / 无过期信息（保守触发一次，成功后即写入）。
 // 上游提前 60s 判过期：auth JSON expiresAt 毫秒值已含该语义余量，
 // 由 AuthManager 提前量处理，这里按 expires_at 直接判定。
+//
+// 窗口按平台取：CodeBuddy 用 CodeBuddyAccessTokenRefreshWindow，其余平台沿用
+// 传入的全局窗口（凭据寿命不同，不能共用一个窗口）。
 func (r *CodeBuddyTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	if account == nil || strings.TrimSpace(account.GetCodeBuddyRefreshToken()) == "" {
 		return false
@@ -95,7 +111,16 @@ func (r *CodeBuddyTokenRefresher) NeedsRefresh(account *Account, refreshWindow t
 	if expiresAt == nil {
 		return true
 	}
-	return time.Until(*expiresAt) < refreshWindow
+	return time.Until(*expiresAt) < codeBuddyRefreshWindowFor(refreshWindow)
+}
+
+// codeBuddyRefreshWindowFor 取 CodeBuddy 的实际刷新窗口：全局窗口更宽时以全局为准
+// （运维调大 refresh_before_expiry_hours 仍然生效），否则用 CodeBuddy 专属的 3 天。
+func codeBuddyRefreshWindowFor(globalWindow time.Duration) time.Duration {
+	if globalWindow > CodeBuddyAccessTokenRefreshWindow {
+		return globalWindow
+	}
+	return CodeBuddyAccessTokenRefreshWindow
 }
 
 // Refresh 执行 token 刷新（OAuthRefreshAPI 已在锁内完成 DB reread 与二次判期）。

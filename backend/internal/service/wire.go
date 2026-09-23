@@ -10,9 +10,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -34,12 +34,41 @@ func ProvideCodeBuddyAdminService(
 	adminSvc AdminService,
 	accountRepo AccountRepository,
 	redisClient *redis.Client,
+	httpUpstream HTTPUpstream,
 ) *CodeBuddyAdminService {
 	var store codebuddy.Store
 	if redisClient != nil {
 		store = codebuddy.NewRedisStore(redisClient)
 	}
-	return NewCodeBuddyAdminService(adminSvc, accountRepo, store)
+	svc := NewCodeBuddyAdminService(adminSvc, accountRepo, store)
+	// 解冻闭环（4.5）需要查实时积分；复用 A2 已有的 fetcher 实现。
+	svc.SetCreditsFetcher(NewCodeBuddyCreditsFetcher(httpUpstream))
+	return svc
+}
+
+// ProvideCodeBuddyCheckinScheduler 构造并启动签到调度器（4.1/4.2）。
+//
+// 每分钟 tick + 窗口内一次（形态说明见 codebuddy_checkin_scheduler.go）。
+// 注册表里的功能默认关闭，所以调度器起来后在显式开启前不会发任何上游请求。
+//
+// 顺带把 CodeBuddyAdminService 注入网关的**业务码冷却执行者**（4.6）：
+// NewOpenAIGatewayService 的形参里没有 CodeBuddyAdminService（网关先于 AdminService
+// 构造，而 CodeBuddyAdminService 依赖 AdminService——直接加形参会成环），所以
+// 必须在两边都构造完之后后置注入。这里两个依赖同时在场，是天然的锚点。
+func ProvideCodeBuddyCheckinScheduler(
+	codeBuddyAdminService *CodeBuddyAdminService,
+	settingService *SettingService,
+	openAIGatewayService *OpenAIGatewayService,
+) *CodeBuddyCheckinScheduler {
+	// 不注入的话 codeBuddyCooldownApplier 恒为 nil，
+	// handleOpenAIAccountUpstreamError 里整段业务码冷却分支永不执行
+	// ——4.6 会静默变成死代码。
+	if openAIGatewayService != nil {
+		openAIGatewayService.SetCodeBuddyCooldownApplier(codeBuddyAdminService)
+	}
+	scheduler := NewCodeBuddyCheckinScheduler(codeBuddyAdminService, settingService)
+	scheduler.Start()
+	return scheduler
 }
 
 // BuildInfo contains build information
@@ -877,6 +906,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
 	ProvideCodeBuddyAdminService,
+	ProvideCodeBuddyCheckinScheduler,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,

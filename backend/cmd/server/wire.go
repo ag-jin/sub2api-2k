@@ -128,6 +128,7 @@ func provideCleanup(
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
+	codeBuddyCheckin *service.CodeBuddyCheckinScheduler,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -191,6 +192,14 @@ func provideCleanup(
 			{"OpsCleanupService", func() error {
 				if opsCleanup != nil {
 					opsCleanup.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyCheckinScheduler", func() error {
+				// 签到调度器是每分钟 tick 的 cron；不显式 Stop 会让进程退出时
+				// 遗留后台 goroutine（且 Stop 是幂等的，重复调用安全）。
+				if codeBuddyCheckin != nil {
+					codeBuddyCheckin.Stop()
 				}
 				return nil
 			}},

@@ -161,16 +161,17 @@ func (g *upstreamStallGuard) stop() {
 // wrap 包装上游响应体：**只在读到语义行时**刷新空闲计时。
 //
 // 为什么不按"任意字节"计时（本仓血泪）：
-//   上游会在长期静默期内只滴流 SSE 注释行（生产实测到 `: heartbeat`，见
-//   evidence/t19-*）。若按任意字节 touch，这些注释就能无限"续命"守卫，
-//   而客户端在该时段**收不到任何语义输出**——正是本次事故的形态。
-//   Responses 路径的同形缺陷已修（锚点改为语义事件）；raw 路径此前仍按字节，
-//   由 TestUpstreamStallGuard_CommentHeartbeatDoesNotRefreshIdle 锁定。
+//
+//	上游会在长期静默期内只滴流 SSE 注释行（生产实测到 `: heartbeat`，见
+//	evidence/t19-*）。若按任意字节 touch，这些注释就能无限"续命"守卫，
+//	而客户端在该时段**收不到任何语义输出**——正是本次事故的形态。
+//	Responses 路径的同形缺陷已修（锚点改为语义事件）；raw 路径此前仍按字节，
+//	由 TestUpstreamStallGuard_CommentHeartbeatDoesNotRefreshIdle 锁定。
 //
 // 语义行的判定：
 //   - 非空、且不以 `:` 开头（`: heartbeat` 等注释不算进展）
 //   - 含 `data:` 负载（SSE data 行——正文/推理/finish_reason/[DONE] 都在其中）
-//   其它（event:/id:/retry:/空行）不单独算进展，除非同帧带 data。
+//     其它（event:/id:/retry:/空行）不单独算进展，除非同帧带 data。
 func (g *upstreamStallGuard) wrap(rc io.ReadCloser) io.ReadCloser {
 	if g == nil || rc == nil {
 		return rc

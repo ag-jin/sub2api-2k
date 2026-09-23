@@ -14,6 +14,25 @@ export default {
         payment: '支付设置',
       },
       features: {
+        platformFeatures: {
+          title: '平台功能',
+          description:
+            '按平台分别配置该平台的平台级功能开关。功能项由各平台自行注册，这里聚合展示；未配置的平台按各自默认值运行。',
+          loading: '加载中…',
+          empty: '当前没有已注册的平台功能。',
+          save: '保存',
+          saving: '保存中…',
+          saved: '已保存',
+          saveFailed: '保存失败',
+          loadFailed: '加载平台功能失败',
+          enabled: '启用',
+          window: '时间段',
+          windowHint: '在此时段内执行一次（时段外不触发；已执行过则当日不再执行）。',
+          start: '开始',
+          end: '结束',
+          closed: '关闭',
+          open: '开启',
+        },
         channelMonitor: {
           title: '渠道监控',
           description: '启用后在 V1 主动探测与 V2 被动用量监控中二选一。关闭后两种模式的后台任务均停止，用户端入口隐藏。',

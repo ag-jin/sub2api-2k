@@ -634,6 +634,11 @@ export default {
         resetStatus: '批量重置状态',
         refreshToken: '批量刷新令牌',
         probeUpstreamBilling: '探测上游倍率',
+        checkinCodeBuddy: '批量签到 CodeBuddy',
+        checkinRunning: '签到中…',
+        checkinConfirm: '对全部 CodeBuddy 账号执行每日签到？窗口内已签到的会被识别为幂等成功。',
+        checkinDone: '签到完成：{succeeded} 成功，{already} 已签到，{skipped} 跳过，{failed} 失败',
+        checkinFailed: '批量签到失败',
         resetStatusSuccess: '已成功重置 {count} 个账号状态',
         refreshTokenSuccess: '已成功刷新 {count} 个账号令牌',
         partialSuccess: '操作部分完成：{success} 成功，{failed} 失败'

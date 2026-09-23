@@ -133,6 +133,34 @@ func (h *CodeBuddyAdminHandler) Checkin(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// CheckinAll POST /admin/codebuddy/accounts/checkin-all。
+//
+// 批量签到：逐账号汇总（成功 / 已签到 / 失败 / 跳过），单账号失败不影响其他账号。
+// 部分失败仍然返回 200 + 明细，而不是整体报错——否则管理员拿不到"哪些成功了"。
+func (h *CodeBuddyAdminHandler) CheckinAll(c *gin.Context) {
+	if h == nil || h.codeBuddyService == nil {
+		response.BadRequest(c, "codebuddy admin service is not enabled")
+		return
+	}
+	result, err := h.codeBuddyService.CheckinAll(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	// 审计只记汇总计数，不写账号级明细（明细可能上百条，审计表不适合承载）。
+	middleware.SetAuditAction(c, "admin.codebuddy.checkin_all")
+	if result != nil {
+		middleware.SetAuditExtra(c, map[string]any{
+			"total":     result.Total,
+			"succeeded": result.Succeeded,
+			"already":   result.AlreadyCheckedIn,
+			"failed":    result.Failed,
+			"skipped":   result.Skipped,
+		})
+	}
+	response.Success(c, result)
+}
+
 func codebuddyImportResultName(created bool) string {
 	if created {
 		return "create"
