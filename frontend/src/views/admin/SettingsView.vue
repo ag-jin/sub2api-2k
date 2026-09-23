@@ -7039,6 +7039,13 @@
             <p v-if="platformFeaturesLoading" class="text-sm text-gray-500 dark:text-gray-400">
               {{ t('admin.settings.features.platformFeatures.loading') }}
             </p>
+            <!-- 加载失败：区块内联提示（不弹全局错误——见 script 里 onError 的说明） -->
+            <p
+              v-else-if="platformFeaturesLoadFailed"
+              class="text-sm text-amber-600 dark:text-amber-400"
+            >
+              {{ t('admin.settings.features.platformFeatures.loadFailed') }}
+            </p>
             <p
               v-else-if="platformFeatureGroups.length === 0"
               class="text-sm text-gray-500 dark:text-gray-400"
@@ -9038,14 +9045,20 @@ const {
   load: loadPlatformFeatures,
   save: savePlatformFeatures,
 } = usePlatformFeatures({
+  // 只有**用户主动保存**失败才弹全局错误。
+  // 页面挂载时的自动加载失败改为区块内联提示：用户没做任何操作就被弹错误框属噪音，
+  // 且前后端版本错配（端点不存在）时会每次打开设置页都弹，用户无法处理也无从判断。
   onError: (key) => {
-    const i18nKey =
-      key === 'loadFailed'
-        ? 'admin.settings.features.platformFeatures.loadFailed'
-        : 'admin.settings.features.platformFeatures.saveFailed';
-    appStore.showError(t(i18nKey));
+    if (key === 'loadFailed') {
+      platformFeaturesLoadFailed.value = true;
+      return;
+    }
+    appStore.showError(t('admin.settings.features.platformFeatures.saveFailed'));
   },
 });
+
+/** 平台功能自动加载是否失败（用于区块内联提示，不弹全局错误）。 */
+const platformFeaturesLoadFailed = ref(false);
 
 /** 平台显示名：复用全站共享映射（与侧边栏/账号页一致，避免第三份清单漂移）。 */
 function platformDisplayLabel(platform: string): string {

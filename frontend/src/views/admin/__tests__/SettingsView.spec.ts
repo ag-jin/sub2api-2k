@@ -22,6 +22,8 @@ const {
   getStreamTimeoutSettings,
   getRectifierSettings,
   getBetaPolicySettings,
+  getPlatformFeatures,
+  updatePlatformFeatures,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   getOllamaCloudUsageSettings,
@@ -56,6 +58,10 @@ const {
   getStreamTimeoutSettings: vi.fn(),
   getRectifierSettings: vi.fn(),
   getBetaPolicySettings: vi.fn(),
+  // 平台功能设置：SettingsView 挂载时会调，缺 mock 会让该请求打到未定义的 API，
+  // 抛错后污染同批跑的其它 spec（跨文件失败）。默认返回空注册表。
+  getPlatformFeatures: vi.fn().mockResolvedValue({ platforms: [] }),
+  updatePlatformFeatures: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({
     enabled: true,
     interval_minutes: 30,
@@ -97,6 +103,8 @@ vi.mock("@/api", () => ({
       getStreamTimeoutSettings,
       getRectifierSettings,
       getBetaPolicySettings,
+      getPlatformFeatures,
+      updatePlatformFeatures,
     },
     accounts: {
       getUpstreamBillingProbeSettings,
