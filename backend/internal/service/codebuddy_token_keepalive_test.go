@@ -21,6 +21,15 @@ func (s *keepaliveRepoStub) ListByPlatform(ctx context.Context, platform string)
 	return s.accts, nil
 }
 
+func (s *keepaliveRepoStub) GetByID(ctx context.Context, id int64) (*Account, error) {
+	for i := range s.accts {
+		if s.accts[i].ID == id {
+			return &s.accts[i], nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
 func (s *keepaliveRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	s.tempUnschedCalls = append(s.tempUnschedCalls, id)
 	return nil
