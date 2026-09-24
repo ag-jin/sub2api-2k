@@ -12,8 +12,8 @@ import (
 
 type keepaliveRepoStub struct {
 	AccountRepository
-	accts   []Account
-	updates []map[int64]map[string]any
+	accts            []Account
+	updates          []map[int64]map[string]any
 	tempUnschedCalls []int64
 }
 
@@ -140,7 +140,7 @@ func TestKeepAlive_AuthRejected_ThreeStrikesDisables(t *testing.T) {
 			assert.Empty(t, sum.Disabled, "第%d次失败不应停用", i)
 		} else {
 			assert.Equal(t, []int64{504}, sum.Disabled, "连续3次失效才停用")
-		assert.Contains(t, repo.tempUnschedCalls, int64(504), "三振同时长冷却摘出对话池(审查修正)")
+			assert.Contains(t, repo.tempUnschedCalls, int64(504), "三振同时长冷却摘出对话池(审查修正)")
 		}
 	}
 	// 第4轮：已标记 keepalive_disabled → 跳过不再撞上游
