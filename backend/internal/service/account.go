@@ -3325,3 +3325,26 @@ func (a *Account) QuotaDimensionOrDefault() string {
 	}
 	return a.QuotaDimension
 }
+
+// IsManuallyDisabled 运营手动停用（吸收自 workbuddy2api A9 / workbuddy-manager M7）：
+// 语义是「摘出对话流量选号」而非「冻结账号」——签到 / token 保活 / 6004 处置等
+// 排程任务不得依赖本位。与系统级 disabled（status/schedulable）是两个独立状态，
+// 两者都清除才回到选号池。支持布尔简写与 {enabled,reason,at} 对象两种存储形态。
+func (a *Account) IsManuallyDisabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	raw, ok := a.Extra["manual_disabled"]
+	if !ok || raw == nil {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case map[string]any:
+		if en, ok := v["enabled"].(bool); ok {
+			return en
+		}
+	}
+	return false
+}

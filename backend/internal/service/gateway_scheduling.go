@@ -1150,6 +1150,11 @@ func (s *GatewayService) isAccountSchedulableForSelection(account *Account) bool
 	if account == nil {
 		return false
 	}
+	// A9/M7 手动停用：仅摘出对话流量选号；IsSchedulable 不含此位，
+	// 签到/保活/6004 排程照常（见 account.IsManuallyDisabled 注释）。
+	if account.IsManuallyDisabled() {
+		return false
+	}
 	return account.IsSchedulable()
 }
 

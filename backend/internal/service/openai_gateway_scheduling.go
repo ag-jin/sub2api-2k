@@ -393,6 +393,10 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if account.Platform != platform || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
+	// A9/M7 手动停用：摘出对话流量，理由独立于 not_schedulable 便于面板区分展示。
+	if account.IsManuallyDisabled() {
+		return "manual_disabled"
+	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		if account.IsSchedulable() {
 			return "model_rate_limited"
