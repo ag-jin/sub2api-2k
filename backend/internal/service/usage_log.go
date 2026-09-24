@@ -180,6 +180,7 @@ type UsageLog struct {
 	NativeCompactionV2 bool
 	DurationMs         *int
 	FirstTokenMs       *int
+	UpstreamCredit     float64 `json:"upstream_credit,omitempty"`
 	UserAgent          *string
 	IPAddress          *string
 	// SessionID is the explicit client-provided request correlation identifier

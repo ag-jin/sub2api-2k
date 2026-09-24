@@ -600,6 +600,8 @@ type ClaudeUsage struct {
 	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
 	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	// UpstreamCredit 上游实际积分扣费（codebuddy 末帧 usage.credit）。
+	UpstreamCredit float64 `json:"upstream_credit,omitempty"`
 }
 
 // ForwardResult 转发结果
