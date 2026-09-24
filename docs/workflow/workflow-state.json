@@ -241,9 +241,9 @@
     {
       "item": "A7 分级熔断与冷却",
       "disposition": "adapted",
-      "rationale": "6004已做；补402硬冷却至次日/404浅冷却/连败熔断对齐",
+      "rationale": "核对修正(2026-09-24): 存在两套并存实现待统一——(1)HTTP状态路径(402→次日04:00/404→10m/连败熔断5次30m→6h, cc_pipeline接线)+6004精确重置时刻; (2)HEAD既有业务码路径(CodeBuddyBizCodeCooldown: 14018→6h/11140→24h/14017→6h, codeBuddyCooldownApplier fastpath接线)。14018 双写(后者覆盖前者,6h vs 次日04:00 不一致)——统一决策放 M19-persist 同批次(同触达计费/错误管线)",
       "owner": "wb2api",
-      "verifier": "冷却单测"
+      "verifier": "两套路径各自单测 GREEN; 统一回归在 M19 批次验收"
     },
     {
       "item": "A8 6004模型级限流独立冷却",
