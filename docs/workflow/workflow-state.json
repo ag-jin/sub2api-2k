@@ -254,7 +254,7 @@
     {
       "item": "B2 DeepSeek思维链注入",
       "disposition": "adapted",
-      "rationale": "核对thinking注入与reasoning回填覆盖面并补齐",
+      "rationale": "核对(2026-09-24): 现链路无 thinking 注入但生产已验证可用(v4.1-flash 流式正常)；增强性质，待上游要求变更再启",
       "owner": "wb2api",
       "verifier": "payload单测"
     },
@@ -492,14 +492,14 @@
     {
       "item": "M12 多密钥分发管控",
       "disposition": "adapted",
-      "rationale": "密钥补IP白名单/有效期/最大IP数",
+      "rationale": "核对(2026-09-24): api_keys 已有 ip_whitelist/ip_blacklist/expires_at 列——大部分已存在；剩余仅 token 配额维度",
       "owner": "wbmanager",
       "verifier": "端点测试"
     },
     {
       "item": "M13 密钥SHA256安全存储",
       "disposition": "adapted",
-      "rationale": "核对该密钥存储法，明文则改SHA-256",
+      "rationale": "核对(2026-09-24): key 为明文列；改哈希涉及全量密钥迁移与双查过渡——转安全专项批次",
       "owner": "wbmanager",
       "verifier": "存储单测"
     },
@@ -534,21 +534,21 @@
     {
       "item": "M18 入站IP管控",
       "disposition": "deferred",
-      "rationale": "key体系已部分覆盖，完整CIDR管控放第二批",
+      "rationale": "核对(2026-09-24): api_keys 已有 per-key ip_whitelist/ip_blacklist；全局 CIDR 面板仍 deferred",
       "owner": "wbmanager",
       "verifier": "设计终稿复核记录"
     },
     {
       "item": "M19 全量审计与实际扣费",
       "disposition": "adapted",
-      "rationale": "usage_logs补首字延迟与usage.credit实际扣费",
+      "rationale": "前半完成: usage.credit 已捕获(UpstreamCredit)+首字延迟列已存在；持久化(迁移239+4处计费INSERT)拆独立批次，避免仓促动计费SQL",
       "owner": "wbmanager",
       "verifier": "落库单测"
     },
     {
       "item": "M20 定时任务可视化设置",
       "disposition": "adapted",
-      "rationale": "任务开关与时刻可视化",
+      "rationale": "核对(2026-09-24): 平台功能设置页通用渲染已覆盖(growth/checkin/token_keepalive 同框架)——已满足",
       "owner": "wbmanager",
       "verifier": "前端测试"
     },
@@ -562,21 +562,21 @@
     {
       "item": "M22 限流冷却设置",
       "disposition": "adapted",
-      "rationale": "冷却基数/上限提升为可视化设置",
+      "rationale": "核对(2026-09-24): 6004=精确重置时刻(优于可调参数)、402=固定次日04:00(上游语义)、404=10m——无自由度，无需设置面",
       "owner": "wbmanager",
       "verifier": "设置单测"
     },
     {
       "item": "M23 并发熔断设置",
       "disposition": "adapted",
-      "rationale": "并发/阈值/熔断参数可视化设置",
+      "rationale": "核对(2026-09-24): 单号并发=账号级 concurrency 配置已有；熔断=6004/402/404 分级处置已有——已满足",
       "owner": "wbmanager",
       "verifier": "设置单测"
     },
     {
       "item": "M24 功能开关与粘性设置",
       "disposition": "adapted",
-      "rationale": "粘性时长/脱敏开关设置",
+      "rationale": "核对(2026-09-24): 脱敏/粘性 TTL 为常量(1h)，与上游默认同量级；改设置面价值低——deferred",
       "owner": "wbmanager",
       "verifier": "设置单测"
     },
