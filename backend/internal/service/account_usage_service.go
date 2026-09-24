@@ -275,19 +275,19 @@ type UsageInfo struct {
 	SevenDayFable  *UsageProgress `json:"seven_day_fable,omitempty"`  // 7天Fable窗口（响应头 7d_oi）
 
 	// Opencode is the upstream OpenCode API-key usage snapshot.
-	Opencode           *OpencodeUsage        `json:"opencode,omitempty"`
-	UpstreamBalance    *UpstreamBalanceUsage `json:"upstream_balance,omitempty"`
+	Opencode        *OpencodeUsage        `json:"opencode,omitempty"`
+	UpstreamBalance *UpstreamBalanceUsage `json:"upstream_balance,omitempty"`
 	// CreditsLedger codebuddy 积分流水最近一条（批3.4 旁路落盘，M9/M8 呈现用）。
 	// 仅在真实查询成功路径填充；键为 extra 旁路原样（ledger/基线/签到留痕）。
-	CreditsLedger      map[string]any        `json:"credits_ledger,omitempty"`
-	ModelRateLimits    map[string]string     `json:"model_rate_limits,omitempty"`
-	TokenExpiresAt     string                `json:"token_expires_at,omitempty"`
-	GeminiSharedDaily  *UsageProgress        `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
-	GeminiProDaily     *UsageProgress        `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
-	GeminiFlashDaily   *UsageProgress        `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
-	GeminiSharedMinute *UsageProgress        `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
-	GeminiProMinute    *UsageProgress        `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
-	GeminiFlashMinute  *UsageProgress        `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
+	CreditsLedger      map[string]any    `json:"credits_ledger,omitempty"`
+	ModelRateLimits    map[string]string `json:"model_rate_limits,omitempty"`
+	TokenExpiresAt     string            `json:"token_expires_at,omitempty"`
+	GeminiSharedDaily  *UsageProgress    `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
+	GeminiProDaily     *UsageProgress    `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
+	GeminiFlashDaily   *UsageProgress    `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
+	GeminiSharedMinute *UsageProgress    `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
+	GeminiProMinute    *UsageProgress    `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
+	GeminiFlashMinute  *UsageProgress    `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
