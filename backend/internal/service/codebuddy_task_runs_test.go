@@ -19,6 +19,10 @@ func (s *taskRunRepoStub) GetByID(ctx context.Context, id int64) (*Account, erro
 	return s.acct, nil
 }
 
+func (s *taskRunRepoStub) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return []Account{*s.acct}, nil
+}
+
 func (s *taskRunRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	s.merges = append(s.merges, updates)
 	// 模拟持久化
