@@ -41,9 +41,14 @@ func TestAppendCodeBuddyTaskRun_NewestFirstAndCap(t *testing.T) {
 	}
 
 	require.Len(t, repo.merges, 13)
-	raw := acct.Extra[codeBuddyTaskRunsKey].([]any)
+	rawAny, ok := acct.Extra[codeBuddyTaskRunsKey]
+	require.True(t, ok)
+	raw, ok := rawAny.([]any)
+	require.True(t, ok)
 	assert.Len(t, raw, codeBuddyTaskRunsMaxEntries, "环形上限 10 条")
-	first := raw[0].(map[string]any)
+	firstAny := raw[0]
+	first, ok := firstAny.(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "refreshed", first["status"])
 }
 
