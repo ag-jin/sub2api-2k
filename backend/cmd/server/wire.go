@@ -131,6 +131,7 @@ func provideCleanup(
 	codeBuddyCheckin *service.CodeBuddyCheckinScheduler,
 	codeBuddyActivity *service.CodeBuddyActivityScheduler,
 	codeBuddyGrowth *service.CodeBuddyGrowthScheduler,
+	codeBuddyKeepalive *service.CodeBuddyTokenKeepaliveScheduler,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -216,6 +217,13 @@ func provideCleanup(
 				// 成长链调度器（每分钟 tick 的 cron），同样要显式 Stop。
 				if codeBuddyGrowth != nil {
 					codeBuddyGrowth.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyTokenKeepaliveScheduler", func() error {
+				// 保活调度器（每分钟 tick 的 cron）同样显式 Stop（审查 #4 修复）。
+				if codeBuddyKeepalive != nil {
+					codeBuddyKeepalive.Stop()
 				}
 				return nil
 			}},
