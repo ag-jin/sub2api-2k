@@ -281,6 +281,7 @@ type UsageInfo struct {
 	// 仅在真实查询成功路径填充；键为 extra 旁路原样（ledger/基线/签到留痕）。
 	CreditsLedger      map[string]any    `json:"credits_ledger,omitempty"`
 	ModelRateLimits    map[string]string `json:"model_rate_limits,omitempty"`
+	TaskRuns           []map[string]any  `json:"task_runs,omitempty"`
 	TokenExpiresAt     string            `json:"token_expires_at,omitempty"`
 	GeminiSharedDaily  *UsageProgress    `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
 	GeminiProDaily     *UsageProgress    `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
@@ -1725,6 +1726,16 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 		}
 		if te, ok := CodeBuddyTokenExpiresAt(account); ok {
 			usage.TokenExpiresAt = te.Format(time.RFC3339)
+			// M9/M10 呈现：最近任务执行记录。
+			if raw, ok := account.Extra[codeBuddyTaskRunsKey].([]any); ok && len(raw) > 0 {
+				runs := make([]map[string]any, 0, len(raw))
+				for _, it := range raw {
+					if m, ok := it.(map[string]any); ok {
+						runs = append(runs, m)
+					}
+				}
+				usage.TaskRuns = runs
+			}
 		}
 		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil

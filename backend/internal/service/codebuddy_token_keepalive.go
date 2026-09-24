@@ -88,6 +88,11 @@ func (s *CodeBuddyTokenKeepalive) RunKeepAlive(ctx context.Context, mode string)
 		}
 		summary.Total++
 		res := s.refreshOne(ctx, acct, mode)
+		if res.Action != "skipped" {
+			// M10：任务执行留痕（skipped 是"无需执行"，不算一次执行结果）
+			AppendCodeBuddyTaskRun(ctx, s.accountRepo, acct.ID,
+				"token_keepalive", res.Action, res.Detail)
+		}
 		summary.Results = append(summary.Results, res)
 		switch res.Action {
 		case "refreshed":
