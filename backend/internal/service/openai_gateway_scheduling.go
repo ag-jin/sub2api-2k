@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -1070,6 +1071,14 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 		return s.isBetterAccount(a, b)
 	})
+	// A2/A3/C3（workbuddy2api 吸收）：codebuddy 平台在质量序 Top-5 短名单内
+	// 做闲置补偿加权随机——把流量从"刚用过的号"摊开，达成多号配额同步消耗；
+	// 硬排序语义（compact tier / 限流序）不受影响。其它平台维持确定性首选。
+	if len(eligible) > 1 && eligible[0].IsCodeBuddy() {
+		if picked := codeBuddyWeightedPick(eligible, time.Now(), rand.New(rand.NewSource(time.Now().UnixNano()))); picked != nil {
+			return picked, compactBlocked, filterStats
+		}
+	}
 	return eligible[0], compactBlocked, filterStats
 }
 
