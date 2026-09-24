@@ -61,7 +61,9 @@ func TestAppendCodeBuddyTaskRun_ExistingRingPreserved(t *testing.T) {
 	require.Len(t, raw, 2)
 	newest := raw[0].(map[string]any)
 	assert.Equal(t, "auth_failed", newest["status"])
-	assert.Equal(t, "old", raw[1]["at"], "旧记录保留在后")
+	oldEntry, ok := raw[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "old", oldEntry["at"], "旧记录保留在后")
 	assert.Equal(t, "invalid_refresh_token", newest["detail"])
 }
 
