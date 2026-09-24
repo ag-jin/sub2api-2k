@@ -522,6 +522,7 @@ func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 同为具名参数段，互不影响静态段优先级。
 		codebuddy.POST("/accounts/:id/manual-disable", h.Admin.CodeBuddy.ManualDisable)
 		codebuddy.POST("/accounts/:id/manual-enable", h.Admin.CodeBuddy.ManualEnable)
+		codebuddy.GET("/accounts/:id/credits-ledger", h.Admin.CodeBuddy.CreditsLedger)
 		// --- 成长链（A6）---
 		// 只读：列出通道与合规分级，供管理端渲染/运维核对。
 		codebuddy.GET("/growth/channels", h.Admin.CodeBuddy.GrowthChannels)

@@ -344,3 +344,26 @@ func (h *CodeBuddyAdminHandler) ManualEnable(c *gin.Context) {
 	middleware.SetAuditAction(c, "admin.codebuddy.manual_enable")
 	response.Success(c, gin.H{"disabled": false})
 }
+
+// CreditsLedger GET /admin/codebuddy/accounts/:id/credits-ledger。
+//
+// 只读：积分变动流水（最近一条）+ 余额基线 + 签到留痕。数据源是出站轮询
+// 落在 Account.Extra 的旁路（见 service.codebuddy_credits_ledger.go），
+// 非账务语义；记录在真实查询成功时经基线比对产生。
+func (h *CodeBuddyAdminHandler) CreditsLedger(c *gin.Context) {
+	if h == nil || h.codeBuddyService == nil {
+		response.BadRequest(c, "codebuddy admin service is not enabled")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	data, err := h.codeBuddyService.GetCodeBuddyCreditsLedger(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, data)
+}
