@@ -1,0 +1,131 @@
+{
+  "schema_version": "dev-workflow/v2",
+  "project": "sub2api-integration-check",
+  "stages": [
+    "intake",
+    "design-draft",
+    "prototype",
+    "design-final",
+    "tasks",
+    "implement",
+    "review"
+  ],
+  "stage_labels": {
+    "intake": "信息采集",
+    "design-draft": "设计初稿",
+    "prototype": "原型验证",
+    "design-final": "设计终稿",
+    "tasks": "任务",
+    "implement": "实现",
+    "review": "审查"
+  },
+  "scope_exclude": [
+    "AGENTS.md",
+    "docs/workflow/",
+    "scripts/"
+  ],
+  "lines": [
+    {
+      "id": "wb2api",
+      "title": "吸收 workbuddy2api（前后端）",
+      "priority": 1,
+      "state": "active",
+      "merge_state": "not-merged",
+      "current_stage": "design-draft",
+      "next_action": "枚举 workbuddy2api 全部功能成清单",
+      "write_scope": [
+        "backend/",
+        "frontend/",
+        "docs/workflow/",
+        "docs/ev/"
+      ],
+      "baseline": "5659285d7",
+      "stages": {
+        "intake": {
+          "status": "done",
+          "artifact": "docs/ev/intake-wb2api.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/intake-wb2api.md"
+          ],
+          "uncovered": [
+
+          ]
+        },
+        "design-draft": {
+          "status": "active"
+        },
+        "prototype": {
+          "status": "pending"
+        },
+        "design-final": {
+          "status": "pending"
+        },
+        "tasks": {
+          "status": "pending"
+        },
+        "implement": {
+          "status": "pending"
+        },
+        "review": {
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "id": "wbmanager",
+      "title": "吸收 workbuddy-manager（前后端）",
+      "priority": 2,
+      "state": "active",
+      "merge_state": "not-merged",
+      "current_stage": "design-draft",
+      "next_action": "枚举 workbuddy-manager 全部功能成清单",
+      "write_scope": [
+        "backend/",
+        "frontend/",
+        "docs/workflow/",
+        "docs/ev/"
+      ],
+      "baseline": "5659285d7",
+      "stages": {
+        "intake": {
+          "status": "done",
+          "artifact": "docs/ev/intake-wbmanager.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/intake-wbmanager.md"
+          ],
+          "uncovered": [
+
+          ]
+        },
+        "design-draft": {
+          "status": "active"
+        },
+        "prototype": {
+          "status": "pending"
+        },
+        "design-final": {
+          "status": "pending"
+        },
+        "tasks": {
+          "status": "pending"
+        },
+        "implement": {
+          "status": "pending"
+        },
+        "review": {
+          "status": "pending"
+        }
+      }
+    }
+  ],
+  "goal": {
+    "objective": "推进【吸收 workbuddy2api（前后端）】到「设计初稿」阶段完成（当前 1/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
+    "line": "wb2api",
+    "stage": "design-draft",
+    "derived_at": "2026-09-24T15:06:15+0800",
+    "hold_note": "另有 1 条 active 线在排队"
+  },
+  "updated_at": "2026-09-24T15:06:15+0800"
+}
