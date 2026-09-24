@@ -1148,3 +1148,23 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 	aggregator.Start()
 	return aggregator
 }
+
+// ProvideCodeBuddyTokenKeepaliveScheduler 组装并启动 token 保活调度（T3）。
+// 默认关闭：平台功能 codebuddy_token_keepalive 显式开启后才会对上游发刷新。
+func ProvideCodeBuddyTokenKeepaliveScheduler(
+	codeBuddyAdminService *CodeBuddyAdminService,
+	accountRepo AccountRepository,
+	settingService *SettingService,
+) *CodeBuddyTokenKeepaliveScheduler {
+	// 条件回写通道：accountRepository 运行时类型实现了
+	// CodeBuddyOAuthRefreshSuccessRepository（401 failover 同款），断言取用；
+	// 未实现时传 nil＝只刷不持久化（测试桩场景）。
+	var credsRepo CodeBuddyOAuthRefreshSuccessRepository
+	if cr, ok := accountRepo.(CodeBuddyOAuthRefreshSuccessRepository); ok {
+		credsRepo = cr
+	}
+	keepalive := NewCodeBuddyTokenKeepalive(accountRepo, credsRepo, NewCodeBuddyTokenRefresher())
+	scheduler := NewCodeBuddyTokenKeepaliveScheduler(keepalive, settingService)
+	scheduler.Start()
+	return scheduler
+}

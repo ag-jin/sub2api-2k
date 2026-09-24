@@ -353,6 +353,11 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
 	codeBuddyCheckinScheduler := service.ProvideCodeBuddyCheckinScheduler(codeBuddyAdminService, settingService, openAIGatewayService)
 	codeBuddyGrowthScheduler := service.ProvideCodeBuddyGrowthScheduler(codeBuddyAdminService, accountRepository, settingService)
+	// T3 token 保活调度：默认关闭（平台功能 codebuddy_token_keepalive 显式开启）。
+	// 条件凭据回写接口由 accountRepository 运行时类型实现，这里按既有模式断言取用。
+	codeBuddyKeepaliveScheduler := service.ProvideCodeBuddyTokenKeepaliveScheduler(
+		codeBuddyAdminService, accountRepository, settingService)
+	_ = codeBuddyKeepaliveScheduler
 	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler)
 	application := &Application{
 		Server:        httpServer,
