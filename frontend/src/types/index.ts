@@ -1428,6 +1428,8 @@ export interface UpstreamBalanceSnapshot {
 export interface AccountUsageInfo {
   opencode?: OpenCodeUsageSnapshot | null
   upstream_balance?: UpstreamBalanceSnapshot | null
+  /** codebuddy 积分流水最近一条（批次3.4 旁路；仅真实查询成功路径返回） */
+  credits_ledger?: Record<string, unknown> | null
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null

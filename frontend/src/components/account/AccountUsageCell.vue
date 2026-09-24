@@ -497,6 +497,14 @@
           >
             {{ codebuddyCacheHint }}
           </div>
+          <!-- 积分流水最近一条（批3.4 旁路；仅真实查询成功路径返回） -->
+          <div
+            v-if="codebuddyLedgerLine"
+            data-testid="codebuddy-credits-ledger"
+            class="text-[9px] text-gray-500 dark:text-gray-400"
+          >
+            {{ codebuddyLedgerLine }}
+          </div>
           <!-- 到期列表（后端 Expiries：仅含仍有余额的套餐，升序） -->
           <div
             v-for="(expiry, index) in codebuddyExpiries"
@@ -965,6 +973,20 @@ const codebuddyBalance = computed(() => {
   if (!snapshot) return null
   const value = snapshot.balance ?? snapshot.remaining
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+})
+
+// 积分流水最近一条（credits_ledger.codebuddy_credits_ledger: {at,delta,balance,prev}）
+const codebuddyLedgerLine = computed(() => {
+  const raw = usageInfo.value?.credits_ledger as
+    | Record<string, { delta?: number; balance?: number; prev?: number }>
+    | undefined
+  const entry = raw?.codebuddy_credits_ledger
+  if (!entry || typeof entry.delta !== 'number') return null
+  return t('admin.accounts.codebuddy.usage.ledgerLine', {
+    delta: `+${parseFloat(String(entry.delta))}`,
+    prev: parseFloat(String(entry.prev ?? 0)),
+    balance: parseFloat(String(entry.balance ?? 0))
+  })
 })
 
 const codebuddyBalanceDisplay = computed(() => {

@@ -154,6 +154,7 @@ export default {
         },
         usage: {
           balanceLabel: 'Balance',
+          ledgerLine: 'Ledger: {delta} ({prev} → {balance})',
           creditsValue: '{value} credits',
           cachedHint: 'cached {seconds}s ago',
           expiresLabel: 'Expires',

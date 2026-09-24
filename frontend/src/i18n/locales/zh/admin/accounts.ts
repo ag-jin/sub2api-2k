@@ -357,6 +357,7 @@ export default {
         },
         usage: {
           balanceLabel: '余额',
+          ledgerLine: '流水: {delta}（{prev} → {balance}）',
           creditsValue: '{value} 积分',
           cachedHint: '缓存 {seconds}s 前',
           expiresLabel: '到期',

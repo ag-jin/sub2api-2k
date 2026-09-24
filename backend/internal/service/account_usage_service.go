@@ -277,6 +277,9 @@ type UsageInfo struct {
 	// Opencode is the upstream OpenCode API-key usage snapshot.
 	Opencode           *OpencodeUsage        `json:"opencode,omitempty"`
 	UpstreamBalance    *UpstreamBalanceUsage `json:"upstream_balance,omitempty"`
+	// CreditsLedger codebuddy 积分流水最近一条（批3.4 旁路落盘，M9/M8 呈现用）。
+	// 仅在真实查询成功路径填充；键为 extra 旁路原样（ledger/基线/签到留痕）。
+	CreditsLedger      map[string]any        `json:"credits_ledger,omitempty"`
 	GeminiSharedDaily  *UsageProgress        `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
 	GeminiProDaily     *UsageProgress        `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
 	GeminiFlashDaily   *UsageProgress        `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
@@ -1710,6 +1713,10 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 		usage := &UsageInfo{Source: "active", UpdatedAt: &now, UpstreamBalance: snapshot}
 		// 真实查询成功才记积分流水（缓存命中/降级都不记）。
 		s.recordCodeBuddyCreditsChange(ctx, account, snapshot, now)
+		// M9/M8 呈现：把最近一条流水随余额一起带回（省一次端点往返）。
+		if v, ok := account.Extra[codeBuddyCreditsLedgerExtraKey].(map[string]any); ok {
+			usage.CreditsLedger = map[string]any{codeBuddyCreditsLedgerExtraKey: v}
+		}
 		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil
 	})
