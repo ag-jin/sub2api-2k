@@ -520,9 +520,9 @@
     {
       "item": "M16 模型中心",
       "disposition": "adapted",
-      "rationale": "补积分倍率/能力标记/按倍率排序",
+      "rationale": "已吸收目录元数据(上下文/最大输出/来源,embed+admin端点,2026-09-24)；积分倍率与能力标记上游未披露——待A5账本或上游接口,deferred",
       "owner": "wbmanager",
-      "verifier": "前端测试"
+      "verifier": "model_catalog_test.go + 端点路由"
     },
     {
       "item": "M17 聊天测试台",

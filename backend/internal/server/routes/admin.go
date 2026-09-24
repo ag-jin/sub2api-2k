@@ -523,6 +523,8 @@ func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		codebuddy.POST("/accounts/:id/manual-disable", h.Admin.CodeBuddy.ManualDisable)
 		codebuddy.POST("/accounts/:id/manual-enable", h.Admin.CodeBuddy.ManualEnable)
 		codebuddy.GET("/accounts/:id/credits-ledger", h.Admin.CodeBuddy.CreditsLedger)
+		// M16 模型中心数据源：codebuddy 模型目录元数据（上下文/最大输出/来源）。
+		codebuddy.GET("/models/catalog", h.Admin.CodeBuddy.ModelCatalog)
 		// --- 成长链（A6）---
 		// 只读：列出通道与合规分级，供管理端渲染/运维核对。
 		codebuddy.GET("/growth/channels", h.Admin.CodeBuddy.GrowthChannels)

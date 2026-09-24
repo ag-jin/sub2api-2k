@@ -367,3 +367,26 @@ func (h *CodeBuddyAdminHandler) CreditsLedger(c *gin.Context) {
 	}
 	response.Success(c, data)
 }
+
+// ModelCatalog GET /admin/codebuddy/models/catalog。
+//
+// M16 模型中心数据源：模型目录元数据（上下文/最大输出/来源），按模型名升序。
+// 积分倍率与能力标记上游未披露（coverage M16 rationale）。
+func (h *CodeBuddyAdminHandler) ModelCatalog(c *gin.Context) {
+	catalog, keys, err := codebuddy.CodeBuddyModelCatalog()
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	entries := make([]gin.H, 0, len(keys))
+	for _, k := range keys {
+		e := catalog[k]
+		entries = append(entries, gin.H{
+			"model":             k,
+			"context_length":    e.ContextLength,
+			"max_output_tokens": e.MaxOutputTokens,
+			"source":            e.Source,
+		})
+	}
+	response.Success(c, gin.H{"total": len(entries), "entries": entries})
+}
