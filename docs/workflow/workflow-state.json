@@ -22,7 +22,8 @@
   "scope_exclude": [
     "AGENTS.md",
     "docs/workflow/",
-    "scripts/"
+    "scripts/",
+    "docs/route-records/"
   ],
   "lines": [
     {
