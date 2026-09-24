@@ -32,7 +32,7 @@
       "priority": 1,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "implement",
+      "current_stage": "review",
       "next_action": "实现 T1 临时停用双状态位(先测后码)",
       "write_scope": [
         "backend/",
@@ -49,7 +49,9 @@
           "evidence": [
             "docs/ev/intake-wb2api.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "design-draft": {
           "status": "done",
@@ -58,7 +60,9 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "prototype": {
           "status": "done",
@@ -67,7 +71,9 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "design-final": {
           "status": "done",
@@ -76,7 +82,9 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "tasks": {
           "status": "done",
@@ -85,13 +93,23 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "implement": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/implement-absorb.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/implement-absorb.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "review": {
-          "status": "pending"
+          "status": "active"
         }
       }
     },
@@ -101,7 +119,7 @@
       "priority": 2,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "implement",
+      "current_stage": "review",
       "next_action": "实现 T4 面板停用开关(依赖wb2api T1端点)",
       "write_scope": [
         "backend/",
@@ -118,7 +136,9 @@
           "evidence": [
             "docs/ev/intake-wbmanager.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "design-draft": {
           "status": "done",
@@ -127,7 +147,9 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "prototype": {
           "status": "done",
@@ -136,7 +158,9 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "design-final": {
           "status": "done",
@@ -145,7 +169,9 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "tasks": {
           "status": "done",
@@ -154,25 +180,35 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": []
+          "uncovered": [
+
+          ]
         },
         "implement": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/implement-absorb.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/implement-absorb.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "review": {
-          "status": "pending"
+          "status": "active"
         }
       }
     }
   ],
   "goal": {
-    "objective": "推进【吸收 workbuddy2api（前后端）】到「实现」阶段完成（当前 5/7 阶段）；下一步：实现 T1 临时停用双状态位(先测后码)",
+    "objective": "推进【吸收 workbuddy2api（前后端）】到「审查」阶段完成（当前 6/7 阶段）；下一步：实现 T1 临时停用双状态位(先测后码)",
     "line": "wb2api",
-    "stage": "implement",
-    "derived_at": "2026-09-24T15:12:35+0800",
+    "stage": "review",
+    "derived_at": "2026-09-24T17:20:47+0800",
     "hold_note": "另有 1 条 active 线在排队"
   },
-  "updated_at": "2026-09-24T15:12:35+0800",
+  "updated_at": "2026-09-24T17:20:47+0800",
   "coverage": [
     {
       "item": "A1 OAuth设备授权登录",
