@@ -286,7 +286,8 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			upstream_request_id,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			upstream_credit
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
@@ -841,7 +842,8 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				upstream_request_id,
 				session_id,
 				native_compaction_v2,
-				created_at
+				created_at,
+				upstream_credit
 			)
 			SELECT
 				user_id,
@@ -1099,7 +1101,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			upstream_request_id,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			upstream_credit
 		)
 		SELECT
 			user_id,
@@ -1235,7 +1238,8 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			upstream_request_id,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			upstream_credit
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
