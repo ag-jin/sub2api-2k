@@ -76,14 +76,11 @@ func TestAppendCodeBuddyTaskRun_ExistingRingPreserved(t *testing.T) {
 
 	AppendCodeBuddyTaskRun(context.Background(), repo, 500, "token_keepalive", "auth_failed", "invalid_refresh_token")
 
-	raw := acct.Extra[codeBuddyTaskRunsKey].([]any)
+	raw := mustRuns(t, acct)
 	require.Len(t, raw, 2)
-	newest := raw[0].(map[string]any)
-	assert.Equal(t, "auth_failed", newest["status"])
-	oldEntry, ok := raw[1].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "old", oldEntry["at"], "旧记录保留在后")
-	assert.Equal(t, "invalid_refresh_token", newest["detail"])
+	assert.Equal(t, "auth_failed", raw[0]["status"])
+	assert.Equal(t, "old", raw[1]["at"], "旧记录保留在后")
+	assert.Equal(t, "invalid_refresh_token", raw[0]["detail"])
 }
 
 func TestAppendCodeBuddyTaskRun_NilSafe(t *testing.T) {
