@@ -206,7 +206,7 @@
     {
       "item": "A2 三因子加权随机选号",
       "disposition": "adopted",
-      "rationale": "积分权重选号直救三号配额同步消耗(用户核心诉求：token均衡)",
+      "rationale": "v1 已落地闲置补偿+Top-5(2026-09-24); 积分×10/快过期×8 依赖 A5 账本(deferred)——依赖已如实记录, A5 落地后在此函数扩展",
       "owner": "wb2api",
       "verifier": "选号分布单测与统计"
     },
@@ -220,7 +220,7 @@
     {
       "item": "A4 在途租约",
       "disposition": "adapted",
-      "rationale": "已有concurrency，补占满即出候选语义对齐",
+      "rationale": "核对(2026-09-24): 现有实现为「选中后获取并发槽,满则等待(WaitPlan)」,上游为「占满不进候选」——两者都不超发,差异在等待延迟分布; 精确对齐需选号期账户在途状态缓存,并入 A5 账本同批次",
       "owner": "wb2api",
       "verifier": "调度单测"
     },
@@ -332,7 +332,7 @@
     {
       "item": "D2 活跃地图任务",
       "disposition": "adapted",
-      "rationale": "吸收上报/补签/礼包自动部分；兑换与抽奖保持手动(合规full级禁自动)",
+      "rationale": "核对(2026-09-24): 连登链「补签→兑换→礼包/补偿」已实现且有测试(TestDecideStreakMakeup*×4); 兑换/抽奖保持手动(合规 full 级)——已满足",
       "owner": "wb2api",
       "verifier": "排程单测"
     },
