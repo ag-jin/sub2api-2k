@@ -30,12 +30,15 @@ func AppendCodeBuddyTaskRun(ctx context.Context, repo AccountRepository, account
 		return
 	}
 	runs := make([]map[string]any, 0, codeBuddyTaskRunsMaxEntries+1)
-	if raw, ok := acct.Extra[codeBuddyTaskRunsKey].([]any); ok {
+	switch raw := acct.Extra[codeBuddyTaskRunsKey].(type) {
+	case []any: // DB 读回形态
 		for _, it := range raw {
 			if m, ok := it.(map[string]any); ok {
 				runs = append(runs, m)
 			}
 		}
+	case []map[string]any: // 内存态（stub/同进程刚写）
+		runs = append(runs, raw...)
 	}
 	entry := map[string]any{
 		"at":     time.Now().UTC().Format(time.RFC3339),
