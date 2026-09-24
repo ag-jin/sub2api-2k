@@ -88,6 +88,15 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	upstreamMsg string,
 	upstreamModel string,
 ) *UpstreamFailoverError {
+	// CodeBuddy 6004「模型用量超限」：平台按 (账号,模型) 控流并在消息里给出
+	// 精确重置时刻，且明示"切换其他模型可立即使用"。识别后只把 (账号,该模型)
+	// 停调到重置时刻，当前请求照常 failover；不走通用错误策略，避免被
+	// IsTempUnschedulableEnabled 开关挡住，也绝不扩大成账号级停调。
+	if account != nil && account.IsCodeBuddy() && resp != nil && s.rateLimitService != nil {
+		if _, ok := s.rateLimitService.TriggerCodeBuddyModelUsageLimit(ctx, account, upstreamModel, resp.StatusCode, respBody); ok {
+			return s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, false, false)
+		}
+	}
 	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 	tempUnscheduled := false
 	if c != nil && account != nil && account.Platform != PlatformGrok && !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
