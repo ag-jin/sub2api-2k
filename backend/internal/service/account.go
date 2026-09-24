@@ -3348,3 +3348,12 @@ func (a *Account) IsManuallyDisabled() bool {
 	}
 	return false
 }
+
+// ExtraBool 读 extra 布尔位：键存在且显式为 true 才返回 true。
+func (a *Account) ExtraBool(key string) bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	v, ok := a.Extra[key].(bool)
+	return ok && v
+}
