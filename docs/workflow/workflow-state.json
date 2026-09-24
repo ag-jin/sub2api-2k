@@ -31,7 +31,7 @@
       "priority": 1,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "design-final",
+      "current_stage": "tasks",
       "next_action": "枚举 workbuddy2api 全部功能成清单",
       "write_scope": [
         "backend/",
@@ -75,10 +75,18 @@
           ]
         },
         "design-final": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/design-final-batch1.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/design-final-batch1.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "tasks": {
-          "status": "pending"
+          "status": "active"
         },
         "implement": {
           "status": "pending"
@@ -94,7 +102,7 @@
       "priority": 2,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "design-final",
+      "current_stage": "tasks",
       "next_action": "枚举 workbuddy-manager 全部功能成清单",
       "write_scope": [
         "backend/",
@@ -138,10 +146,18 @@
           ]
         },
         "design-final": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/design-final-batch1.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/design-final-batch1.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "tasks": {
-          "status": "pending"
+          "status": "active"
         },
         "implement": {
           "status": "pending"
@@ -153,13 +169,13 @@
     }
   ],
   "goal": {
-    "objective": "推进【吸收 workbuddy2api（前后端）】到「设计终稿」阶段完成（当前 3/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
+    "objective": "推进【吸收 workbuddy2api（前后端）】到「任务」阶段完成（当前 4/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
     "line": "wb2api",
-    "stage": "design-final",
-    "derived_at": "2026-09-24T15:11:13+0800",
+    "stage": "tasks",
+    "derived_at": "2026-09-24T15:12:08+0800",
     "hold_note": "另有 1 条 active 线在排队"
   },
-  "updated_at": "2026-09-24T15:11:13+0800",
+  "updated_at": "2026-09-24T15:12:08+0800",
   "coverage": [
     {
       "item": "A1 OAuth设备授权登录",
