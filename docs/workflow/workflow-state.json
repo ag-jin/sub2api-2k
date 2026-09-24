@@ -30,9 +30,9 @@
       "id": "wb2api",
       "title": "吸收 workbuddy2api（前后端）",
       "priority": 1,
-      "state": "active",
+      "state": "done",
       "merge_state": "not-merged",
-      "current_stage": "review",
+      "current_stage": null,
       "next_action": "实现 T1 临时停用双状态位(先测后码)",
       "write_scope": [
         "backend/",
@@ -109,7 +109,16 @@
           ]
         },
         "review": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/review-absorb.md",
+          "verdict": "PARTIAL",
+          "evidence": [
+            "docs/ev/review-absorb.md"
+          ],
+          "uncovered": [
+            "Standards #1#2#3#5#6#7#8",
+            " Spec: A4/D1/D2/A2积分因子/M9页/M10采集/M19-persist/M2进度条"
+          ]
         }
       }
     },
@@ -117,9 +126,9 @@
       "id": "wbmanager",
       "title": "吸收 workbuddy-manager（前后端）",
       "priority": 2,
-      "state": "active",
+      "state": "done",
       "merge_state": "not-merged",
-      "current_stage": "review",
+      "current_stage": null,
       "next_action": "实现 T4 面板停用开关(依赖wb2api T1端点)",
       "write_scope": [
         "backend/",
@@ -196,19 +205,20 @@
           ]
         },
         "review": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/review-absorb.md",
+          "verdict": "PARTIAL",
+          "evidence": [
+            "docs/ev/review-absorb.md"
+          ],
+          "uncovered": [
+            "同 wb2api uncovered 清单"
+          ]
         }
       }
     }
   ],
-  "goal": {
-    "objective": "推进【吸收 workbuddy2api（前后端）】到「审查」阶段完成（当前 6/7 阶段）；下一步：实现 T1 临时停用双状态位(先测后码)",
-    "line": "wb2api",
-    "stage": "review",
-    "derived_at": "2026-09-24T17:20:47+0800",
-    "hold_note": "另有 1 条 active 线在排队"
-  },
-  "updated_at": "2026-09-24T17:20:47+0800",
+  "updated_at": "2026-09-24T17:45:33+0800",
   "coverage": [
     {
       "item": "A1 OAuth设备授权登录",
