@@ -96,6 +96,11 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		if _, ok := s.rateLimitService.TriggerCodeBuddyModelUsageLimit(ctx, account, upstreamModel, resp.StatusCode, respBody); ok {
 			return s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, false, false)
 		}
+		// A7 分级冷却：402/14018 硬冷却至次日 04:00；404 浅冷却 10m。
+		// 账号级（SetTempUnschedulable），与 6004 的模型级互不覆盖。
+		if _, ok := s.rateLimitService.TriggerCodeBuddyAccountCooldown(ctx, account, resp.StatusCode, respBody); ok {
+			return s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, false, false)
+		}
 	}
 	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 	tempUnscheduled := false

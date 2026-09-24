@@ -90,8 +90,10 @@ func TestTriggerCodeBuddyModelUsageLimit_ModelScopedOnly(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, repo.modelRateLimited, 1)
 	assert.Equal(t, "deepseek-v4.1-flash", repo.modelRateLimited[0].scope)
-	assert.Equal(t, "2026-09-24 15:45:02 +0800", repo.modelRateLimited[0].resetAt.Format("2006-01-02 15:04:05 -0700"))
-	assert.Equal(t, "2026-09-24 15:45:02 +0800", until.Format("2006-01-02 15:04:05 -0700"))
+	// fixture 的重置时刻(15:45:02+08)会随真实时间流逝变成过去，
+	// clamp 会抬到 now+1min —— 这里只断言「返回值与写入值一致」，绝对时刻
+	// 由 Parse 与 Clamp 两组单测各自钉住，避免测试随钟表腐烂。
+	assert.Equal(t, repo.modelRateLimited[0].resetAt, until)
 	assert.False(t, repo.tempUnschedCalled, "绝不停调整个账号")
 	assert.Contains(t, repo.modelRateLimited[0].reason, "6004")
 }
