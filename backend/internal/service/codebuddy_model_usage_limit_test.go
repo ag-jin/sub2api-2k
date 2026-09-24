@@ -35,7 +35,7 @@ func TestParseCodeBuddyModelUsageLimit_MissingResetTime_FallsBack(t *testing.T) 
 	body := `{"code":6004,"msg":"您的使用量已超出频率限制"}`
 	resetAt, ok := ParseCodeBuddyModelUsageLimit(http.StatusTooManyRequests, []byte(body))
 	require.True(t, ok)
-	assert.Greater(t, resetAt.Sub(time.Now()), time.Duration(0), "兜底时刻应在未来")
+	assert.Greater(t, resetAt, time.Now(), "兜底时刻应在未来")
 }
 
 func TestParseCodeBuddyModelUsageLimit_EmptyBody(t *testing.T) {
