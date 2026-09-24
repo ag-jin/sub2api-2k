@@ -31,6 +31,28 @@ func (s *taskRunRepoStub) UpdateExtra(ctx context.Context, id int64, updates map
 	return nil
 }
 
+
+// mustRuns 从内存态 extra 读任务记录（兼容 []map 与 []any 两形态）。
+func mustRuns(t *testing.T, acct *Account) []map[string]any {
+	t.Helper()
+	rawAny, ok := acct.Extra[codeBuddyTaskRunsKey]
+	require.True(t, ok)
+	switch v := rawAny.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, it := range v {
+			m, ok := it.(map[string]any)
+			require.True(t, ok)
+			out = append(out, m)
+		}
+		return out
+	}
+	t.Fatalf("task runs 形态异常: %T", rawAny)
+	return nil
+}
+
 func TestAppendCodeBuddyTaskRun_NewestFirstAndCap(t *testing.T) {
 	acct := &Account{ID: 500, Platform: PlatformCodeBuddy}
 	repo := &taskRunRepoStub{acct: acct}
@@ -41,15 +63,9 @@ func TestAppendCodeBuddyTaskRun_NewestFirstAndCap(t *testing.T) {
 	}
 
 	require.Len(t, repo.merges, 13)
-	rawAny, ok := acct.Extra[codeBuddyTaskRunsKey]
-	require.True(t, ok)
-	raw, ok := rawAny.([]any)
-	require.True(t, ok)
+	raw := mustRuns(t, acct)
 	assert.Len(t, raw, codeBuddyTaskRunsMaxEntries, "环形上限 10 条")
-	firstAny := raw[0]
-	first, ok := firstAny.(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "refreshed", first["status"])
+	assert.Equal(t, "refreshed", raw[0]["status"])
 }
 
 func TestAppendCodeBuddyTaskRun_ExistingRingPreserved(t *testing.T) {
