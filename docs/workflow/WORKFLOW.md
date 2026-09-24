@@ -4,11 +4,11 @@
 
 阶段: 1.信息采集 → 2.设计初稿 → 3.原型验证 → 4.设计终稿 → 5.任务 → 6.实现 → 7.审查
 
-本轮目标: 推进【吸收 workbuddy2api（前后端）】到「实现」阶段完成（当前 5/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单
+本轮目标: 推进【吸收 workbuddy2api（前后端）】到「实现」阶段完成（当前 5/7 阶段）；下一步：实现 T1 临时停用双状态位(先测后码)
 
 | 优先 | 线 | 状态 | 合并 | 信息采集 | 设计初稿 | 原型验证 | 设计终稿 | 任务 | 实现 | 审查 | 当前 | 下一步 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 吸收 workbuddy2api（前后端） | active | not-merged | x | x | x | x | x | > | . | 实现 | 枚举 workbuddy2api 全部功能成清单 |
-| 2 | 吸收 workbuddy-manager（前后端） | active | not-merged | x | x | x | x | x | > | . | 实现 | 枚举 workbuddy-manager 全部功能成清单 |
+| 1 | 吸收 workbuddy2api（前后端） | active | not-merged | x | x | x | x | x | > | . | 实现 | 实现 T1 临时停用双状态位(先测后码) |
+| 2 | 吸收 workbuddy-manager（前后端） | active | not-merged | x | x | x | x | x | > | . | 实现 | 实现 T4 面板停用开关(依赖wb2api T1端点) |
 
 图例: x=done >=active .=pending !=blocked -=skipped ?=缺失(违规)

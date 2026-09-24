@@ -32,7 +32,7 @@
       "state": "active",
       "merge_state": "not-merged",
       "current_stage": "implement",
-      "next_action": "枚举 workbuddy2api 全部功能成清单",
+      "next_action": "实现 T1 临时停用双状态位(先测后码)",
       "write_scope": [
         "backend/",
         "frontend/",
@@ -48,9 +48,7 @@
           "evidence": [
             "docs/ev/intake-wb2api.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-draft": {
           "status": "done",
@@ -59,9 +57,7 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "prototype": {
           "status": "done",
@@ -70,9 +66,7 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-final": {
           "status": "done",
@@ -81,9 +75,7 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "tasks": {
           "status": "done",
@@ -92,9 +84,7 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "implement": {
           "status": "active"
@@ -111,7 +101,7 @@
       "state": "active",
       "merge_state": "not-merged",
       "current_stage": "implement",
-      "next_action": "枚举 workbuddy-manager 全部功能成清单",
+      "next_action": "实现 T4 面板停用开关(依赖wb2api T1端点)",
       "write_scope": [
         "backend/",
         "frontend/",
@@ -127,9 +117,7 @@
           "evidence": [
             "docs/ev/intake-wbmanager.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-draft": {
           "status": "done",
@@ -138,9 +126,7 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "prototype": {
           "status": "done",
@@ -149,9 +135,7 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-final": {
           "status": "done",
@@ -160,9 +144,7 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "tasks": {
           "status": "done",
@@ -171,9 +153,7 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "implement": {
           "status": "active"
@@ -185,7 +165,7 @@
     }
   ],
   "goal": {
-    "objective": "推进【吸收 workbuddy2api（前后端）】到「实现」阶段完成（当前 5/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
+    "objective": "推进【吸收 workbuddy2api（前后端）】到「实现」阶段完成（当前 5/7 阶段）；下一步：实现 T1 临时停用双状态位(先测后码)",
     "line": "wb2api",
     "stage": "implement",
     "derived_at": "2026-09-24T15:12:35+0800",
