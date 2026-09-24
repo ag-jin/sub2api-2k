@@ -25,7 +25,9 @@ func (s *manualDisableRepoStub) GetByID(ctx context.Context, id int64) (*Account
 
 func (s *manualDisableRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if v, ok := updates["manual_disabled"]; ok {
-		s.updates = append(s.updates, v.(map[string]any))
+		if obj, ok := v.(map[string]any); ok {
+			s.updates = append(s.updates, obj)
+		}
 	}
 	return nil
 }

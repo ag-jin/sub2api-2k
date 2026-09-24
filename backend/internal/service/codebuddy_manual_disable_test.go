@@ -28,10 +28,10 @@ func TestIsManuallyDisabled(t *testing.T) {
 func TestManualDisable_DoesNotTouchIsSchedulable(t *testing.T) {
 	// 关键语义：手动停用绝不改变 IsSchedulable——否则签到/保活/6004 排程会被误停
 	acct := &Account{
-		Platform: PlatformCodeBuddy,
-		Status:   StatusActive,
+		Platform:    PlatformCodeBuddy,
+		Status:      StatusActive,
 		Schedulable: true,
-		Extra:    map[string]any{"manual_disabled": map[string]any{"enabled": true}},
+		Extra:       map[string]any{"manual_disabled": map[string]any{"enabled": true}},
 	}
 	assert.True(t, acct.IsManuallyDisabled())
 	assert.True(t, acct.IsSchedulable(), "手动停用不得改变 IsSchedulable")
