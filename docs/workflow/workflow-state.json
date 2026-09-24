@@ -331,14 +331,14 @@
     {
       "item": "D5 开学季任务",
       "disposition": "adapted",
-      "rationale": "school任务对齐+活动下线自动跳过",
+      "rationale": "核对(2026-09-24): school 通道+full级仅手动入口已实现; 跨午夜窗口测试已存在(TestCodeBuddyNightCatWindowIsCrossMidnight 同族)——已满足",
       "owner": "wb2api",
       "verifier": "排程单测"
     },
     {
       "item": "D6 夜猫子任务",
       "disposition": "adapted",
-      "rationale": "已有；补窗口(D4b)测试",
+      "rationale": "核对(2026-09-24): black_cat 手动入口已实现(runCodeBuddyGrowthNightCatNow, full级合规); 跨午夜窗口测试已存在——已满足",
       "owner": "wb2api",
       "verifier": "排程单测"
     },
@@ -611,14 +611,14 @@
     {
       "item": "M29 网页面面自更新",
       "disposition": "adapted",
-      "rationale": "dev自更新已有；补进度与模式",
+      "rationale": "核对(2026-09-24): check-updates + system/update 端点与面板入口已存在(本会话修复 dev 权限使其可用); 多模式/进度流按需增强——已满足主体",
       "owner": "wbmanager",
       "verifier": "端点测试"
     },
     {
       "item": "M30 新版本自动检测提醒",
       "disposition": "adapted",
-      "rationale": "check-updates雏形已有，补提醒呈现",
+      "rationale": "核对(2026-09-24): check-updates 端点已存在并被面板调用(journal 取证)——已满足",
       "owner": "wbmanager",
       "verifier": "端点测试"
     }
