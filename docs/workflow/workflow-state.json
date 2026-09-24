@@ -31,7 +31,7 @@
       "priority": 1,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "design-draft",
+      "current_stage": "prototype",
       "next_action": "枚举 workbuddy2api 全部功能成清单",
       "write_scope": [
         "backend/",
@@ -53,10 +53,18 @@
           ]
         },
         "design-draft": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/design-draft-absorb.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/design-draft-absorb.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "prototype": {
-          "status": "pending"
+          "status": "active"
         },
         "design-final": {
           "status": "pending"
@@ -78,7 +86,7 @@
       "priority": 2,
       "state": "active",
       "merge_state": "not-merged",
-      "current_stage": "design-draft",
+      "current_stage": "prototype",
       "next_action": "枚举 workbuddy-manager 全部功能成清单",
       "write_scope": [
         "backend/",
@@ -100,10 +108,18 @@
           ]
         },
         "design-draft": {
-          "status": "active"
+          "status": "done",
+          "artifact": "docs/ev/design-draft-absorb.md",
+          "verdict": "PASS",
+          "evidence": [
+            "docs/ev/design-draft-absorb.md"
+          ],
+          "uncovered": [
+
+          ]
         },
         "prototype": {
-          "status": "pending"
+          "status": "active"
         },
         "design-final": {
           "status": "pending"
@@ -121,11 +137,461 @@
     }
   ],
   "goal": {
-    "objective": "推进【吸收 workbuddy2api（前后端）】到「设计初稿」阶段完成（当前 1/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
+    "objective": "推进【吸收 workbuddy2api（前后端）】到「原型验证」阶段完成（当前 2/7 阶段）；下一步：枚举 workbuddy2api 全部功能成清单",
     "line": "wb2api",
-    "stage": "design-draft",
-    "derived_at": "2026-09-24T15:06:15+0800",
+    "stage": "prototype",
+    "derived_at": "2026-09-24T15:09:38+0800",
     "hold_note": "另有 1 条 active 线在排队"
   },
-  "updated_at": "2026-09-24T15:06:15+0800"
+  "updated_at": "2026-09-24T15:09:38+0800",
+  "coverage": [
+    {
+      "item": "A1 OAuth设备授权登录",
+      "disposition": "deferred",
+      "rationale": "现有扫码导入已覆盖账号接入，设备授权流功能重复",
+      "owner": "wb2api",
+      "verifier": "账号接入链路对照记录"
+    },
+    {
+      "item": "A2 三因子加权随机选号",
+      "disposition": "adopted",
+      "rationale": "积分权重选号直救三号配额同步消耗(用户核心诉求：token均衡)",
+      "owner": "wb2api",
+      "verifier": "选号分布单测与统计"
+    },
+    {
+      "item": "A3 防惊群",
+      "disposition": "adopted",
+      "rationale": "小改动高价值，多号同idle时不打爆同一号",
+      "owner": "wb2api",
+      "verifier": "选号单测"
+    },
+    {
+      "item": "A4 在途租约",
+      "disposition": "adapted",
+      "rationale": "已有concurrency，补占满即出候选语义对齐",
+      "owner": "wb2api",
+      "verifier": "调度单测"
+    },
+    {
+      "item": "A5 账本择优单价台账",
+      "disposition": "deferred",
+      "rationale": "EMA/失效/落盘复杂，价值依赖多号成本差，放第二批",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "A6 成本分层条件探索",
+      "disposition": "deferred",
+      "rationale": "依赖A5账本，放第二批",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "A7 分级熔断与冷却",
+      "disposition": "adapted",
+      "rationale": "6004已做；补402硬冷却至次日/404浅冷却/连败熔断对齐",
+      "owner": "wb2api",
+      "verifier": "冷却单测"
+    },
+    {
+      "item": "A8 6004模型级限流独立冷却",
+      "disposition": "adopted",
+      "rationale": "v0.1.200已对齐(识别6004按重置时刻停调账号+模型)",
+      "owner": "wb2api",
+      "verifier": "codebuddy_model_usage_limit_test.go"
+    },
+    {
+      "item": "A9 账号临时停用与恢复",
+      "disposition": "adopted",
+      "rationale": "摘出对话流量但签到保活照常，运营价值高",
+      "owner": "wb2api",
+      "verifier": "停调单测与端点测试"
+    },
+    {
+      "item": "A10 池状态持久化与Redis镜像",
+      "disposition": "rejected",
+      "rationale": "停调/冷却状态已在DB持久化，无需state.json与Redis镜像",
+      "owner": "wb2api",
+      "verifier": "DB持久化现状记录"
+    },
+    {
+      "item": "B1 流式非流式与SSE重建",
+      "disposition": "adopted",
+      "rationale": "raw chat completions透传+聚合已有",
+      "owner": "wb2api",
+      "verifier": "现有集成测试"
+    },
+    {
+      "item": "B2 DeepSeek思维链注入",
+      "disposition": "adapted",
+      "rationale": "核对thinking注入与reasoning回填覆盖面并补齐",
+      "owner": "wb2api",
+      "verifier": "payload单测"
+    },
+    {
+      "item": "B3 系统提示词三模式",
+      "disposition": "deferred",
+      "rationale": "与运营提示词策略强相关，第二批评估",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "B4 会话头族注入",
+      "disposition": "adopted",
+      "rationale": "v0.1.190已对齐(聚合主键/透传/B3)",
+      "owner": "wb2api",
+      "verifier": "identity实现与测试"
+    },
+    {
+      "item": "B5 指纹脱敏",
+      "disposition": "adapted",
+      "rationale": "对照sanitize清单补齐payload_rules覆盖面",
+      "owner": "wb2api",
+      "verifier": "payload单测"
+    },
+    {
+      "item": "C1 成本分层选号串联",
+      "disposition": "deferred",
+      "rationale": "依赖A5/A6账本分层，第二批",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "C2 会话粘性键优先级",
+      "disposition": "adopted",
+      "rationale": "粘性键优先级已对齐(四键→prompt_cache_key→首条user兜底)",
+      "owner": "wb2api",
+      "verifier": "调度测试"
+    },
+    {
+      "item": "C3 负载分布概率倾斜",
+      "disposition": "adopted",
+      "rationale": "与A2加权随机一揽子实现",
+      "owner": "wb2api",
+      "verifier": "分布统计"
+    },
+    {
+      "item": "D1 签到与余额解冻",
+      "disposition": "adapted",
+      "rationale": "签到排程已有；补余额恢复自动解冻冷却账号",
+      "owner": "wb2api",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "D2 活跃地图任务",
+      "disposition": "adapted",
+      "rationale": "吸收上报/补签/礼包自动部分；兑换与抽奖保持手动(合规full级禁自动)",
+      "owner": "wb2api",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "D3 猫猫旅行任务",
+      "disposition": "adopted",
+      "rationale": "v0.1.19x已对齐(领养/派出/领奖闭环)",
+      "owner": "wb2api",
+      "verifier": "travel实现与测试"
+    },
+    {
+      "item": "D4 token保活",
+      "disposition": "adopted",
+      "rationale": "22点全号刷新防凭证过期丢号",
+      "owner": "wb2api",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "D5 开学季任务",
+      "disposition": "adapted",
+      "rationale": "school任务对齐+活动下线自动跳过",
+      "owner": "wb2api",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "D6 夜猫子任务",
+      "disposition": "adapted",
+      "rationale": "已有；补窗口(D4b)测试",
+      "owner": "wb2api",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "E1 双域适配CN与Global",
+      "disposition": "deferred",
+      "rationale": "当前仅CN账号；global realm已登记未验证",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "E2 国际版注册激活与trial",
+      "disposition": "rejected",
+      "rationale": "无国际版账号，注册激活与trial无用武之地",
+      "owner": "wb2api",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "F1 积分日报",
+      "disposition": "deferred",
+      "rationale": "并入M10收益明细呈现，不单独实现",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "F2 批量手动签到",
+      "disposition": "adapted",
+      "rationale": "补批量签到CLI/管理端点(幂等)",
+      "owner": "wb2api",
+      "verifier": "端点测试"
+    },
+    {
+      "item": "F3 账号停用恢复CLI",
+      "disposition": "rejected",
+      "rationale": "面板已有账号启停操作，CLI冗余",
+      "owner": "wb2api",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "F4 领养联动任务查询工具",
+      "disposition": "deferred",
+      "rationale": "dry-run工具非核心，放第二批",
+      "owner": "wb2api",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "F5 healthz语义",
+      "disposition": "rejected",
+      "rationale": "健康端点已有且入发版门禁，字段差异无运营价值",
+      "owner": "wb2api",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "F6 status台账透出",
+      "disposition": "adapted",
+      "rationale": "6004停调台账与积分台账透出，并入M4面板展示",
+      "owner": "wb2api",
+      "verifier": "端点测试"
+    },
+    {
+      "item": "F7 admin显式开关管理端点",
+      "disposition": "rejected",
+      "rationale": "admin API已有自有鉴权与审计体系",
+      "owner": "wb2api",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "F8 metrics与WAF组件",
+      "disposition": "rejected",
+      "rationale": "已有ops metrics与中间件体系",
+      "owner": "wb2api",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "M1 扫码纳管",
+      "disposition": "adopted",
+      "rationale": "扫码导入+自动签到纳管已对齐",
+      "owner": "wbmanager",
+      "verifier": "qr实现与签到排程"
+    },
+    {
+      "item": "M2 Token监控与预警",
+      "disposition": "adapted",
+      "rationale": "面板补有效期进度条与<1h预警",
+      "owner": "wbmanager",
+      "verifier": "前端组件测试"
+    },
+    {
+      "item": "M3 令牌自动续期",
+      "disposition": "adopted",
+      "rationale": "有效期<3天自动换新防丢号，与D4保活同源",
+      "owner": "wbmanager",
+      "verifier": "排程单测"
+    },
+    {
+      "item": "M4 运行时状态与模型级限流展示",
+      "disposition": "adapted",
+      "rationale": "6004台账透出+面板模型级限流标记与恢复时间",
+      "owner": "wbmanager",
+      "verifier": "端点与前端测试"
+    },
+    {
+      "item": "M5 积分余额实时查询",
+      "disposition": "adopted",
+      "rationale": "upstream_balance直连腾讯+缓存年龄标注已对齐",
+      "owner": "wbmanager",
+      "verifier": "balance实现与测试"
+    },
+    {
+      "item": "M6 积分到期倒计时",
+      "disposition": "adopted",
+      "rationale": "Expiries按套餐到期已对齐",
+      "owner": "wbmanager",
+      "verifier": "Expiries实现与测试"
+    },
+    {
+      "item": "M7 临时停用",
+      "disposition": "adopted",
+      "rationale": "与wb2api A9同源统一实现",
+      "owner": "wbmanager",
+      "verifier": "同A9验证"
+    },
+    {
+      "item": "M8 积分变动流水",
+      "disposition": "adopted",
+      "rationale": "查余额比对增量自动记流水(领积分可见性核心)",
+      "owner": "wbmanager",
+      "verifier": "流水单测与面板"
+    },
+    {
+      "item": "M9 任务记录页",
+      "disposition": "adopted",
+      "rationale": "签到/日志/收益集中页(运营核心)",
+      "owner": "wbmanager",
+      "verifier": "前端组件测试"
+    },
+    {
+      "item": "M10 自动任务收益明细与采集落库",
+      "disposition": "adopted",
+      "rationale": "收益明细+定时采集解析落库",
+      "owner": "wbmanager",
+      "verifier": "采集单测"
+    },
+    {
+      "item": "M11 OpenAI兼容网关",
+      "disposition": "adopted",
+      "rationale": "SSE+非流式已有",
+      "owner": "wbmanager",
+      "verifier": "现有集成测试"
+    },
+    {
+      "item": "M12 多密钥分发管控",
+      "disposition": "adapted",
+      "rationale": "密钥补IP白名单/有效期/最大IP数",
+      "owner": "wbmanager",
+      "verifier": "端点测试"
+    },
+    {
+      "item": "M13 密钥SHA256安全存储",
+      "disposition": "adapted",
+      "rationale": "核对该密钥存储法，明文则改SHA-256",
+      "owner": "wbmanager",
+      "verifier": "存储单测"
+    },
+    {
+      "item": "M14 模型别名映射",
+      "disposition": "adopted",
+      "rationale": "model_mapping已有",
+      "owner": "wbmanager",
+      "verifier": "mapping实现与测试"
+    },
+    {
+      "item": "M15 CN与Global版本切换",
+      "disposition": "deferred",
+      "rationale": "依赖wb2api E1双域",
+      "owner": "wbmanager",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "M16 模型中心",
+      "disposition": "adapted",
+      "rationale": "补积分倍率/能力标记/按倍率排序",
+      "owner": "wbmanager",
+      "verifier": "前端测试"
+    },
+    {
+      "item": "M17 聊天测试台",
+      "disposition": "deferred",
+      "rationale": "运营价值中等，放第二批",
+      "owner": "wbmanager",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "M18 入站IP管控",
+      "disposition": "deferred",
+      "rationale": "key体系已部分覆盖，完整CIDR管控放第二批",
+      "owner": "wbmanager",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "M19 全量审计与实际扣费",
+      "disposition": "adapted",
+      "rationale": "usage_logs补首字延迟与usage.credit实际扣费",
+      "owner": "wbmanager",
+      "verifier": "落库单测"
+    },
+    {
+      "item": "M20 定时任务可视化设置",
+      "disposition": "adapted",
+      "rationale": "任务开关与时刻可视化",
+      "owner": "wbmanager",
+      "verifier": "前端测试"
+    },
+    {
+      "item": "M21 系统提示词设置",
+      "disposition": "deferred",
+      "rationale": "依赖wb2api B3",
+      "owner": "wbmanager",
+      "verifier": "设计终稿复核记录"
+    },
+    {
+      "item": "M22 限流冷却设置",
+      "disposition": "adapted",
+      "rationale": "冷却基数/上限提升为可视化设置",
+      "owner": "wbmanager",
+      "verifier": "设置单测"
+    },
+    {
+      "item": "M23 并发熔断设置",
+      "disposition": "adapted",
+      "rationale": "并发/阈值/熔断参数可视化设置",
+      "owner": "wbmanager",
+      "verifier": "设置单测"
+    },
+    {
+      "item": "M24 功能开关与粘性设置",
+      "disposition": "adapted",
+      "rationale": "粘性时长/脱敏开关设置",
+      "owner": "wbmanager",
+      "verifier": "设置单测"
+    },
+    {
+      "item": "M25 可用模型实时拉取",
+      "disposition": "adapted",
+      "rationale": "模型清单实时拉取+来源标注",
+      "owner": "wbmanager",
+      "verifier": "前端测试"
+    },
+    {
+      "item": "M26 设置输入校验与部分提交",
+      "disposition": "adapted",
+      "rationale": "校验/部分提交逐项核对补齐",
+      "owner": "wbmanager",
+      "verifier": "前端测试"
+    },
+    {
+      "item": "M27 移动端适配",
+      "disposition": "rejected",
+      "rationale": "自有设计体系，不吸收其移动端布局",
+      "owner": "wbmanager",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "M28 界面交互风格件",
+      "disposition": "rejected",
+      "rationale": "自有设计体系，不吸收UI风格组件",
+      "owner": "wbmanager",
+      "verifier": "裁定记录"
+    },
+    {
+      "item": "M29 网页面面自更新",
+      "disposition": "adapted",
+      "rationale": "dev自更新已有；补进度与模式",
+      "owner": "wbmanager",
+      "verifier": "端点测试"
+    },
+    {
+      "item": "M30 新版本自动检测提醒",
+      "disposition": "adapted",
+      "rationale": "check-updates雏形已有，补提醒呈现",
+      "owner": "wbmanager",
+      "verifier": "端点测试"
+    }
+  ]
 }
