@@ -1518,6 +1518,10 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
 		)
 	}
+	// workbuddy2api 吸收（M19）：上游末帧 usage.credit 是本次调用的实际积分扣费
+	// （字符串形态数字，如 "0.0123"）。仅透传捕获，账务语义仍以平台内计算为准。
+	upstreamCredit := value.Get("credit").Float()
+
 	cacheReadTokens := openAICacheReadTokensFromUsage(value)
 	cacheCreationTokens := openAICacheCreationTokensFromUsage(value)
 	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
@@ -1537,6 +1541,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		OutputTokens:             int(outputTokens),
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
+		UpstreamCredit:           upstreamCredit,
 		ImageOutputTokens:        int(imageOutputTokens),
 	}, true
 }

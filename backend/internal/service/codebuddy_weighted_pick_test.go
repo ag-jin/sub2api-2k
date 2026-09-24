@@ -56,3 +56,11 @@ func TestCodeBuddyWeightedPick_IdleCompensationSpreadsLoad(t *testing.T) {
 }
 
 func codebuddyWPPtrTime(t time.Time) *time.Time { return &t }
+
+func TestOpenAIUsageFromGJSON_CapturesUpstreamCredit(t *testing.T) {
+	// M19: 上游末帧 usage.credit 是字符串数字，必须被捕获为实际扣费观测。
+	body := `{"usage":{"input_tokens":100,"output_tokens":5,"credit":"0.0123"}}`
+	usage, ok := extractOpenAIUsageFromJSONBytes([]byte(body))
+	require.True(t, ok)
+	assert.InDelta(t, 0.0123, usage.UpstreamCredit, 1e-9)
+}
