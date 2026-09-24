@@ -31,7 +31,6 @@ func (s *taskRunRepoStub) UpdateExtra(ctx context.Context, id int64, updates map
 	return nil
 }
 
-
 // mustRuns 从内存态 extra 读任务记录（兼容 []map 与 []any 两形态）。
 func mustRuns(t *testing.T, acct *Account) []map[string]any {
 	t.Helper()
