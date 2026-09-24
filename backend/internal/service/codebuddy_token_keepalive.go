@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strconv"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -146,9 +148,16 @@ func (s *CodeBuddyTokenKeepalive) disableIfBroken(ctx context.Context, acct *Acc
 	}
 	streak++
 	updates := map[string]any{codeBuddyKeepaliveFailStreakKey: streak}
-	if streak >= codeBuddyKeepaliveMaxFailStreak {
+	disabled := streak >= codeBuddyKeepaliveMaxFailStreak
+	if disabled {
 		updates[codeBuddyKeepaliveDisabledKey] = true
+		// 审查修正(错误③)：三振不止停保活——长冷却把坏号摘出对话池，
+		// 30 天足够运营者重新扫码；期间凭据不会被继续消费。
+		if err := s.accountRepo.SetTempUnschedulable(ctx, acct.ID,
+			time.Now().Add(30*24*time.Hour), "keepalive: refresh rejected x"+strconv.Itoa(streak)); err != nil {
+			slog.Warn("codebuddy_keepalive_disable_pool_failed", "account_id", acct.ID, "error", err)
+		}
 	}
 	_ = s.accountRepo.UpdateExtra(ctx, acct.ID, updates)
-	return streak >= codeBuddyKeepaliveMaxFailStreak
+	return disabled
 }

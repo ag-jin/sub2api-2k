@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,4 +135,53 @@ func CodeBuddyTokenExpiresAt(acct *Account) (time.Time, bool) {
 		return time.UnixMilli(int64(v)), true
 	}
 	return time.Time{}, false
+}
+
+// A7 连败熔断（审查补充）：连续 5 次 5xx → 指数退避冷却（30m 起，封顶 6h）。
+// 计数存 extra.cb_fail_streak；非 5xx 响应到达本函数时清零（成功请求不经过
+// 错误管线，由下一次任何非 5xx 上游响应自然复位）。
+const (
+	codeBuddyBreakerStreakKey    = "cb_fail_streak"
+	codeBuddyBreakerThreshold    = 5
+	codeBuddyBreakerBaseCooldown = 30 * time.Minute
+	codeBuddyBreakerMaxCooldown  = 6 * time.Hour
+)
+
+// ApplyCodeBuddyConsecutiveFailureBreaker 对 codebuddy 账号应用连败熔断。
+// 返回 ok=true 表示触发了本轮熔断（调用方照常 failover）。
+func (s *RateLimitService) ApplyCodeBuddyConsecutiveFailureBreaker(
+	ctx context.Context, acct *Account, statusCode int,
+) (time.Duration, bool) {
+	if s == nil || s.accountRepo == nil || acct == nil || !acct.IsCodeBuddy() {
+		return 0, false
+	}
+	if statusCode < http.StatusInternalServerError {
+		// 非 5xx（含 429/402/404 各有通道）不清零也不计——避免成功路径回调。
+		return 0, false
+	}
+	streak := 0
+	if v, ok := acct.Extra[codeBuddyBreakerStreakKey].(float64); ok {
+		streak = int(v)
+	} else if v, ok := acct.Extra[codeBuddyBreakerStreakKey].(int); ok {
+		streak = v
+	}
+	streak++
+	if streak < codeBuddyBreakerThreshold {
+		_ = s.accountRepo.UpdateExtra(ctx, acct.ID, map[string]any{codeBuddyBreakerStreakKey: streak})
+		return 0, false
+	}
+	// 指数退避：30m * 2^(streak-阈值)，封顶 6h。
+	shift := uint(streak - codeBuddyBreakerThreshold)
+	cooldown := codeBuddyBreakerBaseCooldown << shift
+	if cooldown > codeBuddyBreakerMaxCooldown || cooldown <= 0 {
+		cooldown = codeBuddyBreakerMaxCooldown
+	}
+	until := time.Now().Add(cooldown)
+	if err := s.accountRepo.SetTempUnschedulable(ctx, acct.ID, until,
+		"codebuddy_breaker: 5xx x"+strconv.Itoa(streak)); err != nil {
+		slog.Warn("codebuddy_breaker_set_failed", "account_id", acct.ID, "error", err)
+		return cooldown, true
+	}
+	slog.Info("codebuddy_breaker_tripped", "account_id", acct.ID, "streak", streak, "cooldown", cooldown.String())
+	return cooldown, true
 }

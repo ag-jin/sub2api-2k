@@ -14,10 +14,16 @@ type keepaliveRepoStub struct {
 	AccountRepository
 	accts   []Account
 	updates []map[int64]map[string]any
+	tempUnschedCalls []int64
 }
 
 func (s *keepaliveRepoStub) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	return s.accts, nil
+}
+
+func (s *keepaliveRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	s.tempUnschedCalls = append(s.tempUnschedCalls, id)
+	return nil
 }
 
 func (s *keepaliveRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
@@ -123,8 +129,8 @@ func TestKeepAlive_ExpiryMode_SkipsNotExpiring(t *testing.T) {
 func TestKeepAlive_AuthRejected_ThreeStrikesDisables(t *testing.T) {
 	r := &keepaliveRefresherStub{can: true, err: newCodeBuddyRefreshAuthError(400, "invalid_refresh_token")}
 	c := &keepaliveCredsStub{}
-	acct := mkAcct(504, nil)
-	svc := newKeepalive([]Account{*acct}, r, c)
+	repo := &keepaliveRepoStub{accts: []Account{*mkAcct(504, nil)}}
+	svc := &CodeBuddyTokenKeepalive{accountRepo: repo, credsRepo: c, refresher: r, window: 3 * 24 * time.Hour}
 
 	for i := 1; i <= 3; i++ {
 		sum, err := svc.RunKeepAlive(context.Background(), codeBuddyKeepaliveModeScheduled)
@@ -134,6 +140,7 @@ func TestKeepAlive_AuthRejected_ThreeStrikesDisables(t *testing.T) {
 			assert.Empty(t, sum.Disabled, "第%d次失败不应停用", i)
 		} else {
 			assert.Equal(t, []int64{504}, sum.Disabled, "连续3次失效才停用")
+		assert.Contains(t, repo.tempUnschedCalls, int64(504), "三振同时长冷却摘出对话池(审查修正)")
 		}
 	}
 	// 第4轮：已标记 keepalive_disabled → 跳过不再撞上游

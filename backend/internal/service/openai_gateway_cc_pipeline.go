@@ -101,6 +101,11 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		if _, ok := s.rateLimitService.TriggerCodeBuddyAccountCooldown(ctx, account, resp.StatusCode, respBody); ok {
 			return s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, false, false)
 		}
+
+		// A7 连败熔断：连续 5 次 5xx → 指数退避(30m起封顶6h)。
+		if _, ok := s.rateLimitService.ApplyCodeBuddyConsecutiveFailureBreaker(ctx, account, resp.StatusCode); ok {
+			return s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, false, false)
+		}
 	}
 	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 	tempUnscheduled := false
