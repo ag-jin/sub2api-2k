@@ -59,8 +59,8 @@ func init() {
 		Platform: PlatformCodeBuddy,
 		Features: []PlatformFeatureDefinition{
 			{
-				Key:  CodeBuddyKeepaliveFeatureKey,
-				Kind: PlatformFeatureTimeRange,
+				Key:   CodeBuddyKeepaliveFeatureKey,
+				Kind:  PlatformFeatureTimeRange,
 				Title: "Token 保活",
 				Description: "在设定窗口内对全部账号刷新令牌（会轮换 refreshToken 并成对回写）；" +
 					"窗口外仅补刷 3 天内将过期的号。默认为关闭：开启后会对上游发出刷新请求。",
