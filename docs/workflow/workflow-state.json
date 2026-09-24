@@ -49,9 +49,7 @@
           "evidence": [
             "docs/ev/intake-wb2api.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-draft": {
           "status": "done",
@@ -60,9 +58,7 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "prototype": {
           "status": "done",
@@ -71,9 +67,7 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-final": {
           "status": "done",
@@ -82,9 +76,7 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "tasks": {
           "status": "done",
@@ -93,9 +85,7 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "implement": {
           "status": "done",
@@ -104,9 +94,7 @@
           "evidence": [
             "docs/ev/implement-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "review": {
           "status": "done",
@@ -145,9 +133,7 @@
           "evidence": [
             "docs/ev/intake-wbmanager.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-draft": {
           "status": "done",
@@ -156,9 +142,7 @@
           "evidence": [
             "docs/ev/design-draft-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "prototype": {
           "status": "done",
@@ -167,9 +151,7 @@
           "evidence": [
             "docs/ev/prototype-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "design-final": {
           "status": "done",
@@ -178,9 +160,7 @@
           "evidence": [
             "docs/ev/design-final-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "tasks": {
           "status": "done",
@@ -189,9 +169,7 @@
           "evidence": [
             "docs/ev/tasks-batch1.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "implement": {
           "status": "done",
@@ -200,9 +178,7 @@
           "evidence": [
             "docs/ev/implement-absorb.md"
           ],
-          "uncovered": [
-
-          ]
+          "uncovered": []
         },
         "review": {
           "status": "done",
