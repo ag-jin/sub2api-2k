@@ -50,6 +50,18 @@
         <button @click="$emit('probe-upstream-billing')" class="btn btn-secondary btn-sm">{{ t('admin.accounts.bulkActions.probeUpstreamBilling') }}</button>
         <button @click="$emit('toggle-schedulable', true)" class="btn btn-success btn-sm">{{ t('admin.accounts.bulkActions.enableScheduling') }}</button>
         <button @click="$emit('toggle-schedulable', false)" class="btn btn-warning btn-sm">{{ t('admin.accounts.bulkActions.disableScheduling') }}</button>
+        <button
+          v-if="hasCodeBuddySelected"
+          data-testid="bulk-manual-disable"
+          class="btn btn-warning btn-sm"
+          @click="$emit('manual-disable')"
+        >{{ t('admin.accounts.bulkActions.manualDisable') }}</button>
+        <button
+          v-if="hasCodeBuddySelected"
+          data-testid="bulk-manual-enable"
+          class="btn btn-success btn-sm"
+          @click="$emit('manual-enable')"
+        >{{ t('admin.accounts.bulkActions.manualEnable') }}</button>
         <button @click="$emit('edit-selected')" class="btn btn-primary btn-sm">{{ t('admin.accounts.bulkActions.edit') }}</button>
       </template>
       <button
@@ -80,6 +92,8 @@ defineProps<{
   selectingAll: boolean
   allResultsSelected: boolean
   checkinRunning?: boolean
+  /** 选中集合里是否含 codebuddy 平台账号（A9/M7 临时停用按钮的显隐条件）。 */
+  hasCodeBuddySelected?: boolean
 }>()
 
 defineEmits([
@@ -93,7 +107,9 @@ defineEmits([
   'reset-status',
   'refresh-token',
   'probe-upstream-billing',
-  'checkin-codebuddy'
+  'checkin-codebuddy',
+  'manual-disable',
+  'manual-enable'
 ])
 
 const { t } = useI18n()

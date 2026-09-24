@@ -88,9 +88,21 @@ export async function checkinAll(): Promise<CodeBuddyCheckinBatchResponse> {
   return data
 }
 
+/** A9/M7 临时停用：只摘出对话流量选号，签到/保活照常（与系统禁用位独立）。 */
+export async function manualDisable(id: number, reason?: string): Promise<void> {
+  await apiClient.post(`/admin/codebuddy/accounts/${id}/manual-disable`, { reason: reason ?? '' })
+}
+
+/** 恢复：清除 manual_disabled 位；系统级禁用仍在则仍不可选。 */
+export async function manualEnable(id: number): Promise<void> {
+  await apiClient.post(`/admin/codebuddy/accounts/${id}/manual-enable`)
+}
+
 export default {
   qrStart,
   qrPoll,
   checkin,
   checkinAll,
+  manualDisable,
+  manualEnable,
 }

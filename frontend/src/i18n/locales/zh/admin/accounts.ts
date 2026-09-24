@@ -618,6 +618,11 @@ export default {
       bulkSchedulablePartial: '部分调度更新成功：成功 {success} 个，失败 {failed} 个',
       bulkSchedulableResultUnknown: '批量调度结果不完整，请稍后重试或刷新列表',
       bulkActions: {
+        manualDisable: '临时停用(选号)',
+        manualDisableReason: '停用原因(可留空)：',
+        manualDisableDone: '已临时停用 {count} 个账号(签到/保活照常)',
+        manualEnable: '恢复选号',
+        manualEnableDone: '已恢复 {count} 个账号选号',
         selected: '已选择 {count} 个账号',
         selectedAll: '已选择全部 {count} 个账号',
         selectCurrentPage: '本页全选',

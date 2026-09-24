@@ -226,6 +226,7 @@
           :selecting-all="selectingAllResults"
           :all-results-selected="allResultsSelected"
           :checkin-running="codeBuddyCheckinRunning"
+          :has-code-buddy-selected="hasCodeBuddySelected"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -237,6 +238,8 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
           @checkin-codebuddy="handleBulkCheckinCodeBuddy"
+          @manual-disable="handleBulkManualDisable"
+          @manual-enable="handleBulkManualEnable"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
@@ -2039,6 +2042,45 @@ const handleBulkRefreshToken = async () => {
 // 批量签到 CodeBuddy：服务端遍历全部 codebuddy 账号并发签到（上限 5），
 // 与"选中哪些"无关——候选由服务端按平台+可调度性决定，所以不需要选中账号。
 const codeBuddyCheckinRunning = ref(false)
+const hasCodeBuddySelected = computed(() =>
+  accounts.value.some((a) => selIds.value.includes(a.id) && a.platform === 'codebuddy')
+)
+
+// A9/M7 临时停用/恢复：逐个调用（批量条只对含 codebuddy 选中时显示）。
+const handleBulkManualDisable = async () => {
+  const reason = window.prompt(t('admin.accounts.bulkActions.manualDisableReason'))
+  if (reason === null) return
+  let okCount = 0
+  for (const id of selIds.value) {
+    const acct = accounts.value.find((a) => a.id === id)
+    if (!acct || acct.platform !== 'codebuddy') continue
+    try {
+      await adminAPI.codebuddy.manualDisable(id, reason)
+      okCount++
+    } catch {
+      // 单号失败不中断其余
+    }
+  }
+  appStore.showSuccess(t('admin.accounts.bulkActions.manualDisableDone', { count: okCount }))
+  await refreshAccountsIncrementally()
+}
+
+const handleBulkManualEnable = async () => {
+  let okCount = 0
+  for (const id of selIds.value) {
+    const acct = accounts.value.find((a) => a.id === id)
+    if (!acct || acct.platform !== 'codebuddy') continue
+    try {
+      await adminAPI.codebuddy.manualEnable(id)
+      okCount++
+    } catch {
+      // 单号失败不中断其余
+    }
+  }
+  appStore.showSuccess(t('admin.accounts.bulkActions.manualEnableDone', { count: okCount }))
+  await refreshAccountsIncrementally()
+}
+
 const handleBulkCheckinCodeBuddy = async () => {
   if (codeBuddyCheckinRunning.value) return
   if (!confirm(t('admin.accounts.bulkActions.checkinConfirm'))) return
