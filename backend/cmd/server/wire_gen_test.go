@@ -100,7 +100,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // codeBuddyCheckin
 		nil, // codeBuddyActivity
 		nil, // codeBuddyGrowth
-	)
+
+		nil)
 
 	require.NotPanics(t, func() {
 		cleanup()
