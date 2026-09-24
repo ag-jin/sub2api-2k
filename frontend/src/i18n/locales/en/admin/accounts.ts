@@ -155,6 +155,10 @@ export default {
         usage: {
           balanceLabel: 'Balance',
           ledgerLine: 'Ledger: {delta} ({prev} → {balance})',
+          modelLimited: 'Model limited: {model} (until {time})',
+          tokenExpired: 'Token expired',
+          tokenExpiring: 'Token expires in {hours}h',
+          tokenValidUntil: 'Token valid until {time}',
           creditsValue: '{value} credits',
           cachedHint: 'cached {seconds}s ago',
           expiresLabel: 'Expires',

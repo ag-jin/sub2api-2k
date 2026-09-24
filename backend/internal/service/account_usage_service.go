@@ -280,6 +280,8 @@ type UsageInfo struct {
 	// CreditsLedger codebuddy 积分流水最近一条（批3.4 旁路落盘，M9/M8 呈现用）。
 	// 仅在真实查询成功路径填充；键为 extra 旁路原样（ledger/基线/签到留痕）。
 	CreditsLedger      map[string]any        `json:"credits_ledger,omitempty"`
+	ModelRateLimits    map[string]string     `json:"model_rate_limits,omitempty"`
+	TokenExpiresAt     string                `json:"token_expires_at,omitempty"`
 	GeminiSharedDaily  *UsageProgress        `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
 	GeminiProDaily     *UsageProgress        `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
 	GeminiFlashDaily   *UsageProgress        `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
@@ -1716,6 +1718,13 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 		// M9/M8 呈现：把最近一条流水随余额一起带回（省一次端点往返）。
 		if v, ok := account.Extra[codeBuddyCreditsLedgerExtraKey].(map[string]any); ok {
 			usage.CreditsLedger = map[string]any{codeBuddyCreditsLedgerExtraKey: v}
+		}
+		// M4/M2 呈现：生效中的模型级限流 + 令牌过期时刻。
+		if mr := CodeBuddyActiveModelRateLimits(account, now); len(mr) > 0 {
+			usage.ModelRateLimits = mr
+		}
+		if te, ok := CodeBuddyTokenExpiresAt(account); ok {
+			usage.TokenExpiresAt = te.Format(time.RFC3339)
 		}
 		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil

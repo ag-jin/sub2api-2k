@@ -99,3 +99,31 @@ func TestCodeBuddyAccountCooldown_NonCodeBuddySkipped(t *testing.T) {
 	assert.False(t, ok)
 	assert.False(t, repo.called)
 }
+
+func TestCodeBuddyActiveModelRateLimits(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	acct := &Account{ID: 500, Platform: PlatformCodeBuddy, Extra: map[string]any{
+		"model_rate_limits": map[string]any{
+			"deepseek-v4.1-flash": map[string]any{
+				"rate_limit_reset_at": now.Add(time.Hour).Format(time.RFC3339),
+			},
+			"glm-5.2": map[string]any{
+				"rate_limit_reset_at": now.Add(-time.Hour).Format(time.RFC3339),
+			},
+		},
+	}}
+	got := CodeBuddyActiveModelRateLimits(acct, now)
+	assert.Len(t, got, 1, "过期条目不返回")
+	assert.Contains(t, got, "deepseek-v4.1-flash")
+}
+
+func TestCodeBuddyTokenExpiresAt(t *testing.T) {
+	at, ok := CodeBuddyTokenExpiresAt(&Account{Credentials: map[string]any{
+		"expires_at": "2026-10-01T00:00:00Z"}})
+	assert.True(t, ok)
+	assert.Equal(t, "2026-10-01", at.Format("2006-01-02"))
+	_, ok = CodeBuddyTokenExpiresAt(&Account{Credentials: map[string]any{"expires_at": 1727000000000.0}})
+	assert.True(t, ok, "毫秒数值形态")
+	_, ok = CodeBuddyTokenExpiresAt(&Account{Credentials: map[string]any{}})
+	assert.False(t, ok)
+}

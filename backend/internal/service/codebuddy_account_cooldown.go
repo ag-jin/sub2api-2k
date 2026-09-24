@@ -85,3 +85,53 @@ func nextCodeBuddyFourAM(now time.Time) time.Time {
 	}
 	return next
 }
+
+// CodeBuddyActiveModelRateLimits 汇总账号 extra.model_rate_limits 中
+// 仍在生效（reset_at 在未来）的模型级限流（M4 面板展示数据源）。
+// 返回 模型 → RFC3339 重置时刻；无生效项返回空。
+func CodeBuddyActiveModelRateLimits(acct *Account, now time.Time) map[string]string {
+	out := map[string]string{}
+	if acct == nil || acct.Extra == nil {
+		return out
+	}
+	raw, ok := acct.Extra["model_rate_limits"].(map[string]any)
+	if !ok {
+		return out
+	}
+	for model, entry := range raw {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		resetRaw, ok := m["rate_limit_reset_at"].(string)
+		if !ok || resetRaw == "" {
+			continue
+		}
+		resetAt, err := time.Parse(time.RFC3339, resetRaw)
+		if err != nil || !resetAt.After(now) {
+			continue
+		}
+		out[model] = resetAt.Format(time.RFC3339)
+	}
+	return out
+}
+
+// CodeBuddyTokenExpiresAt 账号访问令牌过期时刻（credentials.expires_at）。
+func CodeBuddyTokenExpiresAt(acct *Account) (time.Time, bool) {
+	if acct == nil || acct.Credentials == nil {
+		return time.Time{}, false
+	}
+	raw, ok := acct.Credentials["expires_at"]
+	if !ok {
+		return time.Time{}, false
+	}
+	switch v := raw.(type) {
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t, true
+		}
+	case float64:
+		return time.UnixMilli(int64(v)), true
+	}
+	return time.Time{}, false
+}

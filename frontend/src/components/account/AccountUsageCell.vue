@@ -497,6 +497,25 @@
           >
             {{ codebuddyCacheHint }}
           </div>
+          <!-- 模型级限流中（M4：账号在线但该模型暂时受限） -->
+          <div
+            v-for="(resetAt, model) in codebuddyModelRateLimits"
+            :key="'mrl-' + model"
+            data-testid="codebuddy-model-rate-limited"
+            class="text-[9px] text-amber-500 dark:text-amber-400"
+          >
+            {{ t('admin.accounts.codebuddy.usage.modelLimited', { model, time: formatCodebuddyReset(resetAt) }) }}
+          </div>
+          <!-- 令牌有效期（M2：<24h 琥珀预警） -->
+          <div
+            v-if="codebuddyTokenExpiryHint"
+            data-testid="codebuddy-token-expiry"
+            :class="codebuddyTokenExpiryHint.urgent
+              ? 'text-[9px] text-amber-500 dark:text-amber-400'
+              : 'text-[9px] text-gray-400 dark:text-gray-500'"
+          >
+            {{ codebuddyTokenExpiryHint.text }}
+          </div>
           <!-- 积分流水最近一条（批3.4 旁路；仅真实查询成功路径返回） -->
           <div
             v-if="codebuddyLedgerLine"
@@ -973,6 +992,41 @@ const codebuddyBalance = computed(() => {
   if (!snapshot) return null
   const value = snapshot.balance ?? snapshot.remaining
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+})
+
+// M4：生效中的模型级限流映射
+const codebuddyModelRateLimits = computed(() => {
+  return (usageInfo.value?.model_rate_limits as Record<string, string> | undefined) ?? {}
+})
+
+const formatCodebuddyReset = (resetAt: string) => {
+  const d = new Date(resetAt)
+  return Number.isNaN(d.getTime()) ? resetAt : d.toLocaleString()
+}
+
+// M2：令牌有效期标注（<24h 预警）
+const codebuddyTokenExpiryHint = computed(() => {
+  const raw = usageInfo.value?.token_expires_at
+  if (!raw) return null
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return null
+  const remainingMs = d.getTime() - Date.now()
+  if (remainingMs <= 0) {
+    return { urgent: true, text: t('admin.accounts.codebuddy.usage.tokenExpired') }
+  }
+  const hours = remainingMs / 3600000
+  if (hours < 24) {
+    return {
+      urgent: true,
+      text: t('admin.accounts.codebuddy.usage.tokenExpiring', { hours: hours.toFixed(1) })
+    }
+  }
+  return {
+    urgent: false,
+    text: t('admin.accounts.codebuddy.usage.tokenValidUntil', {
+      time: d.toLocaleDateString()
+    })
+  }
 })
 
 // 积分流水最近一条（credits_ledger.codebuddy_credits_ledger: {at,delta,balance,prev}）

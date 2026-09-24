@@ -358,6 +358,10 @@ export default {
         usage: {
           balanceLabel: '余额',
           ledgerLine: '流水: {delta}（{prev} → {balance}）',
+          modelLimited: '模型限流中: {model}（至 {time}）',
+          tokenExpired: '令牌已过期',
+          tokenExpiring: '令牌 {hours} 小时后过期',
+          tokenValidUntil: '令牌有效期至 {time}',
           creditsValue: '{value} 积分',
           cachedHint: '缓存 {seconds}s 前',
           expiresLabel: '到期',
