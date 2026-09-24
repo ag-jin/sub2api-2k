@@ -529,6 +529,11 @@ export default {
       bulkSchedulablePartial: 'Scheduling updated partially: {success} succeeded, {failed} failed',
       bulkSchedulableResultUnknown: 'Bulk scheduling result incomplete. Please retry or refresh.',
       bulkActions: {
+        manualDisable: 'Temporarily disable (rotation)',
+        manualDisableReason: 'Disable reason (optional):',
+        manualDisableDone: 'Disabled {count} accounts (check-in/keepalive continue)',
+        manualEnable: 'Re-enable rotation',
+        manualEnableDone: 'Re-enabled {count} accounts',
         selected: '{count} account(s) selected',
         selectedAll: 'All {count} account(s) selected',
         selectCurrentPage: 'Select this page',
