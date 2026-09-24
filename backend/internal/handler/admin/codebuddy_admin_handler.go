@@ -297,3 +297,50 @@ func (h *CodeBuddyAdminHandler) ActivityRunNow(c *gin.Context) {
 	})
 	response.Success(c, summary)
 }
+
+// ManualDisable POST /admin/codebuddy/accounts/:id/manual-disable。
+//
+// 临时停用（A9/M7）：只摘出对话流量选号，签到/保活/6004 排程照常执行。
+// 与系统级禁用相互独立；恢复走 ManualEnable。
+func (h *CodeBuddyAdminHandler) ManualDisable(c *gin.Context) {
+	if h == nil || h.codeBuddyService == nil {
+		response.BadRequest(c, "codebuddy admin service is not enabled")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req) // body 可省略：缺省理由由服务层兜底
+	if err := h.codeBuddyService.ManualDisable(c.Request.Context(), accountID, req.Reason); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	middleware.SetAuditAction(c, "admin.codebuddy.manual_disable")
+	response.Success(c, gin.H{"disabled": true})
+}
+
+// ManualEnable POST /admin/codebuddy/accounts/:id/manual-enable。
+//
+// 恢复：清除 manual_disabled 位；若系统级禁用仍在则仍不可选（两位独立）。
+func (h *CodeBuddyAdminHandler) ManualEnable(c *gin.Context) {
+	if h == nil || h.codeBuddyService == nil {
+		response.BadRequest(c, "codebuddy admin service is not enabled")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if err := h.codeBuddyService.ManualEnable(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	middleware.SetAuditAction(c, "admin.codebuddy.manual_enable")
+	response.Success(c, gin.H{"disabled": false})
+}

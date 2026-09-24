@@ -517,6 +517,11 @@ func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		codebuddy.GET("/qr/poll", h.Admin.CodeBuddy.QRPoll)
 		codebuddy.POST("/accounts/checkin-all", h.Admin.CodeBuddy.CheckinAll)
 		codebuddy.POST("/accounts/:id/checkin", h.Admin.CodeBuddy.Checkin)
+		// A9/M7 临时停用/恢复：只摘对话流量选号，签到/保活照常（语义见
+		// service.CodeBuddyAdminService.ManualDisable）。挂在 :id/checkin 之后，
+		// 同为具名参数段，互不影响静态段优先级。
+		codebuddy.POST("/accounts/:id/manual-disable", h.Admin.CodeBuddy.ManualDisable)
+		codebuddy.POST("/accounts/:id/manual-enable", h.Admin.CodeBuddy.ManualEnable)
 		// --- 成长链（A6）---
 		// 只读：列出通道与合规分级，供管理端渲染/运维核对。
 		codebuddy.GET("/growth/channels", h.Admin.CodeBuddy.GrowthChannels)
