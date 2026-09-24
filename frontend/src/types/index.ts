@@ -1432,6 +1432,8 @@ export interface AccountUsageInfo {
   credits_ledger?: Record<string, unknown> | null
   /** codebuddy 生效中的模型级限流: 模型 → RFC3339 重置时刻 (M4) */
   model_rate_limits?: Record<string, string> | null
+  /** codebuddy 定时任务执行记录（最新在前，M10/M9） */
+  task_runs?: Array<{ at?: string; task?: string; status?: string; detail?: string }> | null
   /** codebuddy 访问令牌过期时刻 RFC3339 (M2) */
   token_expires_at?: string | null
   source?: 'passive' | 'active'

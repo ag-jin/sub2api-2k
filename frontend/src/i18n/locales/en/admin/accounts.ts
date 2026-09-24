@@ -155,6 +155,7 @@ export default {
         usage: {
           balanceLabel: 'Balance',
           ledgerLine: 'Ledger: {delta} ({prev} → {balance})',
+          taskRunLine: 'Task: {task} · {status} · {time}',
           modelLimited: 'Model limited: {model} (until {time})',
           tokenExpired: 'Token expired',
           tokenExpiring: 'Token expires in {hours}h',

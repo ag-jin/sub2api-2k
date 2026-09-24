@@ -516,6 +516,27 @@
           >
             {{ codebuddyTokenExpiryHint.text }}
           </div>
+          <!-- M2: 令牌有效期进度条 -->
+          <div
+            v-if="codebuddyTokenProgress"
+            data-testid="codebuddy-token-progress"
+            class="mt-1 h-1 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-700"
+          >
+            <div
+              class="h-full"
+              :class="codebuddyTokenProgress.colorClass"
+              :style="{ width: codebuddyTokenProgress.percent + '%' }"
+            ></div>
+          </div>
+          <!-- M9: 最近任务执行 -->
+          <div
+            v-for="(line, li) in codebuddyTaskRunLines"
+            :key="'tr-' + li"
+            data-testid="codebuddy-task-run"
+            class="text-[9px] text-gray-500 dark:text-gray-400"
+          >
+            {{ line }}
+          </div>
           <!-- 积分流水最近一条（批3.4 旁路；仅真实查询成功路径返回） -->
           <div
             v-if="codebuddyLedgerLine"
@@ -1027,6 +1048,36 @@ const codebuddyTokenExpiryHint = computed(() => {
       time: d.toLocaleDateString()
     })
   }
+})
+
+// M10/M9：最近任务执行（最多显示 2 条）
+const codebuddyTaskRunLines = computed(() => {
+  const runs = usageInfo.value?.task_runs
+  if (!runs || runs.length === 0) return []
+  return runs.slice(0, 2).map((r) => {
+    const time = r.at ? new Date(r.at).toLocaleString() : ''
+    return t('admin.accounts.codebuddy.usage.taskRunLine', {
+      task: r.task ?? '',
+      status: r.status ?? '',
+      time
+    })
+  })
+})
+
+// M2：令牌有效期进度（剩余/60 天封顶），四档语义色
+const codebuddyTokenProgress = computed(() => {
+  const raw = usageInfo.value?.token_expires_at
+  if (!raw) return null
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return null
+  const remainingMs = d.getTime() - Date.now()
+  const remainingDays = remainingMs / 86400000
+  let colorClass = 'bg-green-500'
+  if (remainingMs <= 0) colorClass = 'bg-red-500'
+  else if (remainingDays < 1) colorClass = 'bg-amber-500'
+  else if (remainingDays < 3) colorClass = 'bg-blue-500'
+  const percent = Math.max(0, Math.min(100, (remainingDays / 60) * 100))
+  return { percent: percent.toFixed(1), colorClass }
 })
 
 // 积分流水最近一条（credits_ledger.codebuddy_credits_ledger: {at,delta,balance,prev}）
