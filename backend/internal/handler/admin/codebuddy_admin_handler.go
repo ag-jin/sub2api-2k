@@ -193,18 +193,17 @@ func codebuddyImportResultName(created bool) string {
 
 // GrowthChannels GET /admin/codebuddy/growth/channels。
 //
-// 列出全部成长通道及其**合规分级**，供管理端渲染与运维核对。
-// 这个只读端点存在的意义：让人不必翻代码就能确认"哪些通道会自动跑、哪些只能手动"。
+// 列出全部成长通道及其**合规分级与授权状态**，供管理端渲染与运维核对。
+// 这个只读端点存在的意义：让人不必翻代码就能确认"哪些通道会自动跑、
+// 哪些只能手动、以及自动的那些是凭什么被放开的"。
+//
+// ⚠️ 直接序列化 `GrowthChannelSpecsForAPI()` 的返回值，**不要**手工挑字段：
+// 本端点曾手写 `gin.H{...}` 只挑四项，于是新增 `auto_authorized` /
+// `auto_authorization` 后**静默丢掉**——前端拿不到授权标记，而 Go 侧
+// 单测断言的是结构体、HTTP 侧断言的是 JSON，两边都不报错
+// （实测：dev 门禁 C 才暴露）。合同在结构体上，就让它一次成型。
 func (h *CodeBuddyAdminHandler) GrowthChannels(c *gin.Context) {
-	channels := make([]gin.H, 0)
-	for _, spec := range codebuddy.GrowthChannelSpecsForAPI() {
-		channels = append(channels, gin.H{
-			"key":           spec.Key,
-			"tier":          spec.Tier,
-			"auto_runnable": spec.AutoRunnable,
-			"rationale":     spec.Rationale,
-		})
-	}
+	channels := codebuddy.GrowthChannelSpecsForAPI()
 	middleware.SetAuditAction(c, "admin.codebuddy.growth.channels")
 	response.Success(c, gin.H{"channels": channels})
 }
