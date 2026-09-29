@@ -70,6 +70,7 @@ func setupPlatformFeatureRouter(t *testing.T) (*gin.Engine, *platformFeatureHand
 	router := gin.New()
 	router.GET("/api/v1/admin/settings/platform-features", handler.GetPlatformFeatures)
 	router.PUT("/api/v1/admin/settings/platform-features", handler.UpdatePlatformFeatures)
+	router.POST("/api/v1/admin/settings/platform-features/run", handler.RunPlatformFeatureNow)
 	return router, repo
 }
 
@@ -82,7 +83,9 @@ type platformFeaturesResponse struct {
 				Key   string `json:"key"`
 				Kind  string `json:"kind"`
 				Title string `json:"title"`
-				Value struct {
+				// 立即执行能力（本轮新增）：设置页据此渲染"立即执行"按钮。
+				SupportsImmediateRun bool `json:"supports_immediate_run"`
+				Value                struct {
 					Enabled bool `json:"enabled"`
 					Start   *struct {
 						Hour   int `json:"hour"`
@@ -406,5 +409,112 @@ func TestPlatformFeaturesEveryRegisteredFeatureHasTitle(t *testing.T) {
 			require.NotEqual(t, feature.Key, feature.Title,
 				"平台 %s 的功能 %s 的 Title 与 key 相同，等于没给文案", group.Platform, feature.Key)
 		}
+	}
+}
+
+// --- 立即执行（本轮新增能力）---
+
+// Scenario：GET 必须暴露 `supports_immediate_run`，且**签名正确**——
+// 只有已注册执行者的功能为 true。
+//
+// ⚠️ 这条测的是 **HTTP JSON**，不是结构体。上一版有过教训：
+// `GrowthChannels` handler 手写筛选字段，service 结构体字段齐全、
+// Go 单测全绿，但 JSON 里字段消失了，只有真跑请求才暴露。
+// 所以这里断言序列化后的实际字段。
+func TestPlatformFeaturesEndpointExposesImmediateRun(t *testing.T) {
+	router, _ := setupPlatformFeatureRouter(t)
+
+	// 注册一个执行者，让该功能支持立即执行。
+	const featureKey = service.CodeBuddyCheckinFeatureKey
+	service.RegisterPlatformFeatureImmediateRunner(
+		service.PlatformCodeBuddy, featureKey,
+		func(context.Context) (*service.PlatformFeatureRunResult, error) {
+			return &service.PlatformFeatureRunResult{Summary: "ok"}, nil
+		},
+	)
+	t.Cleanup(func() {
+		service.UnregisterPlatformFeatureImmediateRunner(service.PlatformCodeBuddy, featureKey)
+	})
+
+	resp := decodePlatformFeatures(t, doJSON(t, router, http.MethodGet, "/api/v1/admin/settings/platform-features", nil))
+
+	var found bool
+	var supports bool
+	for _, group := range resp.Data.Platforms {
+		if group.Platform != service.PlatformCodeBuddy {
+			continue
+		}
+		for _, feature := range group.Features {
+			if feature.Key != featureKey {
+				continue
+			}
+			found = true
+			supports = feature.SupportsImmediateRun
+		}
+	}
+	require.True(t, found, "codebuddy/%s 未出现在响应里", featureKey)
+	require.True(t, supports,
+		"已注册执行者的功能，JSON 里 supports_immediate_run 应为 true"+
+			"（否则设置页不会渲染按钮，而所有单测仍会绿）")
+}
+
+// Scenario：POST /run 派发到执行者并返回服务端生成的 summary。
+func TestPlatformFeaturesEndpointRunNow(t *testing.T) {
+	router, _ := setupPlatformFeatureRouter(t)
+
+	const featureKey = service.CodeBuddyCheckinFeatureKey
+	called := 0
+	service.RegisterPlatformFeatureImmediateRunner(
+		service.PlatformCodeBuddy, featureKey,
+		func(context.Context) (*service.PlatformFeatureRunResult, error) {
+			called++
+			return &service.PlatformFeatureRunResult{Summary: "签到完成（共 1 个账号）：成功 1"}, nil
+		},
+	)
+	t.Cleanup(func() {
+		service.UnregisterPlatformFeatureImmediateRunner(service.PlatformCodeBuddy, featureKey)
+	})
+
+	rec := doJSON(t, router, http.MethodPost, "/api/v1/admin/settings/platform-features/run", map[string]any{
+		"platform": service.PlatformCodeBuddy,
+		"key":      featureKey,
+	})
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var decoded struct {
+		Code int `json:"code"`
+		Data struct {
+			Summary string `json:"summary"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded), "body=%s", rec.Body.String())
+	require.Equal(t, 0, decoded.Code)
+	require.Equal(t, "签到完成（共 1 个账号）：成功 1", decoded.Data.Summary)
+	require.Equal(t, 1, called, "应派发到执行者")
+}
+
+// Scenario：POST /run 对未注册功能返回 404（拼错 key 要能一眼看出来）。
+func TestPlatformFeaturesEndpointRunNowUnknownFeature(t *testing.T) {
+	router, _ := setupPlatformFeatureRouter(t)
+
+	rec := doJSON(t, router, http.MethodPost, "/api/v1/admin/settings/platform-features/run", map[string]any{
+		"platform": "nope",
+		"key":      "nope",
+	})
+	require.Equal(t, http.StatusNotFound, rec.Code, "body=%s", rec.Body.String())
+}
+
+// Scenario：POST /run 缺参数 → 400。
+func TestPlatformFeaturesEndpointRunNowMissingArgs(t *testing.T) {
+	router, _ := setupPlatformFeatureRouter(t)
+
+	for _, body := range []map[string]any{
+		{"key": "checkin"},
+		{"platform": service.PlatformCodeBuddy},
+		{},
+	} {
+		rec := doJSON(t, router, http.MethodPost, "/api/v1/admin/settings/platform-features/run", body)
+		require.Equal(t, http.StatusBadRequest, rec.Code,
+			"参数不全应 400：body=%v", body)
 	}
 }
