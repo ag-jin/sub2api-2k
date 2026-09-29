@@ -230,6 +230,36 @@ func (s *CodeBuddyGrowthScheduler) tickDaytime(now time.Time, features PlatformF
 	s.runOnce(localDay, "daytime", start, end, channelKeys)
 }
 
+// codeBuddyGrowthNightAnchorDate 返回 now 所属"那一夜"的锚定日期（UTC+8）。
+//
+// ## 为什么不能用当前日历日期
+//
+// 夜猫窗口是 **23:00–08:00 跨零点**：23:30 与次日 07:30 落在**同一个夜**里，
+// 但它们的日历日期不同（09-29 / 09-30）。若去重键直接用当前日期，
+// 这两次 tick 会各自认为"今天还没跑"→ **同一夜跑两轮**。
+//
+// 实测（探针）：23:30 → 2026-09-29、07:30 → 2026-09-30，两者都在窗口内，
+// 去重完全失效。
+//
+// ## 锚定口径
+//
+// 窗口跨零点时，把**日落之后那一段归到"夜的开始日"**：
+//   - 23:30（09-29 的夜里）  → 2026-09-29
+//   - 07:30（同一个夜，日出前）→ **仍归 2026-09-29**（而不是 09-30）
+//
+// 判据：本地时刻 < 窗口结束点（08:00）时，说明还处在"昨夜"——取前一日。
+//
+// 仅适用于跨零点窗口（本函数专为夜猫窗口服务）；日间窗口起止同日，
+// 当前日期就是正确口径，不要拿它替代。
+func codeBuddyGrowthNightAnchorDate(now time.Time) string {
+	local := now.In(codeBuddyTimeZone)
+	if local.Hour() < codeBuddyGrowthNightEndHour {
+		// 落在午夜之后、窗口结束之前 → 这一夜是从**昨天**开始的。
+		local = local.AddDate(0, 0, -1)
+	}
+	return local.Format(time.DateOnly)
+}
+
 // tickNight 夜间趟：夜猫窗口（23:00–08:00 CST，跨零点），独立窗口与去重。
 //
 // 用 `WithinTimeRange`（已处理跨零点），与 `night_cat` 通道内部的判据同源。
@@ -249,7 +279,9 @@ func (s *CodeBuddyGrowthScheduler) tickNight(now time.Time, features PlatformFea
 		return
 	}
 
-	localDay := PlatformFeatureLocalDate(now, codeBuddyTimeZone).Format(time.DateOnly)
+	// ⚠️ 用**夜的锚定日期**而不是当前日历日期：窗口跨零点，
+	// 否则同一个夜会被当成两天、跑两轮（见 codeBuddyGrowthNightAnchorDate）。
+	localDay := codeBuddyGrowthNightAnchorDate(now)
 	s.mu.Lock()
 	if s.lastNightRunDate == localDay {
 		s.mu.Unlock()

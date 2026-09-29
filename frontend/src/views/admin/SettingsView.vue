@@ -7118,6 +7118,39 @@
                       />
                     </div>
                   </div>
+
+                  <!-- 立即执行：不读开关也不读窗口。
+                       存在意义：窗口设得晚、或当天已经错过（在窗口外才配置），
+                       按定时就只能等第二天；这里把那次执行提前到现在。
+                       仅当服务端注册表声明该功能支持时才渲染（前端不硬编码 featureKey）。 -->
+                  <div
+                    v-if="feature.supports_immediate_run"
+                    class="flex flex-wrap items-center gap-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-500/10"
+                  >
+                    <p class="flex-1 text-xs text-amber-700 dark:text-amber-400">
+                      {{ t('admin.settings.features.platformFeatures.runNowHint') }}
+                    </p>
+                    <button
+                      class="btn btn-secondary btn-sm"
+                      :disabled="platformFeatureRunning !== ''"
+                      :data-testid="`platform-feature-run-${group.platform}-${feature.key}`"
+                      @click="runPlatformFeatureNow(group.platform, feature.key)"
+                    >
+                      {{
+                        platformFeatureRunning === `${group.platform}:${feature.key}`
+                          ? t('admin.settings.features.platformFeatures.runNowRunning')
+                          : t('admin.settings.features.platformFeatures.runNow')
+                      }}
+                    </button>
+                  </div>
+                  <!-- 立即执行的结果（服务端生成的一句话） -->
+                  <p
+                    v-if="platformFeatureRunResult[`${group.platform}:${feature.key}`]"
+                    class="text-xs text-gray-600 dark:text-gray-300"
+                    :data-testid="`platform-feature-run-result-${group.platform}-${feature.key}`"
+                  >
+                    {{ platformFeatureRunResult[`${group.platform}:${feature.key}`] }}
+                  </p>
                 </div>
               </div>
 
@@ -9044,6 +9077,9 @@ const {
   saved: platformFeaturesSaved,
   load: loadPlatformFeatures,
   save: savePlatformFeatures,
+  runningId: platformFeatureRunning,
+  runResults: platformFeatureRunResult,
+  runNow: runPlatformFeatureNow,
 } = usePlatformFeatures({
   // 只有**用户主动保存**失败才弹全局错误。
   // 页面挂载时的自动加载失败改为区块内联提示：用户没做任何操作就被弹错误框属噪音，
@@ -9054,6 +9090,14 @@ const {
       return;
     }
     appStore.showError(t('admin.settings.features.platformFeatures.saveFailed'));
+  },
+  // 立即执行的回执：成功时把服务端那句话原样提示（它已含计数），
+  // 失败时给固定文案 + 控制台详情（错误对象不适合直接展示给用户）。
+  onRunSuccess: (summary) => {
+    appStore.showSuccess(summary || t('admin.settings.features.platformFeatures.runNowDone'));
+  },
+  onRunError: () => {
+    appStore.showError(t('admin.settings.features.platformFeatures.runNowFailed'));
   },
 });
 

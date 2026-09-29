@@ -645,6 +645,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 平台功能设置（按平台分组的平台级功能开关；各平台自行注册，设置页聚合展示）
 		adminSettings.GET("/platform-features", h.Admin.Setting.GetPlatformFeatures)
 		adminSettings.PUT("/platform-features", h.Admin.Setting.UpdatePlatformFeatures)
+		// 立即执行某功能（设置页的"立即执行"按钮）：把"等窗口"变成一次性动作。
+		// 读/写给的是自动排程的配置，本端点**只触发**，不读开关也不读窗口。
+		adminSettings.POST("/platform-features/run", h.Admin.Setting.RunPlatformFeatureNow)
 	}
 }
 

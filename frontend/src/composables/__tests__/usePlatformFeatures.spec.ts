@@ -16,16 +16,20 @@ import {
 //   3. 加载/保存失败不抛穿，走 onError 回调；
 //   4. 时段字符串 ↔ TimeOfDay 的解析要保守（非法输入不破坏已配置值）。
 
-const { getPlatformFeaturesMock, updatePlatformFeaturesMock } = vi.hoisted(() => ({
-  getPlatformFeaturesMock: vi.fn(),
-  updatePlatformFeaturesMock: vi.fn()
-}))
+const { getPlatformFeaturesMock, updatePlatformFeaturesMock, runPlatformFeatureMock } = vi.hoisted(
+  () => ({
+    getPlatformFeaturesMock: vi.fn(),
+    updatePlatformFeaturesMock: vi.fn(),
+    runPlatformFeatureMock: vi.fn()
+  })
+)
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     settings: {
       getPlatformFeatures: getPlatformFeaturesMock,
-      updatePlatformFeatures: updatePlatformFeaturesMock
+      updatePlatformFeatures: updatePlatformFeaturesMock,
+      runPlatformFeature: runPlatformFeatureMock
     }
   }
 }))
@@ -194,5 +198,91 @@ describe('applyHHMMToTimeOfDay', () => {
       expect(applyHHMMToTimeOfDay(target, 'start', bad)).toBe(false)
     }
     expect(target.start).toEqual({ hour: 9, minute: 0 })
+  })
+})
+
+// --- 立即执行（设置页"立即执行"按钮的逻辑）---
+//
+// 这条能力解决：功能只有"开关+时段"时，唯一触发手段是等窗口；
+// 窗口设得晚、或当天已错过（在窗口外才配置），按定时就只能等第二天。
+// 用户原话：「设置的时间有时候太晚，会到第二天去」。
+
+describe('usePlatformFeatures 立即执行', () => {
+  // ⚠️ 必须在这里单独 reset：文件顶部的 beforeEach 只重置它那两个 mock，
+  // 不管 runPlatformFeature —— 漏掉会让调用计数在用例间累积
+  // （实测表现：断言"只调一次"却得到 4 次）。
+  beforeEach(() => {
+    runPlatformFeatureMock.mockReset()
+  })
+
+  it('调用服务端并把 platform/key 原样传出（映射不在前端）', async () => {
+    runPlatformFeatureMock.mockResolvedValue({ summary: '签到完成（共 3 个账号）：成功 3' })
+    const f = usePlatformFeatures()
+
+    await f.runNow('codebuddy', 'checkin')
+
+    expect(runPlatformFeatureMock).toHaveBeenCalledWith('codebuddy', 'checkin')
+  })
+
+  it('结果按 platform:key 保留（界面可长期展示，不随 toast 消失）', async () => {
+    runPlatformFeatureMock.mockResolvedValue({ summary: '成功 3' })
+    const f = usePlatformFeatures()
+
+    await f.runNow('codebuddy', 'checkin')
+
+    expect(f.runResults.value['codebuddy:checkin']).toBe('成功 3')
+  })
+
+  it('执行完成后 runningId 复位（按钮可再次点击）', async () => {
+    runPlatformFeatureMock.mockResolvedValue({ summary: 'ok' })
+    const f = usePlatformFeatures()
+
+    await f.runNow('codebuddy', 'checkin')
+
+    expect(f.runningId.value).toBe('')
+  })
+
+  it('并发点击只发一次请求（这些动作都会打上游，并发会放大风控暴露）', async () => {
+    // 关键：第一个请求**悬而不决**（模拟上游慢），期间发第二次点击。
+    // 注意不能 `await` 第一次调用——那会等到解决后才执行第二句，
+    // 就不是"并发"了，测不到串行化。
+    let resolveFn: ((v: { summary: string }) => void) | undefined
+    runPlatformFeatureMock.mockImplementation(
+      () => new Promise((resolve) => { resolveFn = resolve })
+    )
+    const f = usePlatformFeatures()
+
+    const first = f.runNow('codebuddy', 'checkin') // 不 await
+    // 此刻 runningId 已是 checkin，第二次点击应被挡掉。
+    const second = f.runNow('codebuddy', 'growth')
+
+    expect(runPlatformFeatureMock).toHaveBeenCalledTimes(1)
+    expect(runPlatformFeatureMock).toHaveBeenCalledWith('codebuddy', 'checkin')
+    expect(f.runningId.value).toBe('codebuddy:checkin')
+
+    resolveFn?.({ summary: 'ok' })
+    await Promise.all([first, second])
+    expect(f.runningId.value).toBe('')
+  })
+
+  it('失败走 onRunError 回调且不抛穿，runningId 仍复位', async () => {
+    runPlatformFeatureMock.mockRejectedValue(new Error('boom'))
+    const onRunError = vi.fn()
+    const f = usePlatformFeatures({ onRunError })
+
+    await expect(f.runNow('codebuddy', 'checkin')).resolves.toBeUndefined()
+
+    expect(onRunError).toHaveBeenCalledWith('codebuddy', 'checkin', expect.any(Error))
+    expect(f.runningId.value).toBe('')
+  })
+
+  it('成功走 onRunSuccess 回调并带上服务端文案', async () => {
+    runPlatformFeatureMock.mockResolvedValue({ summary: '已跑一轮' })
+    const onRunSuccess = vi.fn()
+    const f = usePlatformFeatures({ onRunSuccess })
+
+    await f.runNow('codebuddy', 'growth')
+
+    expect(onRunSuccess).toHaveBeenCalledWith('已跑一轮', 'codebuddy', 'growth')
   })
 })

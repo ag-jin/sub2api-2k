@@ -68,6 +68,23 @@ func ProvideCodeBuddyCheckinScheduler(
 	}
 	scheduler := NewCodeBuddyCheckinScheduler(codeBuddyAdminService, settingService)
 	scheduler.Start()
+
+	// 设置页"立即执行"：走与自动签到**同一条**批量实现（CheckinAll），
+	// 差别只在触发方式。不读开关/窗口——人明确要求现在就跑。
+	RegisterPlatformFeatureImmediateRunner(
+		PlatformCodeBuddy, CodeBuddyCheckinFeatureKey,
+		func(ctx context.Context) (*PlatformFeatureRunResult, error) {
+			summary, err := codeBuddyAdminService.CheckinAll(ctx)
+			if err != nil {
+				return nil, err
+			}
+			result := &PlatformFeatureRunResult{Detail: summary}
+			if summary != nil {
+				result.Summary = codeBuddyCheckinSummaryText(summary)
+			}
+			return result, nil
+		},
+	)
 	return scheduler
 }
 
@@ -96,6 +113,20 @@ func ProvideCodeBuddyActivityScheduler(
 ) *CodeBuddyActivityScheduler {
 	scheduler := NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
 	scheduler.Start()
+
+	// 设置页"立即执行"：人明确要求现在上报。
+	// 注意与**签到**的差别：这里走 `RunActivityNow` 而非自动路径，
+	// 它按设计**绕开**窗口与账号级当日去重（人点了就该真发出去）。
+	RegisterPlatformFeatureImmediateRunner(
+		PlatformCodeBuddy, CodeBuddyActivityFeatureKey,
+		func(ctx context.Context) (*PlatformFeatureRunResult, error) {
+			summary := scheduler.RunActivityNow(ctx)
+			return &PlatformFeatureRunResult{
+				Summary: codeBuddyActivitySummaryText(summary),
+				Detail:  summary,
+			}, nil
+		},
+	)
 	return scheduler
 }
 
@@ -121,6 +152,19 @@ func ProvideCodeBuddyGrowthScheduler(
 ) *CodeBuddyGrowthScheduler {
 	scheduler := NewCodeBuddyGrowthScheduler(codeBuddyAdminService, accountRepo, settingService)
 	scheduler.Start()
+
+	// 设置页"立即执行"：跑一轮**已授权自动**的通道（未授权的结构上带不上）。
+	// 与自动排程的差别只在触发方式——通道集合、并发、单号隔离完全同一实现。
+	RegisterPlatformFeatureImmediateRunner(
+		PlatformCodeBuddy, CodeBuddyGrowthFeatureKey,
+		func(ctx context.Context) (*PlatformFeatureRunResult, error) {
+			summary := codeBuddyAdminService.RunCodeBuddyGrowthAllNow(ctx)
+			return &PlatformFeatureRunResult{
+				Summary: codeBuddyGrowthSummaryText(summary),
+				Detail:  summary,
+			}, nil
+		},
+	)
 	return scheduler
 }
 

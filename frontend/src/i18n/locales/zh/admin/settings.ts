@@ -32,6 +32,11 @@ export default {
           end: '结束',
           closed: '关闭',
           open: '开启',
+          runNow: '立即执行',
+          runNowRunning: '执行中…',
+          runNowDone: '已执行',
+          runNowFailed: '执行失败',
+          runNowHint: '手动执行一次，不必等窗口。适用于窗口还没到、或当天已错过（错过就要等第二天）。',
         },
         channelMonitor: {
           title: '渠道监控',

@@ -1585,6 +1585,12 @@ export interface PlatformFeatureItem {
   title: string;
   description: string;
   value: PlatformFeatureValue;
+  /**
+   * 该功能是否支持"立即执行"（设置页据此渲染按钮）。
+   * 由服务端注册表回答，前端不硬编码 featureKey —— 新增支持的功能后
+   * 这里自动出现按钮，无需改前端。
+   */
+  supports_immediate_run?: boolean;
 }
 
 /** 按平台分组的功能列表。 */
@@ -1625,6 +1631,36 @@ export async function updatePlatformFeatures(
   return data;
 }
 
+/**
+ * 立即执行某平台功能的结果。
+ * `summary` 是服务端生成的一句话结果（各功能回执形状差异大，界面直接展示）；
+ * `detail` 是原始回执，仅供排查，界面不解析。
+ */
+export interface PlatformFeatureRunResponse {
+  summary: string;
+  detail?: unknown;
+}
+
+/**
+ * 立即执行某平台功能（设置页的"立即执行"按钮）。
+ *
+ * 用途：功能只有"开关+时段"时，用户唯一触发手段是等窗口——窗口设得晚、
+ * 或当天已经错过（在窗口外才配置），就只能等第二天。本接口把那次执行
+ * 提前到现在。
+ *
+ * 服务端**不读开关也不读窗口**：开关管自动排程，本动作是"人明确要求现在执行"。
+ */
+export async function runPlatformFeature(
+  platform: string,
+  key: string,
+): Promise<PlatformFeatureRunResponse> {
+  const { data } = await apiClient.post<PlatformFeatureRunResponse>(
+    "/admin/settings/platform-features/run",
+    { platform, key },
+  );
+  return data;
+}
+
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -1656,6 +1692,7 @@ export const settingsAPI = {
   resetWebSearchUsage,
   getPlatformFeatures,
   updatePlatformFeatures,
+  runPlatformFeature,
 };
 
 export default settingsAPI;

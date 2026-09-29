@@ -24,6 +24,7 @@ const {
   getBetaPolicySettings,
   getPlatformFeatures,
   updatePlatformFeatures,
+  runPlatformFeature,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   getOllamaCloudUsageSettings,
@@ -62,6 +63,8 @@ const {
   // 抛错后污染同批跑的其它 spec（跨文件失败）。默认返回空注册表。
   getPlatformFeatures: vi.fn().mockResolvedValue({ platforms: [] }),
   updatePlatformFeatures: vi.fn(),
+  // 立即执行：默认返回一句成功文案（SettingsView 只在点按钮时调用）。
+  runPlatformFeature: vi.fn().mockResolvedValue({ summary: '已执行' }),
   getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({
     enabled: true,
     interval_minutes: 30,
@@ -105,6 +108,7 @@ vi.mock("@/api", () => ({
       getBetaPolicySettings,
       getPlatformFeatures,
       updatePlatformFeatures,
+      runPlatformFeature,
     },
     accounts: {
       getUpstreamBillingProbeSettings,

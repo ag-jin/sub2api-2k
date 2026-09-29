@@ -16,6 +16,10 @@ import type { PlatformFeatureGroup } from '@/api/admin/settings'
 export function usePlatformFeatures(options?: {
   /** 错误提示回调（默认静默，由调用方注入 appStore.showError）。 */
   onError?: (message: string, key: 'loadFailed' | 'saveFailed') => void
+  /** 立即执行成功回调（默认静默，由调用方注入 appStore.showSuccess）。 */
+  onRunSuccess?: (summary: string, platform: string, key: string) => void
+  /** 立即执行失败回调（默认静默）。 */
+  onRunError?: (platform: string, key: string, error: unknown) => void
 }) {
   const groups: Ref<PlatformFeatureGroup[]> = ref([])
   const loading = ref(false)
@@ -73,7 +77,66 @@ export function usePlatformFeatures(options?: {
     }
   }
 
-  return { groups, loading, saving, saved, load, save }
+  // --- 立即执行（设置页"立即执行"按钮）---
+  //
+  // 放在 composable 而不是 SettingsView 里，理由与上面「抽成 composable」那段相同：
+  // SettingsView 是上万行的巨型 SFC，内嵌逻辑无法单独测试。
+  //
+  // 语义上它与"配置读写"不同层：立即执行是**一次性动作**，既不读也不写配置
+  // （服务端同样不读开关、不读窗口）。但两者共享同一份"功能清单"状态，
+  // 放在一起才能让按钮知道该渲染在哪条 feature 上。
+
+  /** 正在执行的功能（`platform:key`）；空串表示空闲。 */
+  const runningId = ref('')
+
+  /**
+   * 各功能最近一次执行结果（`platform:key` → 服务端生成的一句话）。
+   *
+   * 保留在界面上而不是 toast 后消失：这类动作的结果有信息量
+   * （成功几个 / 跳过几个 / 失败几个），一闪而过的 toast 会逼用户反复点。
+   */
+  const runResults: Ref<Record<string, string>> = ref({})
+
+  /**
+   * 立即执行某功能。
+   *
+   * 为什么需要它：功能只有"开关 + 时段"时，唯一触发手段是**等窗口**。
+   * 窗口设得晚、或当天已经错过（在窗口外才配置），按定时就只能等第二天
+   * ——用户原话「设置的时间有时候太晚，会到第二天去」。
+   * 本方法把那次执行提前到现在。
+   *
+   * 不读开关也不读窗口（服务端同口径）：用户点它就是"现在要跑"，
+   * 被自动排程的开关或时段挡住会让人点了没反应且找不到原因。
+   */
+  async function runNow(platform: string, key: string): Promise<void> {
+    const id = `${platform}:${key}`
+    // 串行化：同一时间只允许一个执行请求（这些动作都会打上游，并发点会放大风控暴露）。
+    if (runningId.value !== '') return
+    runningId.value = id
+    try {
+      const result = await adminAPI.settings.runPlatformFeature(platform, key)
+      const summary = result?.summary ?? ''
+      runResults.value = { ...runResults.value, [id]: summary }
+      options?.onRunSuccess?.(summary, platform, key)
+    } catch (error) {
+      console.error(`platform feature run ${platform}/${key}:`, error)
+      options?.onRunError?.(platform, key, error)
+    } finally {
+      runningId.value = ''
+    }
+  }
+
+  return {
+    groups,
+    loading,
+    saving,
+    saved,
+    load,
+    save,
+    runningId,
+    runResults,
+    runNow,
+  }
 }
 
 /** TimeOfDay → "HH:MM"（time 输入框取值）。 */

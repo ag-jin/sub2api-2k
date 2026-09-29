@@ -33,6 +33,12 @@ export default {
           end: 'End',
           closed: 'Off',
           open: 'On',
+          runNow: 'Run now',
+          runNowRunning: 'Running…',
+          runNowDone: 'Done',
+          runNowFailed: 'Run failed',
+          runNowHint:
+            'Run once immediately without waiting for the window. Useful when the window has not started yet, or today was missed (a miss means waiting until tomorrow).',
         },
         channelMonitor: {
           title: 'Channel Monitor',
