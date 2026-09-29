@@ -545,6 +545,25 @@
           >
             {{ codebuddyLedgerLine }}
           </div>
+          <!-- 收益流水汇总（今日 +X / 累计 +Y）：各功能实际领到的积分。
+               存在的意义：此前只能靠直连上游账单反推"领到没"，
+               而且曾出现"领了却没记"（travel_run 领到 5 分但回执显示 0）。 -->
+          <div
+            v-if="codebuddyEarningsLine"
+            data-testid="codebuddy-earnings"
+            class="text-[9px] font-medium text-amber-600 dark:text-amber-400"
+          >
+            {{ codebuddyEarningsLine }}
+          </div>
+          <!-- 最近收益明细（最多 3 条，最新在前） -->
+          <div
+            v-for="(line, ei) in codebuddyEarningLines"
+            :key="'earn-' + ei"
+            data-testid="codebuddy-earning-entry"
+            class="text-[9px] text-gray-500 dark:text-gray-400"
+          >
+            {{ line }}
+          </div>
           <!-- 到期列表（后端 Expiries：仅含仍有余额的套餐，升序） -->
           <div
             v-for="(expiry, index) in codebuddyExpiries"
@@ -1063,6 +1082,50 @@ const codebuddyTaskRunLines = computed(() => {
     })
   })
 })
+
+// 收益流水汇总：今日 +X / 累计 +Y。
+//
+// 数字来自后端**动作式**记账（每个发分动作当场记），不是余额比对推出来的——
+// 所以即使积分立刻被别处消耗掉，"领到了多少"这个事实仍然看得到。
+const codebuddyEarningsLine = computed(() => {
+  const e = usageInfo.value?.earnings
+  if (!e) return ''
+  const today = e.today_credit ?? 0
+  const total = e.total_credit ?? 0
+  if (today <= 0 && total <= 0) return ''
+  return t('admin.accounts.codebuddy.usage.earningsLine', {
+    today: formatCredit(today),
+    total: formatCredit(total)
+  })
+})
+
+// 最近收益明细（最多 3 条）：来源 + 金额。
+const codebuddyEarningLines = computed(() => {
+  const entries = usageInfo.value?.earnings?.entries
+  if (!entries || entries.length === 0) return []
+  return entries.slice(0, 3).map((e) => {
+    const time = e.at ? new Date(e.at).toLocaleString() : ''
+    return t('admin.accounts.codebuddy.usage.earningEntry', {
+      source: earningSourceLabel(e.source ?? ''),
+      credit: formatCredit(e.credit ?? 0),
+      time
+    })
+  })
+})
+
+// 收益来源的展示名（用 i18n；未知来源回退为原键，便于新来源上线即见）。
+function earningSourceLabel(source: string): string {
+  const key = `admin.accounts.codebuddy.usage.earningSource.${source}`
+  const label = t(key)
+  // vue-i18n 缺键时返回键本身——回退到原始来源串更可读。
+  return label === key ? source : label
+}
+
+// 积分格式化：整数不带小数点（与后端 codeBuddyFormatCredit 同口径）。
+function formatCredit(v: number): string {
+  if (Number.isInteger(v)) return String(v)
+  return v.toFixed(2)
+}
 
 // M2：令牌有效期进度（剩余/60 天封顶），四档语义色
 const codebuddyTokenProgress = computed(() => {

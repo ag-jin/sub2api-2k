@@ -460,6 +460,12 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 			Credit:           gjson.GetBytes(raw, "data.credit").Float(),
 			StreakDays:       gjson.GetBytes(raw, "data.streak_days").Int(),
 		}
+		// 收益流水：签到是每日主要积分来源，必须记账（credit<=0 时本函数自会跳过，
+		// 覆盖"已签到幂等返回 0"的正常态）。
+		if s.accountRepo != nil {
+			RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+				codeBuddyEarningCheckin, result.Credit, "")
+		}
 		if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
 			"last_checkin_at": time.Now().UTC().Format(time.RFC3339),
 			"streak_days":     result.StreakDays,

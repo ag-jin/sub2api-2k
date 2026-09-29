@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -99,6 +100,14 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthTravel(
 				result.Claimed = true
 				result.RewardCredit = reward
 				s.markCodeBuddyGrowthLedger(ctx, account, localDay, ledgerTravelClaim)
+				// 收益流水：**这正是本次排查中漏记的那一笔**——travel_run 实际领到
+				// 5 分，但回执里 reward_credit 曾显示 0，导致"领了看不见"。
+				// 现在当场记账，不依赖余额比对（余额可能被别处消耗掉而看不出）。
+				if s.accountRepo != nil {
+					RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+						codeBuddyEarningTravel, float64(reward),
+						fmt.Sprintf("record_id=%d", state.RecordID))
+				}
 			}
 		}
 	}
@@ -295,6 +304,11 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 	result.Adopted = true
 	result.Credit = adopt.Credit
 	result.Energy = adopt.Energy
+	// 收益流水：领养一次性送分（参考实现 300），必须记账。
+	if s.accountRepo != nil {
+		RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+			codeBuddyEarningAdopt, float64(adopt.Credit), "")
+	}
 	return result
 }
 

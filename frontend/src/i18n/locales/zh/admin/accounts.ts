@@ -364,6 +364,18 @@ export default {
           tokenExpiring: '令牌 {hours} 小时后过期',
           tokenValidUntil: '令牌有效期至 {time}',
           creditsValue: '{value} 积分',
+          earningsLine: '收益 今日 +{today} / 累计 +{total}',
+          earningEntry: '  +{credit} · {source} · {time}',
+          earningSource: {
+            checkin: '签到',
+            adopt: '领养',
+            travel: '旅行',
+            redeem: '连登兑换',
+            gift: '礼包',
+            compensation: '补偿',
+            school: '开学季',
+            trial: '试用包'
+          },
           cachedHint: '缓存 {seconds}s 前',
           expiresLabel: '到期',
           expiresValue: '{amount} 积分 · {at}'

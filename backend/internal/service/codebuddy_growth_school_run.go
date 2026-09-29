@@ -165,6 +165,9 @@ type codeBuddySchoolTask struct {
 	Status   string `json:"status"`
 	Progress int    `json:"progress"`
 	Target   int    `json:"target_count"`
+	// RewardCredit 上游声明的该任务奖励额度（参考实现 `t.get("reward_credit")`）。
+	// 缺字段时为 0——此时不记收益流水金额（不编造）。
+	RewardCredit int `json:"reward_credit"`
 }
 
 // fetchCodeBuddySchoolTasks 拉取任务列表；返回 (任务, 是否在期, 不在期原因, 错误)。
@@ -296,6 +299,16 @@ func (s *CodeBuddyAdminService) runCodeBuddySchoolTask(
 		}
 		run.Claimed = true
 		run.After = "claimed"
+		// 收益流水：开学季领奖发的是**抽奖机会**（chance），可能另有小额积分
+		// （参考实现里 school_credit_6/66 是转盘奖品，不是 claim 直接给的分）。
+		// 上游 claim 响应未提供可靠的 credit 字段，且本活动当前 offline
+		// （in_period=false）无法实测——所以这里**不编造金额**，
+		// 只记一笔 credit 为该任务声明的奖励额度，detail 标明来源。
+		if s.accountRepo != nil {
+			RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+				codeBuddyEarningSchool, float64(task.RewardCredit),
+				"task="+task.Code)
+		}
 	}
 	return run
 }

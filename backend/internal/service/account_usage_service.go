@@ -279,16 +279,21 @@ type UsageInfo struct {
 	UpstreamBalance *UpstreamBalanceUsage `json:"upstream_balance,omitempty"`
 	// CreditsLedger codebuddy 积分流水最近一条（批3.4 旁路落盘，M9/M8 呈现用）。
 	// 仅在真实查询成功路径填充；键为 extra 旁路原样（ledger/基线/签到留痕）。
-	CreditsLedger      map[string]any    `json:"credits_ledger,omitempty"`
-	ModelRateLimits    map[string]string `json:"model_rate_limits,omitempty"`
-	TaskRuns           []map[string]any  `json:"task_runs,omitempty"`
-	TokenExpiresAt     string            `json:"token_expires_at,omitempty"`
-	GeminiSharedDaily  *UsageProgress    `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
-	GeminiProDaily     *UsageProgress    `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
-	GeminiFlashDaily   *UsageProgress    `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
-	GeminiSharedMinute *UsageProgress    `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
-	GeminiProMinute    *UsageProgress    `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
-	GeminiFlashMinute  *UsageProgress    `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
+	CreditsLedger   map[string]any    `json:"credits_ledger,omitempty"`
+	ModelRateLimits map[string]string `json:"model_rate_limits,omitempty"`
+	// Earnings codebuddy **收益流水**（各功能实际领到的积分），见
+	// codebuddy_earnings.go。与 CreditsLedger 的分工：那个是余额比对式
+	// （delta 是推出来的，可能因"领了又被花掉"而完全不产生），
+	// 这个是动作式（发分当场记账，来源明确）。
+	Earnings           *codeBuddyEarningsSummary `json:"earnings,omitempty"`
+	TaskRuns           []map[string]any          `json:"task_runs,omitempty"`
+	TokenExpiresAt     string                    `json:"token_expires_at,omitempty"`
+	GeminiSharedDaily  *UsageProgress            `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
+	GeminiProDaily     *UsageProgress            `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
+	GeminiFlashDaily   *UsageProgress            `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
+	GeminiSharedMinute *UsageProgress            `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
+	GeminiProMinute    *UsageProgress            `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
+	GeminiFlashMinute  *UsageProgress            `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
@@ -1736,6 +1741,11 @@ func (s *AccountUsageService) getCodeBuddyCredits(ctx context.Context, account *
 				}
 				usage.TaskRuns = runs
 			}
+		}
+		// 收益流水（今日/累计/明细）：与 TaskRuns 同在余额查询路径上返回，
+		// 面板一次请求就能拿到"用量 + 任务 + 收益"。
+		if summary := codeBuddyEarningsFromAccount(account); summary.TotalCredit > 0 || len(summary.Entries) > 0 {
+			usage.Earnings = &summary
 		}
 		s.cache.codebuddyCache.Store(account.ID, &codebuddyUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil

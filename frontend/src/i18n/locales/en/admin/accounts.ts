@@ -161,6 +161,18 @@ export default {
           tokenExpiring: 'Token expires in {hours}h',
           tokenValidUntil: 'Token valid until {time}',
           creditsValue: '{value} credits',
+          earningsLine: 'Earned today +{today} / total +{total}',
+          earningEntry: '  +{credit} · {source} · {time}',
+          earningSource: {
+            checkin: 'Check-in',
+            adopt: 'Adoption',
+            travel: 'Travel',
+            redeem: 'Streak redeem',
+            gift: 'Gift',
+            compensation: 'Compensation',
+            school: 'Back-to-school',
+            trial: 'Trial pack'
+          },
           cachedHint: 'cached {seconds}s ago',
           expiresLabel: 'Expires',
           expiresValue: '{amount} credits · {at}'

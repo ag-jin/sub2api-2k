@@ -1434,6 +1434,20 @@ export interface AccountUsageInfo {
   model_rate_limits?: Record<string, string> | null
   /** codebuddy 定时任务执行记录（最新在前，M10/M9） */
   task_runs?: Array<{ at?: string; task?: string; status?: string; detail?: string }> | null
+  /**
+   * codebuddy **收益流水**（各功能实际领到的积分）。
+   *
+   * 与 credits_ledger 的分工：那个是余额比对式（delta 是推出来的，
+   * "领了又被花掉"时可能完全不产生）；这个是动作式（发分当场记账）。
+   * 排查"点了按钮没收益"时要看这个。
+   */
+  earnings?: {
+    today_credit?: number
+    total_credit?: number
+    entries?: Array<{ at?: string; source?: string; credit?: number; detail?: string }> | null
+    by_source?: Record<string, number> | null
+    daily?: Record<string, number> | null
+  } | null
   /** codebuddy 访问令牌过期时刻 RFC3339 (M2) */
   token_expires_at?: string | null
   source?: 'passive' | 'active'

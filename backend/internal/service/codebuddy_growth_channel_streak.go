@@ -122,6 +122,11 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthStreak(
 			result.RedeemTier = tier
 			result.RedeemCredit = redeem.CreditGranted
 			result.RedeemChances = redeem.ChancesGranted
+			// 收益流水：档位兑换是单笔最大的常规收益（7/14/28 天档）。
+			if s.accountRepo != nil {
+				RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+					codeBuddyEarningRedeem, float64(redeem.CreditGranted), tier)
+			}
 		}
 	}
 
@@ -133,11 +138,19 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthStreak(
 	// 4) 礼包 / 补偿（有则领，无则业务错误 = 正常态）。
 	if credit, err := s.claimCodeBuddyGrowthGift(ctx, account); err == nil {
 		result.GiftCredit = credit
+		if s.accountRepo != nil {
+			RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+				codeBuddyEarningGift, float64(credit), "")
+		}
 	} else if reason, quiet := codeBuddyGrowthQuietReason(err); quiet {
 		result.QuietNotes = append(result.QuietNotes, reason)
 	}
 	if credit, err := s.claimCodeBuddyGrowthCompensation(ctx, account); err == nil {
 		result.CompensationCredit = credit
+		if s.accountRepo != nil {
+			RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+				codeBuddyEarningCompensation, float64(credit), "")
+		}
 	} else if reason, quiet := codeBuddyGrowthQuietReason(err); quiet {
 		result.QuietNotes = append(result.QuietNotes, reason)
 	}

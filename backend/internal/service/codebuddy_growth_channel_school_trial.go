@@ -163,7 +163,7 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthTrial(
 		return result
 	}
 
-	_, err := s.callCodeBuddyGrowth(
+	call, err := s.callCodeBuddyGrowth(
 		ctx, account, http.MethodPost, codebuddy.CodeBuddyTrialPath, map[string]any{},
 	)
 	if err != nil {
@@ -185,5 +185,16 @@ func (s *CodeBuddyAdminService) runCodeBuddyGrowthTrial(
 
 	result.Claimed = true
 	s.markCodeBuddyGrowthLedger(ctx, account, localDay, ledgerTrialClaimed)
+	// 收益流水：trial 是一次性领取（国际版加油包）。上游响应里若带 credit
+	// 就按实记；不带则**不记流水**（RecordCodeBuddyEarning 对 credit<=0 跳过）
+	// ——宁可少一条记录，也不编造金额（编造会让"累计收益"这个数字失去可信度）。
+	if s.accountRepo != nil {
+		var payload struct {
+			Credit float64 `json:"credit"`
+		}
+		_ = codeBuddyGrowthData(call, &payload)
+		RecordCodeBuddyEarning(ctx, s.accountRepo, account,
+			codeBuddyEarningTrial, payload.Credit, "trial")
+	}
 	return result
 }
