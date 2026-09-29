@@ -14,10 +14,12 @@ import (
 //
 // ## 为什么 full 级必须有手动入口
 //
-// 用户裁定的三级分级里，`full` = "仅手动，不得进自动排程"。这句话有两层含义，
-// 少任何一层都不成立：
+// 分级里 full 的语义是"性质上需人担责"。2026-09-22 的政策是"仅手动"；
+// 2026-09-29 用户授权 adopt / night_cat / school 进自动排程（抽奖仍仅手动）。
+// 所以"需人担责"这一类里，现在既有已授权的、也有仅手动的——**手动入口对
+// 两者都必须存在**，理由如下：
 //
-//  1. **不得自动**：调度器只能经 `CodeBuddyGrowthAutoSchedulableChannelKeys()`
+//  1. **不得自动**：调度器只能经 `CodeBuddyGrowthAutoRunnableChannelKeys()`
 //     取通道（full 在类型层面进不来）；
 //  2. **但必须能手动**：授权明确"功能要做"，只是不做自动 tick。
 //     没有手动入口 = 功能事实上不存在。
@@ -32,7 +34,7 @@ type CodeBuddyGrowthChannelNowResult struct {
 	Channel string `json:"channel"`
 	// Tier 该通道的合规级别（回执带上，让人一眼确认自己跑的是什么级别）。
 	Tier string `json:"tier"`
-	// AutoRunnable 该通道是否本可自动跑（false = full 级，仅手动）。
+	// AutoRunnable 该通道是否允许自动跑（性质天然可自动，或已获政策授权）。
 	//
 	// 回执里带上这个字段是刻意的：运维手动跑一个 full 级通道时，
 	// 应该能在返回值里看到"这个动作平时是不会自动跑的"，而不是靠记忆。
@@ -100,8 +102,13 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannelNow(
 			result.Error = detail.Error
 		}
 	case codebuddy.CodeBuddyGrowthChannelSchool:
-		// 只读盘点（点亮环节属 full，本实现不做——见 school 通道文件头）。
-		detail := s.FetchCodeBuddyGrowthSchoolStatus(ctx, account)
+		// 与自动路径**共用同一实现**（`RunCodeBuddyGrowthSchoolNow`）：
+		// 手动端点若只做只读盘点，就会出现"界面点了一下但什么奖都没领"——
+		// 两条路径的实现必须同源，差别只在触发方式（与 executeOnce 同一原则）。
+		//
+		// 需要"只看不领"时用 `FetchCodeBuddyGrowthSchoolStatus`（保留，供排查用），
+		// 但那不是本通道的手动执行语义。
+		detail := s.RunCodeBuddyGrowthSchoolNow(ctx, account, localDay)
 		result.Detail = detail
 		if detail.Error != "" {
 			result.Error = detail.Error
@@ -141,7 +148,8 @@ type CodeBuddyGrowthNightCatResult struct {
 
 // runCodeBuddyGrowthNightCatNow 手动执行夜猫子任务（`black_cat`）。
 //
-// ⚠️ **分级 `full`（仅手动）**：它没有任何"领奖"端点，唯一的动作就是发
+// ⚠️ **性质 `full`**（2026-09-29 起已授权自动，故也会被夜间趟调用）：
+// 它没有任何"领奖"端点，唯一的动作就是发
 // `chat_request_send`（`mode=night`）去**点亮任务**——纯伪造活跃上报语义
 // （参考实现 `task_runner.py:1121-1127`：非夜猫窗口 skip；窗口内最多补 1 次）。
 //
@@ -296,7 +304,7 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAllNow(ctx context.Context) Co
 		summary.Error = "growth service is not configured"
 		return summary
 	}
-	channelKeys := codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()
+	channelKeys := codebuddy.CodeBuddyGrowthAutoRunnableChannelKeys()
 	summary.Channels = channelKeys
 
 	candidates, err := s.ListCodeBuddyGrowthCandidates(ctx, codeBuddyGrowthBatchSize)
@@ -330,7 +338,7 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAllNow(ctx context.Context) Co
 	return summary
 }
 
-// --- 抽奖（full 级，仅手动）---
+// --- 抽奖（full 级，**仍为仅手动**——用户 2026-09-29 明确排除自动）---
 
 // CodeBuddyGrowthLotteryResult 抽奖结果。
 type CodeBuddyGrowthLotteryResult struct {
@@ -346,7 +354,8 @@ type CodeBuddyGrowthLotteryResult struct {
 
 // RunCodeBuddyGrowthLotteryNow 手动抽奖（消耗抽奖次数）。
 //
-// ⚠️ **分级 `full`（仅手动）**：抽奖**不幂等**——每次 `draw` 必须新
+// ⚠️ **性质 `full`，且未获自动授权**（用户 2026-09-29 明确排除）：
+// 抽奖**不幂等**——每次 `draw` 必须新
 // `client_token`（参考实现 `scheduler.go:637` 原文「必须新键（security-relevant）」，
 // 该键用于**确保每次都真抽**），且抽一次消耗一次次数、**不可恢复**。
 // 归 full 的判据是「**执行后不可撤销**」——它并不伪造上报，

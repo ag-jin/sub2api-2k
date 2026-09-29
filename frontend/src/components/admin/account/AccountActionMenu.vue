@@ -51,6 +51,12 @@
               <Icon name="calendar" size="sm" />
               {{ t('admin.accounts.codebuddy.checkin.action') }}
             </button>
+            <!-- 成长链（A6）：打开面板逐通道手动执行 / 跑一轮自动通道。
+                 面板里逐条显示分级与授权依据，让人一眼看清哪些会自动跑。 -->
+            <button v-if="isCodebuddy" @click="$emit('growth', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-violet-600 hover:bg-gray-100 dark:hover:bg-dark-700" data-test="codebuddy-growth">
+              <Icon name="trendingUp" size="sm" />
+              {{ t('admin.accounts.codebuddy.growth.action') }}
+            </button>
             <div v-if="hasRecoverableState" class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
             <button v-if="hasRecoverableState" @click="$emit('recover-state', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="sync" size="sm" />
@@ -84,7 +90,7 @@ const props = defineProps<{
   /** card 口径：直接给定坐标（旧调用方与测试仍可用）。 */
   position?: { top: number; left: number } | null
 }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'growth'])
 const { t } = useI18n()
 const appStore = useAppStore()
 const menuRef = ref<HTMLElement | null>(null)

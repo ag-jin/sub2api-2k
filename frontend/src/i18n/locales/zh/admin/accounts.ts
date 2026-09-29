@@ -374,7 +374,40 @@ export default {
           already: '今日已签到',
           streak: '已连续签到 {days} 天',
           failed: '签到失败，请稍后重试'
-        }      },
+        },
+        growth: {
+          action: '成长任务',
+          title: '成长任务（CodeBuddy）',
+          hint: '手动执行成长链任务。带「已授权自动」标记的通道也会在窗口内自动跑；未授权的只能在这里手动触发。',
+          loading: '加载通道中…',
+          loadFailed: '成长通道加载失败',
+          empty: '没有可用的成长通道',
+          runOne: '执行',
+          runOneRunning: '执行中…',
+          runOneSuccess: '{channel} 执行完成',
+          runOneFailed: '{channel} 执行失败：{error}',
+          runAll: '跑一轮自动通道',
+          runAllRunning: '执行中…',
+          runAllSuccess: '已跑一轮：成功 {succeeded} / 跳过 {skipped} / 失败 {failed}',
+          runAllFailed: '跑一轮失败：{error}',
+          activityRun: '触发活跃上报',
+          activityRunRunning: '上报中…',
+          activityRunSuccess: '活跃上报完成：已报 {reported} / 跳过 {skipped} / 失败 {failed}',
+          activityRunFailed: '活跃上报失败：{error}',
+          tier: {
+            label: '性质',
+            preview: '只读',
+            claim: '幂等领奖',
+            full: '需人担责'
+          },
+          autoRunnable: '自动执行',
+          autoAuthorized: '已授权自动',
+          manualOnly: '仅手动',
+          authorizationHint: '授权依据',
+          rationaleHint: '分级依据',
+          close: '关闭'
+        }
+      },
       cnProviders: {
         accountMode: {
           title: '账号类型',

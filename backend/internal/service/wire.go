@@ -71,46 +71,46 @@ func ProvideCodeBuddyCheckinScheduler(
 	return scheduler
 }
 
-// ProvideCodeBuddyActivityScheduler 构造活跃上报执行器（**不启动自动排程**）。
+// ProvideCodeBuddyActivityScheduler 构造并**启动**活跃上报执行器。
 //
-// # 为什么这里不调 Start()
+// # 授权沿革（2026-09-29 恢复自动排程）
 //
-// 用户 2026-09-22 裁定的三级合规分级把**活跃上报（/v2/report）归为 `full` 级
-// = 仅手动，不得进任何自动排程**。依据：它复刻官方客户端 `chat_request_send`
-// 事件形状，靠伪造对话活跃过 `chat_5` 门槛。授权记录与分级表见
-// `/Volumes/数据盘/网站/中转站/.scratch/codebuddy-impl/_briefs/00-shared.md`
-// 的「用户授权记录」节。
+// 用户 2026-09-22 的裁定曾把活跃上报归为 `full` 级 = 仅手动，本 provider
+// 当时**刻意不调 Start()**。2026-09-29 用户重新裁定「开活跃上报+领养/夜猫/开学季」，
+// 授权它进自动排程——所以这里恢复 `Start()`。
 //
-// 授权已给（功能要做），但授权**不含**"把它放进自动排程"——团队负责人
-// 2026-09-22 明确裁决走保守方案：能力保留、自动 tick 移除。
+// 性质没有变：它仍在复刻官方客户端 `chat_request_send` 事件形状以过 `chat_5` 门槛。
+// 变的是**政策**，且这是一个可追溯的显式决定（不是"顺手加回去的"）。
 //
-// 所以这里的语义是"构造一个**可被手动调用**的执行器"：
-//   - 不启动 cron → 进程起来后不会有任何自动上报；
-//   - 手动入口是 `RunActivityNow`（管理端点 / 运维脚本调用）；
-//   - 想恢复自动排程，必须先改它的分级并重走裁定——
-//     `TestCodeBuddyActivityIsNeverAutoScheduled` 会拦住顺手加回的 `Start()`。
+// 自动执行仍受三道门约束，其中"默认关闭"意味着**开启前一个请求都不发**：
+//   - 平台功能开关（`codebuddy` / `activity`，默认 false）→ 需管理员在面板显式开启；
+//   - 窗口（默认 10:00–11:00 CST）；
+//   - 当日去重（进程内 + 账号级台账双重，重启不会重复上报）。
 //
 // accountRepo 用于按候选 ID 取回完整账号——候选列表只带 ID/名字，而上报需要
-// 凭据（access_token / uid）。
+// 凭据（access_token / uid）与账号级台账（Account.Extra）。
 func ProvideCodeBuddyActivityScheduler(
 	codeBuddyAdminService *CodeBuddyAdminService,
 	accountRepo AccountRepository,
 	settingService *SettingService,
 ) *CodeBuddyActivityScheduler {
-	return NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
+	scheduler := NewCodeBuddyActivityScheduler(codeBuddyAdminService, accountRepo, settingService)
+	scheduler.Start()
+	return scheduler
 }
 
 // ProvideCodeBuddyGrowthScheduler 构造并启动成长链调度器（A6 批 P5）。
 //
-// # 它与活跃上报的关键区别：**它可以自动，但只能自动一部分**
+// # 它能自动跑哪些通道：由**性质 + 授权**共同决定
 //
-// 成长链里 `preview` / `claim` 级通道（旅行、连登、礼包、trial）是幂等领奖，
-// 按用户裁定的三级分级**可以自动**；而 `full` 级（领养 / 夜猫子 / 开学季点亮）
-// 含伪造活跃上报语义，**仅手动**。
+// 成长链的通道集合不是靠"开发者记得别加"，而是靠调度器取通道列表的
+// **唯一入口**：`codebuddy.CodeBuddyGrowthAutoRunnableChannelKeys()` 按
+// `CodeBuddyGrowthChannelSpec.AutoRunnable()` 过滤——
+// 性质天然可自动的（preview/claim）直接放行；性质需人担责的（full）
+// 只有 `AutoAuthorized` 显式置位（且写明依据）才会被放行。
 //
-// 这条边界不是靠"开发者记得别加"，而是靠调度器取通道列表的**唯一入口**：
-// `codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()` 按
-// `GrowthTier.AutoSchedulable()` 过滤——full 级在类型层面进不来。
+// 当前 full 级里：adopt / night_cat / school 已授权（2026-09-29 用户裁定），
+// **lottery 未授权**（一次抽光全部次数、不可恢复）——它进不了这个列表。
 // 守它的是 `TestCodeBuddyGrowthSchedulerNeverRunsFullTierChannels`。
 //
 // 所以这里**可以**调 Start()（与活跃上报不同），因为它的通道集合已被分级约束。

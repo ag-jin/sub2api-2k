@@ -181,6 +181,11 @@ func (s *CodeBuddyAdminService) codeBuddyActivityStreakEndpoint(account *Account
 // activityEndpointBase 取端点 base：测试注入优先，否则按 realm 走传入的解析器。
 // 抽出来是为了让"哪个域"这件事可单测——两个 endpoint 函数的**差异只在解析器参数**，
 // 混淆两者是本模块最容易犯且最难发现的错（testBaseURL 会同时覆盖两边）。
+//
+// ⚠️ 两个注入缝都要认：`testBaseURL`（A5 自己的）与 `codeBuddyGrowthTestBase`
+// （成长链的）。理由：成长链的 adopt 前置会**调用本模块的上报函数**
+// （见 `ensureCodeBuddyAdoptPrecondition`），而成长链测试只设后一个缝——
+// 漏认它会让那些用例打到真实上游（实测表现为用例耗时数秒 + 断言失败）。
 func activityEndpointBase(
 	s *CodeBuddyAdminService,
 	account *Account,
@@ -188,6 +193,9 @@ func activityEndpointBase(
 ) string {
 	if s != nil && s.testBaseURL != "" {
 		return strings.TrimRight(s.testBaseURL, "/")
+	}
+	if codeBuddyGrowthTestBase != "" {
+		return strings.TrimRight(codeBuddyGrowthTestBase, "/")
 	}
 	return strings.TrimRight(resolve(account), "/")
 }

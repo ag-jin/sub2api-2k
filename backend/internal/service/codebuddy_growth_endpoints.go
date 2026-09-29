@@ -226,3 +226,17 @@ func codeBuddyGrowthDomainBase(domain codeBuddyEndpointDomain, account *Account)
 		return ""
 	}
 }
+
+// codeBuddyReportEndpointBase 解析 `/v2/report` 上报类端点的 base（按域）。
+//
+// ⚠️ 这个函数存在的理由：上报路径有**多个入口**（A5 的对话活跃上报、
+// 开学季的 mini/桌面/专家上报），它们各自的 host 历史上是各自拼的——
+// 结果只有 A5 那条走 `testBaseURL` 注入缝，新加的开学季上报直接用了生产 base。
+// 后果在测试里表现为"请求打到真实上游"（实测：用例耗时 7.5s 且断言失败、
+// CI 里会真发外部请求）。
+//
+// 所以统一收口到这里，并**优先**认 `codeBuddyGrowthTestBase`（成长链/上报
+// 共用同一个注入缝）——所有上报入口都必须经它取 host。
+func codeBuddyReportEndpointBase(domain codeBuddyEndpointDomain, account *Account) string {
+	return codeBuddyGrowthDomainBase(domain, account)
+}

@@ -70,6 +70,8 @@ type codeBuddyActivityAccountRepoStub struct {
 	AccountRepository
 	accounts map[int64]*Account
 	loadErr  error
+	// extraUpdates 记录台账写入（当日去重用例断言"报成功即记账"）。
+	extraUpdates []map[string]any
 }
 
 func (r *codeBuddyActivityAccountRepoStub) GetByID(_ context.Context, id int64) (*Account, error) {
@@ -82,13 +84,37 @@ func (r *codeBuddyActivityAccountRepoStub) GetByID(_ context.Context, id int64) 
 	return nil, ErrAccountNotFound
 }
 
+// UpdateExtra 记录台账写入。
+//
+// 必须实现：调度器在报成功后会写账号级当日台账（授权自动后的去重语义），
+// 嵌入的 nil `AccountRepository` 会让该调用 panic（不是静默失败）。
+// 这里只记录不回写——被测代码已就地更新了内存里的 `Account.Extra`，
+// 所以同一进程内后续步骤能读到新值。
+func (r *codeBuddyActivityAccountRepoStub) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
+	r.extraUpdates = append(r.extraUpdates, updates)
+	return nil
+}
+
 // codeBuddyActivitySchedulerTestEnv 可推进时钟的调度器测试环境。
 type codeBuddyActivitySchedulerTestEnv struct {
 	scheduler *CodeBuddyActivityScheduler
 	runner    *codeBuddyActivityRunnerStub
 	repo      *platformFeatureTestRepo
-	zone      *time.Location
-	current   time.Time
+	// accountRepo 暴露给用例：授权自动后新增了账号级台账写入，
+	// 用例需要直接读回"是否落库"与调用方的账号对象。
+	accountRepo *codeBuddyActivityAccountRepoStub
+	zone        *time.Location
+	current     time.Time
+}
+
+// account 取注入的账号（用例预置/读回 Account.Extra 台账用）。
+func (e *codeBuddyActivitySchedulerTestEnv) account(id int64) *Account {
+	return e.accountRepo.accounts[id]
+}
+
+// extraUpdates 返回经仓储落库的台账写入（断言"真的落库"而不只改内存）。
+func (e *codeBuddyActivitySchedulerTestEnv) extraUpdates() []map[string]any {
+	return e.accountRepo.extraUpdates
 }
 
 func newCodeBuddyActivitySchedulerTestEnv(t *testing.T, featuresJSON string, accounts ...*Account) *codeBuddyActivitySchedulerTestEnv {
@@ -109,10 +135,11 @@ func newCodeBuddyActivitySchedulerTestEnv(t *testing.T, featuresJSON string, acc
 	scheduler.accountDelay = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	env := &codeBuddyActivitySchedulerTestEnv{
-		scheduler: scheduler,
-		runner:    runner,
-		repo:      repo,
-		zone:      codeBuddyTimeZone,
+		scheduler:   scheduler,
+		runner:      runner,
+		repo:        repo,
+		accountRepo: accountRepo,
+		zone:        codeBuddyTimeZone,
 	}
 	scheduler.clock = func() time.Time { return env.current }
 	return env
@@ -359,42 +386,50 @@ func TestCodeBuddyActivitySchedulerHealthySelfCheckNotCountedAsFailure(t *testin
 	require.Equal(t, 3, env.runner.result.StreakDays)
 }
 
-// --- 合规守门：活跃上报是 full 级，不得进自动排程 ---
+// --- 合规守门：活跃上报性质 full，但已获授权自动执行 ---
 
-// Scenario：**wire 的 provider 不得启动活跃上报的自动 tick**。
+// Scenario：**wire 的 provider 必须启动活跃上报的自动 tick**（用户 2026-09-29 授权）。
 //
-// 这是用户 2026-09-22 裁定的合规边界：活跃上报复刻官方客户端
-// `chat_request_send` 事件形状、靠伪造对话活跃过 `chat_5` 门槛，属 `full` 级
-// = **仅手动，不得进任何自动排程**（依据见 00-shared.md 的「用户授权记录」节）。
+// 政策沿革：2026-09-22 用户裁定 full = 仅手动，当时本测试断言"provider 不得
+// 调用 `.Start()`"；2026-09-29 用户重新裁定「开活跃上报+领养/夜猫/开学季」，
+// 授权它进自动排程。所以断言**反转**为"必须启动"。
 //
-// 为什么要在**源码层面**断言而不是只测行为：行为测试需要真的把进程跑起来才
-// 能发现"它又开始自动跑了"，而这个改动通常是某人顺手加回一行 `scheduler.Start()`
-// ——那种改动不会让任何既有测试变红。这里直接盯住 provider 函数体。
-func TestCodeBuddyActivityIsNeverAutoScheduled(t *testing.T) {
+// ⚠️ 反转不等于删除守门：这条测试现在的职责是防止**无声地改回仅手动**——
+// 那同样是政策变更，也该有明确的用户裁定，而不是某次重构顺手删掉一行
+// `scheduler.Start()`。所以两个方向都值得钉住，只是当前政策是"要自动"。
+//
+// 为什么在**源码层面**断言而不是只测行为：行为测试要真跑起进程才能发现
+// "它不跑了"，而这个改动通常只是删/加一行 Start()——不会让任何行为测试变红。
+func TestCodeBuddyActivityIsAutoScheduledAfterAuthorization(t *testing.T) {
 	source, err := os.ReadFile("wire.go")
 	require.NoError(t, err, "读不到 wire.go，测试失效（不是通过）")
 
 	body, ok := extractFuncBody(string(source), "ProvideCodeBuddyActivityScheduler")
 	require.True(t, ok, "wire.go 里找不到 ProvideCodeBuddyActivityScheduler；若已改名请同步本测试")
 
-	require.NotContains(t, body, ".Start()",
-		"活跃上报是 full 级（仅手动），provider 不得启动自动 tick —— 见文件头合规说明")
+	require.Contains(t, body, ".Start()",
+		"活跃上报已获用户 2026-09-29 授权自动执行，provider 应启动自动 tick；"+
+			"若要改回仅手动，必须先取得用户裁定并同步本测试与文件头注释")
 	require.Contains(t, body, "NewCodeBuddyActivityScheduler(",
-		"provider 仍应构造执行器（保留手动调用能力）")
+		"provider 仍应构造执行器")
 }
 
-// Scenario：`Start` 的注释必须写明"仅手动 + 授权出处"，防止后来者不知情地加回。
+// Scenario：`Start` 与文件头的注释必须写明**授权沿革与依据**，防止后来者
+// 既不知道它现在为何自动、也不知道改回手动要走什么流程。
 func TestCodeBuddyActivityStartCarriesComplianceWarning(t *testing.T) {
 	source, err := os.ReadFile("codebuddy_activity_scheduler.go")
 	require.NoError(t, err)
 	text := string(source)
 
-	require.Contains(t, text, "00-shared.md",
-		"必须写明授权/裁定的出处文件，便于后来者核实")
-	require.Contains(t, text, "仅手动",
-		"必须写明 full 级 = 仅手动")
+	require.Contains(t, text, "2026-09-29",
+		"必须写明**当前授权**的日期（授权自动执行的可追溯性）")
+	require.Contains(t, text, "2026-09-22",
+		"必须写明上一次裁定（full=仅手动）的日期，让读者看到政策沿革")
 	require.Contains(t, text, "RunActivityNow",
-		"必须指明唯一的生产入口")
+		"必须指明手动入口")
+	// 性质说明不得因授权而消失：自动跑时它仍在生成伪造记录。
+	require.Contains(t, text, "伪造",
+		"必须如实写明本通道在伪造活跃上报（性质不因授权改变）")
 }
 
 // extractFuncBody 取某个顶层函数的函数体（从签名到下一个顶层 func / 文件尾）。

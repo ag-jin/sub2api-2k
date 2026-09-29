@@ -171,7 +171,40 @@ export default {
           already: 'Already checked in today',
           streak: '{days}-day streak',
           failed: 'Check-in failed. Please try again later.'
-        }      },
+        },
+        growth: {
+          action: 'Growth tasks',
+          title: 'Growth tasks (CodeBuddy)',
+          hint: 'Run growth-chain tasks manually. Channels marked "auto-authorized" also run automatically inside their window; unauthorized ones are manual-only.',
+          loading: 'Loading channels…',
+          loadFailed: 'Failed to load growth channels',
+          empty: 'No growth channels available',
+          runOne: 'Run',
+          runOneRunning: 'Running…',
+          runOneSuccess: '{channel} completed',
+          runOneFailed: '{channel} failed: {error}',
+          runAll: 'Run auto channels once',
+          runAllRunning: 'Running…',
+          runAllSuccess: 'One pass done: {succeeded} succeeded / {skipped} skipped / {failed} failed',
+          runAllFailed: 'Run failed: {error}',
+          activityRun: 'Trigger activity report',
+          activityRunRunning: 'Reporting…',
+          activityRunSuccess: 'Activity report done: {reported} reported / {skipped} skipped / {failed} failed',
+          activityRunFailed: 'Activity report failed: {error}',
+          tier: {
+            label: 'Nature',
+            preview: 'read-only',
+            claim: 'idempotent claim',
+            full: 'needs accountability'
+          },
+          autoRunnable: 'auto',
+          autoAuthorized: 'auto-authorized',
+          manualOnly: 'manual only',
+          authorizationHint: 'Authorization basis',
+          rationaleHint: 'Tier basis',
+          close: 'Close'
+        }
+      },
       cnProviders: {
         accountMode: {
           title: 'Account Type',

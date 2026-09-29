@@ -63,25 +63,28 @@ func (s *CodeBuddyAdminService) ListCodeBuddyActivityCandidates(ctx context.Cont
 	return candidates, nil
 }
 
-// 活跃上报执行器（A5 批 5.2；A6 批 P5 按合规裁定改为**仅手动**）。
+// 活跃上报执行器（A5 批 5.2；A6 批 P5 改为仅手动；**2026-09-29 恢复自动排程**）。
 //
-// # ⚠️ 合规分级：`full` 级 = 仅手动，不得进自动排程
+// # 合规分级：性质 `full`，但**已获用户明确授权**自动执行
 //
-// 用户 2026-09-22 裁定的三级分级把活跃上报归为 **`full`**：
-// 它复刻官方客户端 `chat_request_send` 事件形状、同一 conversationId 内 N 条、
+// 活跃上报复刻官方客户端 `chat_request_send` 事件形状、同一 conversationId 内 N 条、
 // 条间 1.5s——这些行为的目的就是**伪造对话活跃以过 `chat_5` 门槛**。
-// 授权记录见 `/Volumes/数据盘/网站/中转站/.scratch/codebuddy-impl/_briefs/00-shared.md`
-// 的「用户授权记录」节。
+// 按动作性质它属 `full` 级（性质不因授权而改变：自动跑时仍在生成伪造记录）。
 //
-// **授权了"做这个功能"，不等于授权"把它自动跑"**。所以：
-//   - `Start()` 仍在（能力保留、测试可用），但 **wire 不再调用它**，
-//     进程启动后不会有任何自动上报；
-//   - 唯一入口是 `RunActivityNow`（管理端点 / 运维脚本手动触发）；
-//   - `TestCodeBuddyActivityIsNeverAutoScheduled` 断言 wire 的 provider 不启动它。
+// 政策沿革：
+//   - 2026-09-22 用户裁定 full = 仅手动，wire 不调用 `Start()`；
+//   - **2026-09-29 用户重新裁定**「开活跃上报+领养/夜猫/开学季」，
+//     授权活跃上报进自动排程（抽奖明确排除）。
 //
-// 若日后要恢复自动：必须先改分级并重走用户裁定，而不是把 `Start()` 加回去。
+// 授权依据见 `platform/codebuddy/growth_tasks.go` 各通道的 `AutoAuthorization`；
+// 活跃上报本身不在 growth 通道注册表里（它不是成长链通道），
+// 它的授权记录在平台功能注册（`codebuddy_platform_features.go`）与本注释。
 //
-// # 与签到调度器的差异（保留说明，供恢复自动时参考）
+// ⚠️ 风控口径仍然成立（这是授权自动执行后**更要**守的一条）：
+// **每号每天 1 次**即可，不做多时点高频上报。所以当日去重从进程内
+// `lastRunDate` 升级为**账号级台账**——见 `runOnce` 的说明。
+//
+// # 与签到调度器的差异
 //
 // 形态照抄 A4 签到调度器（窗口内一次 + 当日去重）。差异在时间语义：
 // 签到是用户配置的**时间段**；活跃上报参考实现是**单时点**（`activity_hours: [10]`），
@@ -89,7 +92,6 @@ func (s *CodeBuddyAdminService) ListCodeBuddyActivityCandidates(ctx context.Cont
 
 const (
 	// codeBuddyActivityTickSpec 每分钟一次（与签到同款 5 字段）。
-	// **仅在显式调用 Start() 时才会用到**（当前 wire 不调用）。
 	codeBuddyActivityTickSpec = "* * * * *"
 
 	// codeBuddyActivityBatchSize 单轮最多处理的账号数。
@@ -174,27 +176,31 @@ func NewCodeBuddyActivityScheduler(
 	}
 }
 
-// RunActivityNow 手动执行一轮活跃上报（**唯一的生产入口**）。
+// RunActivityNow 手动执行一轮活跃上报（管理端点入口）。
 //
 // 绕开窗口/开关判定：手动触发意味着"人明确要求现在就报"，不该再被
 // "当前不在 10 点档"或"平台功能开关关着"挡住——那会让管理员点了没反应、
 // 且找不到原因。仍保留的参数是 `count`（单账号条数）与返回汇总。
 //
-// 分级：`full` 级（含伪造活跃上报语义），**只允许从这里手动调用**，
-// 不得被任何自动排程依赖。
+// 同样绕开**账号级当日去重**（localDay 传空）：同一考量——人点了就该真的发出去。
+// 代价是可能手动多发一轮，由运维自己掌握；自动路径仍严格按天去重。
+//
+// 分级：性质 `full`，已获用户授权（2026-09-29）。自动路径见 `tick`。
 func (s *CodeBuddyActivityScheduler) RunActivityNow(ctx context.Context) CodeBuddyActivityRunSummary {
 	if s == nil || s.runner == nil {
 		return CodeBuddyActivityRunSummary{Error: "activity scheduler is not configured"}
 	}
-	return s.executeOnce(ctx)
+	return s.executeOnce(ctx, "")
 }
 
-// Start 启动每分钟 tick。
+// Start 启动每分钟 tick（自动排程）。
 //
-// ⚠️ **当前 wire 不调用它**：活跃上报是 `full` 级，按用户裁定仅手动
-// （见文件头注释）。保留此方法是为了能力完整与测试可用；生产路径请用
-// `RunActivityNow`。若你正打算把它加回 wire 的 provider——先去看文件头的
-// 合规说明，以及 `TestCodeBuddyActivityIsNeverAutoScheduled`。
+// 用户 2026-09-29 裁定授权活跃上报进自动排程，wire 的 provider 已调用本方法。
+// 执行仍受三道门约束：平台功能开关（默认关闭）→ 窗口 → 当日去重
+// （进程内 + 账号级台账双重）。
+//
+// 若你正打算**移除**这个自动排程，请先确认用户裁定已变——活跃上报的性质是
+// `full`（含伪造活跃上报语义），政策上的放开是显式决定，不该被无声改回。
 func (s *CodeBuddyActivityScheduler) Start() {
 	if s == nil || s.runner == nil {
 		return
@@ -279,11 +285,20 @@ func (s *CodeBuddyActivityScheduler) tick() {
 	s.runOnce(localDate, start, end)
 }
 
-// runOnce 遍历候选账号逐号上报（自动排程入口；当前 wire 不调用）。
+// runOnce 遍历候选账号逐号上报（自动排程入口）。
 //
 // 单号失败**不影响其他号**（参考实现同口径：失败只记 WARN 并继续下号）。
+//
+// ## 账号级当日去重（2026-09-29 授权自动后新增）
+//
+// 进程内 `lastRunDate` 只保证"本进程当天只跑一轮"。自动排程下这不够：
+// 进程在窗口内重启，新进程的 `lastRunDate` 为空，当天会对每个账号**再报一轮**。
+// 而风控口径要求"每号每天 1 次"，多报是实打实的风险。
+//
+// 所以这里在**账号维度**再过一道：每个账号当天已报过（Account.Extra 台账）
+// 就跳过。判据与写入都走成长链既有台账通道，不另造一套。
 func (s *CodeBuddyActivityScheduler) runOnce(localDate string, start, end TimeOfDay) {
-	summary := s.executeOnce(context.Background())
+	summary := s.executeOnce(context.Background(), localDate)
 	// ⚠️ 有自检异常或失败时**降到 WARN**：`reported` 只表示"请求发出去了"，
 	// 而自检异常恰恰是"发出去了但可能被上游静默丢弃"的信号（坑 1）。
 	// 一律 Info 会让运维在日志里看到一条"成功"汇总，把可疑轮次当正常。
@@ -308,7 +323,13 @@ func (s *CodeBuddyActivityScheduler) runOnce(localDate string, start, end TimeOf
 // 抽成一处是刻意的：手动路径（`RunActivityNow`）与自动路径若各写一份遍历，
 // 迟早会在"跳过判定 / 单号失败是否继续 / 自检计数"上漂移——
 // 而这两条路径的差别**只在触发方式**，不在执行语义。
-func (s *CodeBuddyActivityScheduler) executeOnce(parent context.Context) CodeBuddyActivityRunSummary {
+//
+// localDay 为空表示"不做账号级当日去重"（手动路径：人明确要求现在就报，
+// 与 `RunActivityNow` 绕开窗口/开关同一考量——被当日台账挡住会让人点了没反应）。
+func (s *CodeBuddyActivityScheduler) executeOnce(
+	parent context.Context,
+	localDay string,
+) CodeBuddyActivityRunSummary {
 	ctx, cancel := context.WithTimeout(parent, codeBuddyActivityRunTimeout)
 	defer cancel()
 
@@ -339,13 +360,6 @@ func (s *CodeBuddyActivityScheduler) executeOnce(parent context.Context) CodeBud
 			skipped++
 			continue
 		}
-		if !first {
-			if err := s.accountDelay(ctx, codeBuddyActivityAccountDelay); err != nil {
-				slog.Warn("codebuddy_activity.cancelled_between_accounts", "error", err)
-				break
-			}
-		}
-		first = false
 
 		account, loadErr := s.accountRepo.GetByID(ctx, candidate.AccountID)
 		if loadErr != nil || account == nil {
@@ -354,6 +368,22 @@ func (s *CodeBuddyActivityScheduler) executeOnce(parent context.Context) CodeBud
 				"account_id", candidate.AccountID, "error", loadErr)
 			continue
 		}
+
+		// 账号级当日去重：当天已报过就跳过（进程重启也挡得住）。
+		// 放在取账号**之后**：判据在 Account.Extra 上，必须先拿到账号。
+		if localDay != "" && codeBuddyGrowthLedgerToday(account, ledgerActivity, localDay) {
+			skipped++
+			continue
+		}
+
+		if !first {
+			if err := s.accountDelay(ctx, codeBuddyActivityAccountDelay); err != nil {
+				slog.Warn("codebuddy_activity.cancelled_between_accounts", "error", err)
+				break
+			}
+		}
+		first = false
+
 		result := s.runner.ReportCodeBuddyActivity(ctx, account, s.reportCount)
 		if result.Err != nil {
 			// 单号失败：记 WARN 继续下号（不让一个坏号拖累整轮）。
@@ -367,6 +397,12 @@ func (s *CodeBuddyActivityScheduler) executeOnce(parent context.Context) CodeBud
 		reported++
 		if result.SelfCheckFailed {
 			selfCheckFailed++
+		}
+		// 报成功即记当日台账（乐观占位：不因落库失败回滚内存值，
+		// 与成长链台账同语义）。自检可疑**不**阻止记账——请求确实发出去了，
+		// 再发一轮只会加重风控风险，该由运维按 WARN 去查。
+		if localDay != "" {
+			markCodeBuddyLedgerEntries(ctx, s.accountRepo, account, localDay, ledgerActivity)
 		}
 	}
 

@@ -113,10 +113,42 @@ func (s *CodeBuddyAdminService) markCodeBuddyGrowthLedger(
 		account.Extra[key] = localDay
 		updates[key] = localDay
 	}
-	if s == nil || s.accountRepo == nil {
+	if s == nil {
+		markCodeBuddyLedgerEntries(ctx, nil, account, localDay, names...)
 		return
 	}
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+	markCodeBuddyLedgerEntries(ctx, s.accountRepo, account, localDay, names...)
+}
+
+// markCodeBuddyLedgerEntries 台账写入的**共享实现**（service 方法与调度器共用）。
+//
+// 抽成自由函数是因为调用方有两类：`CodeBuddyAdminService`（成长链各通道）
+// 与 `CodeBuddyActivityScheduler`（活跃上报的当日去重）。后者只持有
+// `AccountRepository`，拿不到 AdminService——若各写一份，
+// "内存更新 + 乐观占位"这套语义迟早只在一边正确。
+func markCodeBuddyLedgerEntries(
+	ctx context.Context,
+	repo AccountRepository,
+	account *Account,
+	localDay string,
+	names ...string,
+) {
+	if account == nil || len(names) == 0 {
+		return
+	}
+	updates := make(map[string]any, len(names))
+	for _, name := range names {
+		key := codeBuddyGrowthLedgerKey(name)
+		if account.Extra == nil {
+			account.Extra = map[string]any{}
+		}
+		account.Extra[key] = localDay
+		updates[key] = localDay
+	}
+	if repo == nil {
+		return
+	}
+	if err := repo.UpdateExtra(ctx, account.ID, updates); err != nil {
 		slog.Warn("codebuddy_growth.ledger_write_failed",
 			"account_id", account.ID,
 			"keys", strings.Join(names, ","),
@@ -137,10 +169,18 @@ const (
 	ledgerStreakClaimed = "streak_claimed_date"
 	// ledgerMakeupUse 当日已用过补签卡。
 	ledgerMakeupUse = "makeup_use_date"
-	// ledgerNightCat 当日已跑过夜猫子（full 级，仅手动）。
+	// ledgerNightCat 当日已跑过夜猫子（full 级，**已授权自动**）。
 	ledgerNightCat = "night_cat_date"
-	// ledgerSchool 当日已跑过开学季（full 级，仅手动）。
+	// ledgerSchool 当日已跑过开学季（full 级，**已授权自动**）。
 	ledgerSchool = "school_date"
+	// ledgerActivity 当日已为账号发过活跃上报。
+	//
+	// ⚠️ 这是活跃上报**授权自动执行后**新增的一项（2026-09-29）：原实现用进程内
+	// `lastRunDate` 做当日去重，那在"仅手动"时够用（人不会一天点两次），
+	// 但自动排程下**重启即失效**——进程重启后当天会再报一轮，
+	// 而风控口径明确要求"每号每天 1 次即可"。
+	// 落账号级台账后，重启不会重复上报。
+	ledgerActivity = "activity_report_date"
 	// ledgerSchoolLastRun 开学季最近一次运行结果（"offline:<date>" 表示当天识别到活动下线）。
 	//
 	// 为什么单独一项：识别到下线的意义是"**今天别再试了**"，而不是"跑过了"。

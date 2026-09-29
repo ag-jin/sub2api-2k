@@ -20,13 +20,16 @@ var errCodeBuddyGrowthRepoUnavailable = infraerrors.InternalServer(
 //
 // 本函数**只按传入的 channelKeys 执行**，不自己做分级判断——
 // 过滤发生在调用方：自动排程用
-// `codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()`（已排除 full），
+// `codebuddy.CodeBuddyGrowthAutoRunnableChannelKeys()`（已按性质+授权过滤），
 // 手动端点则显式点名要跑哪个通道。
 //
 // 但此处仍有一道**兜底防线**：逐个 key 校验它是否真的已注册
 // （`CodeBuddyGrowthChannelSpecByKey`）——未注册的 key 直接跳过并告警。
 // 这道防线防的是"调用方拼错通道名/传了未注册的键"，那种情况下静默不执行
 // 比报错安全（不会误跑一个没声明过分级的动作）。
+//
+// 第二道兜底见下方 `AutoRunnable()` 检查：未获授权自动的 full 通道
+// （当前只有 lottery）即便被误传进来也不会执行。
 
 // CodeBuddyGrowthChannelRunResult 单通道的执行结果（供汇总与端点回执）。
 type CodeBuddyGrowthChannelRunResult struct {
@@ -77,12 +80,13 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannels(
 			slog.Warn("codebuddy_growth.unknown_channel", "account_id", account.ID, "channel", key)
 			continue
 		}
-		// full 级通道**不进这个函数**：它只能走手动单通道入口
-		// （`RunCodeBuddyGrowthChannelNow`）。这里判在**执行之前**而不是放进 switch 的
+		// 不允许自动执行的通道**不进这个函数**：它只能走手动单通道入口
+		// （`RunCodeBuddyGrowthChannelNow`）。当前只有 lottery 落在这里
+		// （full 级且未获授权）。这里判在**执行之前**而不是放进 switch 的
 		// default 分支，是为了让它同时参与下方"有没有可执行通道"的计数——
-		// 否则传入 pure-full 的 keys 会被算成"有东西可跑"，
+		// 否则传入纯未授权通道的 keys 会被算成"有东西可跑"，
 		// 从而把"其实什么都没跑"静默报成成功。
-		if !spec.Tier.AutoSchedulable() {
+		if !spec.AutoRunnable() {
 			slog.Warn("codebuddy_growth.channel_not_auto_runnable",
 				"account_id", account.ID, "channel", spec.Key, "tier", spec.Tier.String())
 			continue
@@ -117,9 +121,32 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannels(
 			if detail.Error != "" {
 				result.Error = detail.Error
 			}
+		case codebuddy.CodeBuddyGrowthChannelAdopt:
+			// full 级（已授权自动）。前置 chat_5 满足方式见下方注释——
+			// 它不依赖"活跃上报通道在同批中先跑"（通道之间无隐式顺序契约）。
+			detail := s.RunCodeBuddyGrowthAdoptNow(ctx, account, localDay)
+			result.Detail = detail
+			if detail.Error != "" {
+				result.Error = detail.Error
+			}
+		case codebuddy.CodeBuddyGrowthChannelNightCat:
+			// full 级（已授权自动）。非夜猫窗口时自身返回 skip（不算失败），
+			// 所以放在日间批次里跑是安全的——窗口判定在通道内部。
+			detail := s.runCodeBuddyGrowthNightCatNow(ctx, account, localDay)
+			result.Detail = detail
+			if detail.Error != "" {
+				result.Error = detail.Error
+			}
+		case codebuddy.CodeBuddyGrowthChannelSchool:
+			// full 级（已授权自动）。活动下线时自身返回离线快照（不算失败）。
+			detail := s.RunCodeBuddyGrowthSchoolNow(ctx, account, localDay)
+			result.Detail = detail
+			if detail.Error != "" {
+				result.Error = detail.Error
+			}
 		default:
-			// 未知的 claim/preview 级通道（注册了但这里没接分支）：
-			// 属编程错误，告警并跳过。full 级已在循环开头被拦掉，到不了这里。
+			// 未知的已授权通道（注册了但这里没接分支）：
+			// 属编程错误，告警并跳过。未授权通道已在循环开头被拦掉，到不了这里。
 			slog.Warn("codebuddy_growth.channel_not_implemented",
 				"account_id", account.ID, "channel", spec.Key, "tier", spec.Tier.String())
 			continue

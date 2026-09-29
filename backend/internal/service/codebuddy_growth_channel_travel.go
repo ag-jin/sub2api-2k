@@ -17,7 +17,7 @@ import (
 //
 //   - `travel_status`（查状态）      → `preview`，可自动，只读
 //   - `travel_run`（派出 + 到站领奖） → `claim`，  可自动，上游幂等
-//   - `adopt`（领养 buddy/first）    → `full`，   **仅手动**
+//   - `adopt`（领养 buddy/first）    → `full`，   **已授权自动**（2026-09-29）
 //
 // 为什么领养单独是 full：它的前置 `chat_5` 只能靠伪造活跃上报满足，且到达门槛后
 // **直接送 300 分**——"猫会自己出现"不是真实发生的事。所以它必须走手动入口
@@ -190,7 +190,7 @@ func (s *CodeBuddyAdminService) claimCodeBuddyTravel(
 	return payload.RewardCredit, nil
 }
 
-// --- 领养（full 级，仅手动）---
+// --- 领养（full 级，2026-09-29 起已授权自动）---
 
 // CodeBuddyGrowthAdoptResult 领养结果。
 type CodeBuddyGrowthAdoptResult struct {
@@ -208,15 +208,28 @@ type CodeBuddyGrowthAdoptResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// RunCodeBuddyGrowthAdoptNow 手动执行领养（buddy/first）。
+// RunCodeBuddyGrowthAdoptNow 执行领养（buddy/first）。手动端点与自动排程共用。
 //
-// ⚠️ **分级 `full`（仅手动）**：领养的前置 `chat_5` 只能靠伪造对话活跃满足，
-// 且达标后直接送 300 分。**不得**被任何自动排程调用——
-// 唯一合法入口是管理端点（人手触发）。
+// ⚠️ **性质 `full`**：领养的前置 `chat_5` 只能靠伪造对话活跃满足，
+// 且达标后直接送 300 分。
+// **用户 2026-09-29 授权本通道进自动排程**（见 channel spec 的 AutoAuthorization），
+// 所以它现在会被日间趟调用——但"被授权自动"不等于性质变了：
+// 自动跑时它同样会先生成伪造活跃记录来满足前置（见下方自查前置）。
 //
 // 流程：查猫档案（有猫则跳过）→ 同意协议（幂等）→ 领养。
-// 门槛未达时上游回 HTTP 400 + `first_buddy task not completed yet`，
-// 属**预期行为**（返回 ThresholdNotMet=true，不算错误、不重试）。
+// 门槛未达时上游回 HTTP 400 + `first_buddy task not completed yet`——
+// **这不是失败**，而是"前置没刷满"。处理方式见下方**自查前置**。
+//
+// # 自查前置（2026-09-29 新增，自动排程的必要条件）
+//
+// 自动排程下不能假设"活跃上报通道已经先跑过了"：两条链路各有各的窗口与当日去重，
+// 谁先跑没有保证。若领养只依赖外部顺序，它会在多数账号上永远撞门槛。
+//
+// 所以门槛未达时本函数**自己补一轮上报**再重试一次：满足 chat_5 需要
+// "同一 conversationId 内 5 条对话"，`ReportCodeBuddyActivity` 做的正是这件事。
+//
+// 补报前先看当日台账：若今天已经报过（无论谁报的）却仍未达门槛，
+// 说明问题不在"没报"，再报一次只是白打上游——此时记台账当日不再试。
 func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 	ctx context.Context,
 	account *Account,
@@ -256,9 +269,16 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 	}
 
 	adopt, err := s.adoptCodeBuddyBuddyFirst(ctx, account)
+	if err != nil && isCodeBuddyGrowthBuddyThresholdNotMet(err) {
+		// 门槛未达 → 自查前置：补一轮活跃上报，再重试一次。
+		if s.ensureCodeBuddyAdoptPrecondition(ctx, account, localDay) {
+			adopt, err = s.adoptCodeBuddyBuddyFirst(ctx, account)
+		}
+	}
 	if err != nil {
 		if isCodeBuddyGrowthBuddyThresholdNotMet(err) {
-			// 门槛未达：预期行为，当日不再重试（台账挡住）。
+			// 补报之后仍未达门槛：属**预期行为**（上游判定前置未满足），
+			// 当日不再重试（台账挡住——见文件头"自查前置"）。
 			result.ThresholdNotMet = true
 			result.SkipReason = "未达 chat_5 门槛（需先用活跃上报刷满 5 轮对话）"
 			s.markCodeBuddyGrowthLedger(ctx, account, localDay, ledgerAdoptTried)
@@ -276,6 +296,41 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthAdoptNow(
 	result.Credit = adopt.Credit
 	result.Energy = adopt.Energy
 	return result
+}
+
+// ensureCodeBuddyAdoptPrecondition 为满足领养的 chat_5 前置补一轮活跃上报。
+//
+// 返回 true 表示"刚补了一轮，值得重试领养"；false 表示不该重试
+// （今天已报过 / 缺凭据 / 上报失败——三种都不因重试而改善）。
+//
+// 当日台账的判据与活跃上报调度器**共用同一个键**（`ledgerActivity`）：
+// 领养这里补的那一轮会记进台账，于是活跃上报调度器当天不会再报一次；
+// 反之若调度器已报过，这里直接返回 false 不重复打上游。
+// 两边共用一键是刻意的——风控口径是"每号每天 1 次"，
+// 若各记各的，两条链路同时开启就会变成每号每天 2 次。
+func (s *CodeBuddyAdminService) ensureCodeBuddyAdoptPrecondition(
+	ctx context.Context,
+	account *Account,
+	localDay string,
+) bool {
+	if codeBuddyGrowthLedgerToday(account, ledgerActivity, localDay) {
+		// 今天已经报过（领养补的 / 调度器报的），仍不达门槛 → 再报无用。
+		slog.Info("codebuddy_growth.adopt_precondition_already_reported",
+			"account_id", account.ID, "local_day", localDay)
+		return false
+	}
+	report := s.ReportCodeBuddyActivity(ctx, account, codebuddy.CodeBuddyActivityReportCount)
+	if report.Err != nil {
+		slog.Warn("codebuddy_growth.adopt_precondition_report_failed",
+			"account_id", account.ID, "reported", report.Reported, "error", report.Err)
+		return false
+	}
+	// 上报成功 → 记当日台账（与调度器同键），避免两条链路当天各报一轮。
+	s.markCodeBuddyGrowthLedger(ctx, account, localDay, ledgerActivity)
+	slog.Info("codebuddy_growth.adopt_precondition_reported",
+		"account_id", account.ID, "reported", report.Reported,
+		"self_check_failed", report.SelfCheckFailed)
+	return true
 }
 
 // codeBuddyBuddy 猫档案（nil = 无猫）。

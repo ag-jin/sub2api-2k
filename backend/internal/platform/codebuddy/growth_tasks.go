@@ -5,25 +5,40 @@ import (
 	"time"
 )
 
-// 成长任务链（批 6）的三级合规分级与通道规格。
+// 成长任务链（批 6）的合规分级、执行授权与通道规格。
 //
 // ## 为什么分级信息放在 platform 包而不是 service 包
 //
 // 分级是**用户亲自裁定的合规边界**，不是调度实现细节。把它放在这里，好处是
 // 调度器、管理端点、测试三方读的是**同一份声明**——任何一方想"临时放宽"都必须
-// 改这个文件，而改这里会被 `TestCodeBuddyGrowthAutoSchedulableChannelsAreNeverFull`
+// 改这个文件，而改这里会被 `TestCodeBuddyGrowthAutoRunnableChannelsAreAuthorized`
 // 与 `TestCodeBuddyGrowthChannelRegistryIsInternallyConsistent` 同时拦住。
 //
-// 分级语义（用户 2026-09-22 裁定）：
+// ## 两个正交维度：性质（Tier）与政策（AutoAuthorized）
 //
-//	preview  只读预览，不写上游                    → 可自动
-//	claim    幂等领奖，重复调用无副作用             → 可自动
-//	full     含**伪造活跃上报**语义的活动行为        → 仅手动，不得进任何自动排程
+//   - **Tier 说明动作的性质**——客观事实，不随政策变：只读 / 幂等领奖 /
+//     含伪造上报或不可逆消耗。它回答"这个动作**是什么**"。
+//   - **AutoAuthorized 记录用户的政策决定**——可随裁定变：该通道是否已获
+//     明确授权、允许进自动排程。它回答"我们**允许**它怎么跑"。
 //
-// `full` 之所以要单独一级，是因为它模拟"真实用户用了产品"这一事实。自动跑它
-// 等于在无人要求的情况下批量生产伪造活跃记录；一旦被上游按风控口径核对，
-// 受影响的是**整个账号池**，而不只是跑的那几个号。所以它必须有一个人在场的
-// 触发点（管理端点手动调用），并且在代码层面对自动排程**不可达**。
+// 为什么必须分开：2026-09-22 的裁定把"含伪造上报"的通道全部归为仅手动；
+// 2026-09-29 用户重新裁定，授权活跃上报 / 领养 / 夜猫子 / 开学季进自动排程。
+// **后者改变的是政策，不是性质**——领养的前置仍然只能靠伪造上报满足，
+// 这个事实没有变，也不该因为它获准自动跑就被从 rationale 里抹掉。
+// 把两者塞进同一个字段，就只能在"篡改事实陈述"与"无法放开政策"之间二选一。
+//
+// 分级语义：
+//
+//	preview  只读预览，不写上游                  → 性质上即可自动
+//	claim    幂等领奖，重复调用无副作用           → 性质上即可自动
+//	full     含**伪造活跃上报**语义或不可逆消耗   → 性质上需人担责；
+//	                                               自动执行须 AutoAuthorized 显式授权
+//
+// ⚠️ `full` 单独一级的理由：它模拟"真实用户用了产品"这一事实，或造成不可逆
+// 后果。自动跑它等于在无人要求的情况下批量生产伪造活跃记录；一旦被上游按风控
+// 口径核对，受影响的是**整个账号池**，而不只是跑的那几个号。所以"是否允许自动"
+// 必须是一个**显式的、可追溯的**决定（`AutoAuthorized` + `AutoAuthorization`
+// 写明依据），而不是靠"没人记得为什么它不能自动"的默认沉默。
 
 // GrowthTier 成长任务通道的三级合规分级。
 type GrowthTier string
@@ -36,7 +51,7 @@ const (
 	// 定义（团队负责人 2026-09-23 明确）：**重复调用无副作用**。
 	// 最坏情况是一次被上游幂等挡下的请求（如 409 duplicate、或只回 code=0 不带 data）。
 	GrowthTierClaim GrowthTier = "claim"
-	// GrowthTierFull **仅手动**，自动排程必须绕开。
+	// GrowthTierFull 性质上**需人担责**：自动执行须逐条政策授权。
 	//
 	// 定义（团队负责人 2026-09-23 **扩展**，原定义只含"伪造上报"）：
 	// **含伪造上报语义 *或* 不可逆消耗**。
@@ -51,11 +66,15 @@ const (
 	GrowthTierFull GrowthTier = "full"
 )
 
-// AutoSchedulable 报告该分级是否允许出现在自动排程里。
+// AutoSchedulable 报告该**性质**是否本就允许自动执行（不含政策授权）。
 //
-// 这是**唯一**的判据来源：调度器不自己判 `tier != GrowthTierFull`，而是调这个
-// 函数。这样以后若新增一个级别（例如把某类"只读但耗配额"的操作单列），
-// 只需改这里，不必去调度器里补一个条件。
+// ⚠️ 这不是"是否进自动排程"的最终判据——那是 `AutoRunnable()`（性质 **或**
+// 显式政策授权）。本函数只回答性质问题："这个动作是否天然无需人在场"。
+// 用它去决定排程会把"用户已授权的 full 通道"错误地挡在外面。
+//
+// 这是**性质**的唯一判据来源：调度器与端点都不得自己判 `tier != GrowthTierFull`，
+// 而是调 `AutoRunnable()`（它内部会用到本函数）。这样以后若新增一个级别，
+// 只需改这里，不必去各处补条件。
 func (t GrowthTier) IsValid() bool {
 	switch t {
 	case GrowthTierPreview, GrowthTierClaim, GrowthTierFull:
@@ -73,6 +92,7 @@ func (t GrowthTier) AutoSchedulable() bool {
 	case GrowthTierPreview, GrowthTierClaim:
 		return true
 	case GrowthTierFull:
+		// 性质上需人担责。是否自动由通道的 AutoAuthorized 政策字段决定。
 		return false
 	default:
 		// 未知分级一律**不自动**：fail-closed。新增分级时忘记更新本函数，
@@ -134,19 +154,47 @@ const (
 
 // CodeBuddyGrowthChannelSpec 一条成长通道的**分级契约**。
 //
-// 只承载合规相关的部分（键 + 分级 + 理由）。展示文案与默认时间窗属呈现/调度
+// 只承载合规相关的部分（键 + 性质 + 政策 + 理由）。展示文案与默认时间窗属呈现/调度
 // 关注点，留在 service 侧的平台功能注册里（A4 已确立的形态）——本包不能反向
 // import service 去复用 `service.TimeOfDay`，为它另造一个同形类型又会让两处
 // 时间语义有漂移空间，所以干脆不在这里表达时间。
 //
-// Tier 是**声明**；调度器只认声明，不认通道名。
+// Tier 是**性质声明**；调度器只认 `AutoRunnable()`（性质 **或** 政策授权）。
 type CodeBuddyGrowthChannelSpec struct {
 	// Key 通道标识（= 平台功能注册键）。
 	Key string
-	// Tier 合规分级。
+	// Tier 合规分级（动作性质，客观事实，不随政策变）。
 	Tier GrowthTier
-	// Rationale 分级理由（写给人看，也是"为什么不能提升到可自动"的存档）。
+	// Rationale 分级理由（写给人看，也是"为什么它是什么性质"的存档）。
+	//
+	// ⚠️ 即便某通道获准自动执行，这里**仍要如实写明它的性质**——
+	// 获准自动不等于性质改变。抹掉"含伪造上报"这个事实会让下一个人
+	// 失去判断依据（他可能以为自动跑它无风险）。
 	Rationale string
+	// AutoAuthorized 用户是否已**明确授权**本通道进自动排程。
+	//
+	// 只对 Tier=full 有独立意义：preview/claim 性质上即可自动，无需逐条授权。
+	// full 通道必须显式置 true 才会被 `AutoRunnable()` 放行——这是"默认拒绝、
+	// 授权才开"：新增一个 full 级通道时，它默认进不了排程，
+	// 直到有人写下授权依据（AutoAuthorization）。
+	AutoAuthorized bool
+	// AutoAuthorization 授权依据（谁、何时、为什么）。
+	//
+	// 与 AutoAuthorized 配对：置位 true 却写不出依据，就是一条无法追溯的
+	// "悄悄放开"。守它的是 `TestCodeBuddyGrowthAutoRunnableChannelsAreAuthorized`。
+	// 对自带授权的通道（preview/claim）可留空。
+	AutoAuthorization string
+}
+
+// AutoRunnable 报告本通道是否允许进自动排程（性质允许 **或** 政策已授权）。
+//
+// 这是**唯一**的判据来源：调度器、批量分发、管理端点都调它，
+// 不得自己去比较 Tier 或读 AutoAuthorized。
+//
+// 语义是"或"而不是"且"：preview/claim 性质上就无需人在场（不必逐条授权）；
+// full 通道性质上需要人担责，但用户可以**明确授权**它在无人时也跑。
+func (s CodeBuddyGrowthChannelSpec) AutoRunnable() bool {
+	return s.Tier.AutoSchedulable() || s.AutoAuthorized
 }
 
 // CodeBuddyGrowthChannelSpecs 全部成长通道的声明式规格（顺序稳定，供注册与遍历）。
@@ -161,26 +209,35 @@ type CodeBuddyGrowthChannelSpec struct {
 //     上游均幂等，重复调用无副作用。
 //   - adopt（C-领养）：**full**。前置 `chat_5` 只能靠 `/v2/report` 伪造 5 轮对话
 //     满足，且到达门槛后直接送 300 分——"猫会自己出现"不是真实发生的事。
+//     **2026-09-29 用户授权自动执行**（见 AutoAuthorization）。
 //   - streak（D，**幂等领奖部分**）：**claim**。补签（有卡才补、无卡静默）、
 //     兑换（409 幂等）、礼包/补偿（有则领）——全部是幂等领奖。
 //   - lottery（D-抽奖）：**full**。**不可逆消耗**——抽一次消耗一次次数且不可恢复，
 //     且每次 draw 必须新 `client_token`（确保真抽），所以**不幂等**。
 //     它**不含伪造上报**；归 full 的判据是「执行后不可撤销」（2026-09-23 扩展定义）。
+//     **仍为仅手动**：用户 2026-09-29 明确排除（一次调用会抽光全部次数，
+//     无人看管时不可接受）。
 //   - night_cat（E）：**full**。没有任何"领奖"端点，唯一的动作就是发
 //     `chat_request_send`（mode=night）去点亮任务——**纯伪造活跃上报**。
+//     **2026-09-29 用户授权自动执行**（见 AutoAuthorization）。
 //   - school（F）：**full**。同类：完成判据靠伪造 chat_request_send 循环上报
 //     （`school_open_day_2026.py:592` 原文），`share-complete` 同样是伪造"已分享"。
 //     结论：**要拿奖就得先点亮，点亮就得伪造**，无法只做 claim 那一半。
+//     **2026-09-29 用户授权自动执行**（见 AutoAuthorization）。
 //   - trial（G）：**claim**。POST 一次幂等领取（已领返回 14051 幂等码）。
 //
-// ⚠️ 这张表里凡 `Tier == GrowthTierFull` 的通道，**不得**出现在任何自动排程中。
-// 守它的是两件东西：AutoSchedulable() 的 fail-closed 语义，加上
-// `CodeBuddyGrowthAutoSchedulableChannelKeys()` 这一**唯一**入口——
-// 调度器只能通过后者取通道列表。
+// 自动执行的判据是 `AutoRunnable()`（性质天然可自动 **或** 已获政策授权）。
+// 守它的两件东西：`AutoRunnable()` 的"或"语义（full 需显式授权），
+// 加上 `CodeBuddyGrowthAutoRunnableChannelKeys()` 这一**唯一**入口——
+// 调度器只能通过后者取通道列表（不得遍历本表自己过滤）。
+//
+// 授权缺口由 `TestCodeBuddyGrowthAutoRunnableChannelsAreAuthorized` 兜底：
+// full 通道若要进自动排程，必须同时写明 AutoAuthorization 依据。
 //
 // ⚠️ **抽奖已单列为 full 级通道**（`lottery`，2026-09-23 裁定）：
 // 判据是「执行后不可撤销」。**不要**把它挪回 streak——一条通道的级别取决于
 // 其**最严**成员，挪回去会让整条 streak 通道的"可自动"结论变错。
+// 它也**仍然未获授权**（用户 2026-09-29 明确排除自动抽奖）。
 var CodeBuddyGrowthChannelSpecs = []CodeBuddyGrowthChannelSpec{
 	{
 		Key:       CodeBuddyGrowthChannelTravelStatus,
@@ -196,7 +253,11 @@ var CodeBuddyGrowthChannelSpecs = []CodeBuddyGrowthChannelSpec{
 		Key:  CodeBuddyGrowthChannelAdopt,
 		Tier: GrowthTierFull,
 		Rationale: "前置 chat_5 只能靠伪造活跃上报满足，且达标后直接送 300 分" +
-			"——属「猫会自己出现」式的伪造事实",
+			"——属「猫会自己出现」式的伪造事实。性质未因授权而改变：本通道自动跑时" +
+			"仍会先生成伪造活跃记录来满足前置。",
+		AutoAuthorized: true,
+		AutoAuthorization: "用户 2026-09-29 裁定「开活跃上报+领养/夜猫/开学季」，" +
+			"授权本通道进自动排程；抽奖明确排除。",
 	},
 	{
 		Key:  CodeBuddyGrowthChannelStreak,
@@ -211,17 +272,30 @@ var CodeBuddyGrowthChannelSpecs = []CodeBuddyGrowthChannelSpec{
 		Rationale: "**不可逆消耗**：抽一次消耗一次次数且不可恢复；" +
 			"每次 draw 必须新 client_token（scheduler.go:637「security-relevant」= 确保每次都真抽），" +
 			"所以它**不幂等**。归 full 的判据是「执行后不可撤销」，不是伪造上报——" +
-			"抽奖并不伪造上报，别把它与 night_cat 混为一谈",
+			"抽奖并不伪造上报，别把它与 night_cat 混为一谈。" +
+			"**未获自动授权**：一次调用会抽光当前全部次数且不可恢复，" +
+			"无人看管时不可接受（用户 2026-09-29 明确排除）。",
+		// AutoAuthorized 保持 false：见上方 Rationale 与用户裁定。
 	},
 	{
-		Key:       CodeBuddyGrowthChannelNightCat,
-		Tier:      GrowthTierFull,
-		Rationale: "唯一动作是伪造 chat_request_send 点亮任务（无领奖端点）",
+		Key:  CodeBuddyGrowthChannelNightCat,
+		Tier: GrowthTierFull,
+		Rationale: "唯一动作是伪造 chat_request_send 点亮任务（无领奖端点）。" +
+			"性质未因授权而改变：自动跑时仍在生成伪造活跃记录。",
+		AutoAuthorized: true,
+		AutoAuthorization: "用户 2026-09-29 裁定「开活跃上报+领养/夜猫/开学季」，" +
+			"授权本通道进自动排程；抽奖明确排除。" +
+			"执行仍受夜间窗口（23:00–08:00 CST）与当日去重双重约束。",
 	},
 	{
-		Key:       CodeBuddyGrowthChannelSchool,
-		Tier:      GrowthTierFull,
-		Rationale: "完成判据靠伪造活跃上报循环触发，share-complete 亦为伪造；要拿奖必先点亮",
+		Key:  CodeBuddyGrowthChannelSchool,
+		Tier: GrowthTierFull,
+		Rationale: "完成判据靠伪造活跃上报循环触发，share-complete 亦为伪造；要拿奖必先点亮。" +
+			"性质未因授权而改变：自动跑时仍在生成伪造活跃记录与伪造分享事实。",
+		AutoAuthorized: true,
+		AutoAuthorization: "用户 2026-09-29 裁定「开活跃上报+领养/夜猫/开学季」，" +
+			"授权本通道进自动排程；抽奖明确排除。" +
+			"活动下线（上游 41000 等）时静默跳过，不重试、不记账号故障。",
 	},
 	{
 		Key:       CodeBuddyGrowthChannelTrial,
@@ -250,18 +324,21 @@ func CodeBuddyGrowthChannelTier(key string) (GrowthTier, bool) {
 	return spec.Tier, true
 }
 
-// CodeBuddyGrowthAutoSchedulableChannelKeys 返回**允许进自动排程**的通道键（顺序稳定）。
+// CodeBuddyGrowthAutoRunnableChannelKeys 返回**允许进自动排程**的通道键（顺序稳定）。
 //
 // 这是调度器取通道列表的**唯一入口**。调度器不得遍历 CodeBuddyGrowthChannelSpecs
-// 自己过滤——一旦有人图省事写成 `for _, spec := range specs`，`full` 通道就会
-// 被静默纳入排程（正是本任务要守住的那条线）。走这个函数，`full` 在类型层面
-// 就进不来。
+// 自己过滤——一旦有人图省事写成 `for _, spec := range specs`，未经授权的 `full`
+// 通道就会被静默纳入排程（正是本任务要守住的那条线）。走这个函数，
+// 未授权的 `full` 在类型层面就进不来。
+//
+// 判据是 `AutoRunnable()`（性质天然可自动 **或** 已获政策授权），**不是**
+// `Tier.AutoSchedulable()`——后者只看性质，会把已授权的 full 通道漏掉。
 //
 // 返回的是副本：调用方改它不会污染注册表。
-func CodeBuddyGrowthAutoSchedulableChannelKeys() []string {
+func CodeBuddyGrowthAutoRunnableChannelKeys() []string {
 	keys := make([]string, 0, len(CodeBuddyGrowthChannelSpecs))
 	for _, spec := range CodeBuddyGrowthChannelSpecs {
-		if spec.Tier.AutoSchedulable() {
+		if spec.AutoRunnable() {
 			keys = append(keys, spec.Key)
 		}
 	}
@@ -273,11 +350,76 @@ func CodeBuddyGrowthAutoSchedulableChannelKeys() []string {
 // 未注册的通道键返回 false（fail-closed）：调度器遇到不认识的通道时不停下，
 // 而不是"不认识就照跑"。
 func CodeBuddyGrowthChannelKeyAllowsAutoSchedule(key string) bool {
-	tier, ok := CodeBuddyGrowthChannelTier(key)
+	spec, ok := CodeBuddyGrowthChannelSpecByKey(key)
 	if !ok {
 		return false
 	}
-	return tier.AutoSchedulable()
+	return spec.AutoRunnable()
+}
+
+// CodeBuddyGrowthAuthorizedFullChannelKeys 返回**已获授权自动执行**的 full 级通道键。
+//
+// 用途：让"哪些 full 通道被放开了"成为可枚举的事实，供守卫测试逐个点名核对，
+// 也供运维核对授权面。未获授权的 full 通道（当前只有 lottery）不会出现在这里。
+func CodeBuddyGrowthAuthorizedFullChannelKeys() []string {
+	keys := make([]string, 0, len(CodeBuddyGrowthChannelSpecs))
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if spec.Tier == GrowthTierFull && spec.AutoAuthorized {
+			keys = append(keys, spec.Key)
+		}
+	}
+	return keys
+}
+
+// CodeBuddyGrowthNightWindowChannelKeys 需要**夜间窗口**才能执行的通道键。
+//
+// 语义：这些通道的动作只在夜间时段（23:00–08:00 CST，跨零点）对上有效——
+// 夜猫子任务的判据含 `mode=night`，日间发出去上游不认（通道内部也会自查窗口
+// 并返回 skip）。所以调度器把它们从日间批次里摘出来，单独在夜间窗口跑。
+//
+// ⚠️ 与授权是**两件事**：列在这里不代表已授权自动（授权看 `AutoAuthorized`）。
+// 调度器取列表时仍要经 `AutoRunnable()` 过滤——两个条件是"与"关系，
+// 夜窗集合只能**进一步收窄**，不可能放进未授权的通道。
+var CodeBuddyGrowthNightWindowChannelKeys = []string{
+	CodeBuddyGrowthChannelNightCat,
+}
+
+// CodeBuddyGrowthIsNightWindowChannel 报告通道是否属夜间窗口专属。
+func CodeBuddyGrowthIsNightWindowChannel(key string) bool {
+	trimmed := strings.TrimSpace(key)
+	for _, k := range CodeBuddyGrowthNightWindowChannelKeys {
+		if k == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// CodeBuddyGrowthDaytimeAutoRunnableChannelKeys 返回**日间窗口**可跑的通道键：
+// 已授权自动 **且** 不属夜间窗口专属。
+//
+// 这是日间批次的取列表入口（夜间批次用 `CodeBuddyGrowthNightAutoRunnableChannelKeys`）。
+// 两者都从 `AutoRunnable()` 出发，所以未授权的 full 通道在**两个入口都进不来**。
+func CodeBuddyGrowthDaytimeAutoRunnableChannelKeys() []string {
+	keys := make([]string, 0, len(CodeBuddyGrowthChannelSpecs))
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if spec.AutoRunnable() && !CodeBuddyGrowthIsNightWindowChannel(spec.Key) {
+			keys = append(keys, spec.Key)
+		}
+	}
+	return keys
+}
+
+// CodeBuddyGrowthNightAutoRunnableChannelKeys 返回**夜间窗口**可跑的通道键：
+// 已授权自动 **且** 属夜间窗口专属。
+func CodeBuddyGrowthNightAutoRunnableChannelKeys() []string {
+	keys := make([]string, 0, len(CodeBuddyGrowthNightWindowChannelKeys))
+	for _, spec := range CodeBuddyGrowthChannelSpecs {
+		if spec.AutoRunnable() && CodeBuddyGrowthIsNightWindowChannel(spec.Key) {
+			keys = append(keys, spec.Key)
+		}
+	}
+	return keys
 }
 
 // --- F 通道「活动下线」语义 ---
@@ -427,13 +569,21 @@ const CodeBuddySchoolClientPlatform = "miniprogram"
 // GrowthChannelSpecForAPI 通道规格的**对外形态**（管理端点渲染用）。
 //
 // 与内部 `CodeBuddyGrowthChannelSpec` 分开：内部结构以后可能要加调度相关字段，
-// 而对外契约不该跟着变。这里显式挑出"管理端需要知道的"四项。
+// 而对外契约不该跟着变。这里显式挑出"管理端需要知道的"几项。
 type GrowthChannelSpecForAPI struct {
 	Key string `json:"key"`
-	// Tier 合规分级（preview / claim / full）。
+	// Tier 合规分级（preview / claim / full）= 动作**性质**。
 	Tier string `json:"tier"`
-	// AutoRunnable 是否允许自动排程（false = full 级，仅手动）。
+	// AutoRunnable 是否允许自动排程（性质天然可自动，或已获政策授权）。
 	AutoRunnable bool `json:"auto_runnable"`
+	// AutoAuthorized 该通道是否**因政策授权**才可自动（即 full 级被放开）。
+	//
+	// 与 AutoRunnable 分开暴露，是为让管理端能如实区分"本来就无需人在场"
+	// 与"性质需人担责、但用户已授权放开"——两者的风险画像不同，界面不该
+	// 把它们显示成同一种状态。
+	AutoAuthorized bool `json:"auto_authorized"`
+	// AutoAuthorization 授权依据（谁、何时、为什么）；未授权为空。
+	AutoAuthorization string `json:"auto_authorization,omitempty"`
 	// Rationale 分级理由（写给人看）。
 	Rationale string `json:"rationale"`
 }
@@ -443,10 +593,12 @@ func GrowthChannelSpecsForAPI() []GrowthChannelSpecForAPI {
 	out := make([]GrowthChannelSpecForAPI, 0, len(CodeBuddyGrowthChannelSpecs))
 	for _, spec := range CodeBuddyGrowthChannelSpecs {
 		out = append(out, GrowthChannelSpecForAPI{
-			Key:          spec.Key,
-			Tier:         spec.Tier.String(),
-			AutoRunnable: spec.Tier.AutoSchedulable(),
-			Rationale:    spec.Rationale,
+			Key:               spec.Key,
+			Tier:              spec.Tier.String(),
+			AutoRunnable:      spec.AutoRunnable(),
+			AutoAuthorized:    spec.AutoAuthorized,
+			AutoAuthorization: spec.AutoAuthorization,
+			Rationale:         spec.Rationale,
 		})
 	}
 	return out

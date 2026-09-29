@@ -17,15 +17,28 @@ import (
 // 每分钟 tick，每次判三件事：功能开关（默认关闭）→ 是否在窗口内 → 当日是否已执行。
 // 不另造一套（A4 的 `codebuddy_checkin_scheduler.go` 是同一个模板）。
 //
-// ## ⚠️ 本调度器**只能**跑 `preview` / `claim` 级通道
+// ## 两个窗口：日间与夜间（2026-09-29）
 //
-// 取通道列表的唯一入口是 `codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()`
-// ——它按 `GrowthTier.AutoSchedulable()` 过滤，`full` 级（含伪造活跃上报语义）
-// 在**类型层面**进不来。**不要**改成遍历 `CodeBuddyGrowthChannelSpecs` 自己过滤：
-// 那样一旦有人新增 full 级通道，它会被静默纳入自动排程（用户裁定的合规红线）。
+// 通道按其**动作性质**分属两个时段，一个调度器同时管两趟：
 //
-// 领养（adopt）、夜猫子（night_cat）、开学季点亮（school）都是 full 级，
-// 它们的手动入口在管理端点，见 `codebuddy_growth_manual.go`。
+//   - **日间趟**：在管理员配置的窗口内（默认 09:00–11:00 CST）跑
+//     `CodeBuddyGrowthDaytimeAutoRunnableChannelKeys()`；
+//   - **夜间趟**：在夜猫窗口（23:00–08:00 CST，跨零点）跑
+//     `CodeBuddyGrowthNightAutoRunnableChannelKeys()`。
+//
+// 为什么必须有夜间趟：`night_cat` 的动作是带 `mode=night` 的上报，**只在夜间
+// 时段被上游认**（通道内部也自查窗口、日间直接返回 skip）。若把它混在日间趟里，
+// 它与日间窗口（09:00–11:00）永不重叠 → 永远是 skip → 该通道事实上跑不起来。
+//
+// 两趟各自独立去重（`lastRunDate` / `lastNightRunDate`），互不占用对方的"今天已跑"。
+//
+// ## ⚠️ 通道集合的唯一入口都经过授权过滤
+//
+// 两个入口（`CodeBuddyGrowthDaytimeAutoRunnableChannelKeys` /
+// `CodeBuddyGrowthNightAutoRunnableChannelKeys`）都从
+// `AutoRunnable()` 出发（性质天然可自动 **或** 已获政策授权）。
+// **不要**改成遍历 `CodeBuddyGrowthChannelSpecs` 自己过滤：
+// 那样一旦有人新增未授权的 full 通道，它会被静默纳入自动排程。
 
 const (
 	// codeBuddyGrowthTickSpec 每分钟一次（与签到/活跃上报同款 5 字段）。
@@ -37,6 +50,18 @@ const (
 
 	// codeBuddyGrowthBatchSize 单轮最多处理的账号数。
 	codeBuddyGrowthBatchSize = 200
+
+	// codeBuddyGrowthNightStartHour / EndHour 夜间趟窗口（CST，跨零点）。
+	//
+	// 与 `night_cat` 通道内部的窗口判据同源（都取 23:00–08:00）。这里再表达一次
+	// 是因为**调度层要知道何时该起夜间的趟**——通道内部的判据只决定"这一趟里
+	// 这个动作做不做"，无法让调度器在日间跳过整趟。
+	//
+	// 两处若漂移，表现为"调度起来了但通道全 skip"（浪费一轮 tick，无害）
+	// 或"通道想做但调度没起来"（当日漏做）。守它的是
+	// `TestCodeBuddyGrowthNightWindowMatchesChannelGuard`。
+	codeBuddyGrowthNightStartHour = 23
+	codeBuddyGrowthNightEndHour   = 8
 )
 
 var codeBuddyGrowthCronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
@@ -55,7 +80,7 @@ type codeBuddyGrowthCandidate struct {
 	SkipReason string
 }
 
-// CodeBuddyGrowthScheduler 按窗口自动执行成长链（仅 preview/claim 级通道）。
+// CodeBuddyGrowthScheduler 按窗口自动执行成长链（日间趟 + 夜间趟）。
 type CodeBuddyGrowthScheduler struct {
 	runner         codeBuddyGrowthRunner
 	accountRepo    AccountRepository
@@ -69,8 +94,14 @@ type CodeBuddyGrowthScheduler struct {
 	started bool
 	stopped bool
 
-	// lastRunDate 已执行过的当地日期（UTC+8，与 A4/A5 同口径）。
+	// lastRunDate 日间趟已执行过的当地日期（UTC+8，与 A4/A5 同口径）。
 	lastRunDate string
+	// lastNightRunDate 夜间趟已执行过的当地日期。
+	//
+	// 与 lastRunDate **分开**：夜猫趟跑在 23:00–08:00 的跨零点窗口里，
+	// 同一"当地日期"内夜间趟可能跨越两个自然日（23:30 与次日 07:30 都属
+	// 同一天的"夜"）。各自记各自的日期，互不占用对方的"今天已跑"位。
+	lastNightRunDate string
 	// lastSummary 最近一轮的汇总（仅测试断言用）。
 	lastSummary CodeBuddyGrowthRunSummary
 }
@@ -144,7 +175,10 @@ func (s *CodeBuddyGrowthScheduler) Stop() {
 	}
 }
 
-// tick 单次判定 + 执行（三道门与签到/活跃上报同序）。
+// tick 单次判定 + 执行（两趟各自独立：日间 / 夜间）。
+//
+// 三道门与签到同序：**开关 → 窗口 → 当日去重**。开关在最前，且对两趟共用——
+// 未开启时一趟都不跑（"默认关闭"要保证一个请求都不发）。
 func (s *CodeBuddyGrowthScheduler) tick() {
 	if s == nil || s.runner == nil || s.settingService == nil {
 		return
@@ -158,18 +192,23 @@ func (s *CodeBuddyGrowthScheduler) tick() {
 	}
 	features := settings.PlatformFeatures
 
-	// 1) 开关（默认关闭）。未开启直接返回，连窗口都不看。
+	// 1) 开关（默认关闭，两趟共用）。未开启直接返回，连窗口都不看。
 	if !PlatformFeatureEnabled(features, PlatformCodeBuddy, CodeBuddyGrowthFeatureKey) {
 		return
 	}
 
+	s.tickDaytime(now, features)
+	s.tickNight(now, features)
+}
+
+// tickDaytime 日间趟：管理员配置的窗口（默认 09:00–11:00）。
+func (s *CodeBuddyGrowthScheduler) tickDaytime(now time.Time, features PlatformFeatureSettings) {
 	start, end, location, ok := ResolvePlatformFeatureTimeRange(
 		features, PlatformCodeBuddy, CodeBuddyGrowthFeatureKey,
 	)
 	if !ok {
 		return
 	}
-
 	// 2) 窗口。
 	if !WithinTimeRange(now, start, end, location) {
 		return
@@ -187,20 +226,54 @@ func (s *CodeBuddyGrowthScheduler) tick() {
 	s.lastRunDate = localDay
 	s.mu.Unlock()
 
-	s.runOnce(localDay, start, end)
+	channelKeys := codebuddy.CodeBuddyGrowthDaytimeAutoRunnableChannelKeys()
+	s.runOnce(localDay, "daytime", start, end, channelKeys)
+}
+
+// tickNight 夜间趟：夜猫窗口（23:00–08:00 CST，跨零点），独立窗口与去重。
+//
+// 用 `WithinTimeRange`（已处理跨零点），与 `night_cat` 通道内部的判据同源。
+// 窗口边界常量见 `codeBuddyGrowthNightStartHour/EndHour` 的注释。
+func (s *CodeBuddyGrowthScheduler) tickNight(now time.Time, features PlatformFeatureSettings) {
+	// 夜间趟的窗口**不受管理员配置**影响：它是动作性质的硬约束
+	// （mode=night 的上报只在夜间被上游认），不是运营偏好。
+	start := TimeOfDay{Hour: codeBuddyGrowthNightStartHour}
+	end := TimeOfDay{Hour: codeBuddyGrowthNightEndHour}
+	if !WithinTimeRange(now, start, end, codeBuddyTimeZone) {
+		return
+	}
+
+	channelKeys := codebuddy.CodeBuddyGrowthNightAutoRunnableChannelKeys()
+	if len(channelKeys) == 0 {
+		// 夜间窗口内没有已授权的夜间通道：不必起趟（也就不会占用去重位）。
+		return
+	}
+
+	localDay := PlatformFeatureLocalDate(now, codeBuddyTimeZone).Format(time.DateOnly)
+	s.mu.Lock()
+	if s.lastNightRunDate == localDay {
+		s.mu.Unlock()
+		return
+	}
+	s.lastNightRunDate = localDay
+	s.mu.Unlock()
+
+	s.runOnce(localDay, "night", start, end, channelKeys)
 }
 
 // runOnce 遍历候选账号逐号执行成长链。
-func (s *CodeBuddyGrowthScheduler) runOnce(localDay string, start, end TimeOfDay) {
+func (s *CodeBuddyGrowthScheduler) runOnce(
+	localDay string,
+	pass string,
+	start, end TimeOfDay,
+	channelKeys []string,
+) {
 	ctx, cancel := context.WithTimeout(context.Background(), codeBuddyGrowthRunTimeout)
 	defer cancel()
 
-	// ⚠️ 唯一入口：已按分级过滤（full 级进不来）。见文件头说明。
-	channelKeys := codebuddy.CodeBuddyGrowthAutoSchedulableChannelKeys()
-
 	candidates, err := s.runner.ListCodeBuddyGrowthCandidates(ctx, s.batchSize)
 	if err != nil {
-		slog.Warn("codebuddy_growth.list_failed", "error", err)
+		slog.Warn("codebuddy_growth.list_failed", "pass", pass, "error", err)
 		return
 	}
 
@@ -208,7 +281,7 @@ func (s *CodeBuddyGrowthScheduler) runOnce(localDay string, start, end TimeOfDay
 	first := true
 	for _, candidate := range candidates {
 		if ctx.Err() != nil {
-			slog.Warn("codebuddy_growth.stopped_early", "remaining", len(candidates))
+			slog.Warn("codebuddy_growth.stopped_early", "pass", pass, "remaining", len(candidates))
 			break
 		}
 		if candidate.SkipReason != "" {
@@ -217,7 +290,7 @@ func (s *CodeBuddyGrowthScheduler) runOnce(localDay string, start, end TimeOfDay
 		}
 		if !first {
 			if err := s.accountDelay(ctx, codeBuddyGrowthAccountDelay); err != nil {
-				slog.Warn("codebuddy_growth.cancelled_between_accounts", "error", err)
+				slog.Warn("codebuddy_growth.cancelled_between_accounts", "pass", pass, "error", err)
 				break
 			}
 		}
@@ -246,6 +319,7 @@ func (s *CodeBuddyGrowthScheduler) runOnce(localDay string, start, end TimeOfDay
 	s.mu.Unlock()
 
 	attrs := []any{
+		"pass", pass,
 		"local_date", localDay,
 		"window", start.Format() + "-" + end.Format(),
 		"channels", channelKeys,
@@ -266,4 +340,11 @@ func (s *CodeBuddyGrowthScheduler) codeBuddyGrowthSchedulerSummaryForTest() Code
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastSummary
+}
+
+// codeBuddyGrowthSchedulerLastNightRunDate 暴露夜间趟去重状态（仅测试用）。
+func (s *CodeBuddyGrowthScheduler) codeBuddyGrowthSchedulerLastNightRunDate() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastNightRunDate
 }
