@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"sync"
 
@@ -104,18 +103,6 @@ func PlatformFeatureSupportsImmediateRun(platform, featureKey string) bool {
 	defer platformFeatureImmediateMu.RUnlock()
 	_, ok := platformFeatureImmediateRunners[platformFeatureImmediateKey(platform, featureKey)]
 	return ok
-}
-
-// platformFeatureImmediateRegisteredKeys 返回已注册立即执行的功能键（排序，供测试断言）。
-func platformFeatureImmediateRegisteredKeys() []string {
-	platformFeatureImmediateMu.RLock()
-	defer platformFeatureImmediateMu.RUnlock()
-	out := make([]string, 0, len(platformFeatureImmediateRunners))
-	for key := range platformFeatureImmediateRunners {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // RunPlatformFeatureNow 立即执行某平台功能（设置页按钮的后端入口）。
