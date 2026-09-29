@@ -433,13 +433,6 @@ func (s *CodeBuddyAdminService) refetchCodeBuddySchoolTask(
 
 // --- 上报（三个形状）---
 
-// codeBuddySchoolReportEvent 上报体元素：school 事件结构 + 桌面链里的额外键。
-//
-// 用 map 承载而不是拼结构体：桌面 6 连的字段集与 mini 事件差异很大
-// （含 `codebuddy.session_id` 这类带点的键，Go 结构体标签表达不了）。
-// 类型安全由**构造侧**保证——三个构造器是唯一产出点，且都有单测钉住字段集。
-type codeBuddySchoolReportEvent = map[string]any
-
 // reportCodeBuddySchoolMiniChat 发一条小程序域对话事件（点亮 chat_3_times）。
 func (s *CodeBuddyAdminService) reportCodeBuddySchoolMiniChat(
 	ctx context.Context,

@@ -31,15 +31,15 @@ func TestAdoptSelfHealsChat5Precondition(t *testing.T) {
 		reportCalls     int
 	)
 	svc, _ := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == codebuddy.CodeBuddyBuddyInfoPath:
+		switch r.URL.Path {
+		case codebuddy.CodeBuddyBuddyInfoPath:
 			buddyInfoCalls++
 			// 无猫 → 需要领养。
 			_, _ = w.Write([]byte(`{"code":0,"data":{"buddy":null}}`))
-		case r.URL.Path == codebuddy.CodeBuddyBuddyAgreementPath:
+		case codebuddy.CodeBuddyBuddyAgreementPath:
 			agreementCalls++
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
-		case r.URL.Path == codebuddy.CodeBuddyBuddyFirstPath:
+		case codebuddy.CodeBuddyBuddyFirstPath:
 			firstBuddyCalls++
 			// 第一次撞门槛，第二次（补报之后）成功。
 			if firstBuddyCalls == 1 {
@@ -48,7 +48,7 @@ func TestAdoptSelfHealsChat5Precondition(t *testing.T) {
 				return
 			}
 			_, _ = w.Write([]byte(`{"code":0,"data":{"credit":300,"energy":10}}`))
-		case r.URL.Path == codebuddy.CodeBuddyActivityReportPath:
+		case codebuddy.CodeBuddyActivityReportPath:
 			reportCalls++
 			_, _ = w.Write([]byte(`{"code":0}`))
 		default:
@@ -278,8 +278,8 @@ func TestSchoolShareTaskCompletesAndClaims(t *testing.T) {
 		refetched                           bool
 	)
 	svc, _ := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == codebuddy.CodeBuddySchoolTasksPath:
+		switch r.URL.Path {
+		case codebuddy.CodeBuddySchoolTasksPath:
 			// 首次列出 pending；回读时变 completed（模拟上游结算）。
 			if refetched {
 				_, _ = w.Write([]byte(`{"code":0,"data":{"in_period":true,"tasks":[` +
@@ -289,13 +289,13 @@ func TestSchoolShareTaskCompletesAndClaims(t *testing.T) {
 			refetched = true
 			_, _ = w.Write([]byte(`{"code":0,"data":{"in_period":true,"tasks":[` +
 				`{"task_code":"share_invite","status":"pending","progress":0,"target_count":1}]}}`))
-		case r.URL.Path == codebuddy.CodeBuddySchoolTaskViewedPath("share_invite"):
+		case codebuddy.CodeBuddySchoolTaskViewedPath("share_invite"):
 			viewedCalls++
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
-		case r.URL.Path == codebuddy.CodeBuddySchoolShareCompletePath:
+		case codebuddy.CodeBuddySchoolShareCompletePath:
 			shareCalls++
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
-		case r.URL.Path == codebuddy.CodeBuddySchoolTaskClaimPath("share_invite"):
+		case codebuddy.CodeBuddySchoolTaskClaimPath("share_invite"):
 			claimCalls++
 			_, _ = w.Write([]byte(`{"code":0,"data":{"chance_granted":1}}`))
 		default:
@@ -319,8 +319,8 @@ func TestSchoolShareTaskCompletesAndClaims(t *testing.T) {
 func TestSchoolReportTaskSendsOnlyTheDeficit(t *testing.T) {
 	var reportCalls, refetchCount int
 	svc, _ := newGrowthTestService(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == codebuddy.CodeBuddySchoolTasksPath:
+		switch r.URL.Path {
+		case codebuddy.CodeBuddySchoolTasksPath:
 			refetchCount++
 			// 首次：进度 1/3 → 差额 2。回读时直接终态，让循环提前结束。
 			status, progress := "in_progress", 1
@@ -330,10 +330,10 @@ func TestSchoolReportTaskSendsOnlyTheDeficit(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":0,"data":{"in_period":true,"tasks":[` +
 				`{"task_code":"chat_3_times","status":"` + status + `","progress":` +
 				itoa(progress) + `,"target_count":3}]}}`))
-		case r.URL.Path == codebuddy.CodeBuddyActivityReportPath:
+		case codebuddy.CodeBuddyActivityReportPath:
 			reportCalls++
 			_, _ = w.Write([]byte(`{"code":0}`))
-		case r.URL.Path == codebuddy.CodeBuddySchoolTaskClaimPath("chat_3_times"):
+		case codebuddy.CodeBuddySchoolTaskClaimPath("chat_3_times"):
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
 		default:
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
