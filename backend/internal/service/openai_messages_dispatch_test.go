@@ -48,6 +48,28 @@ func TestGroupResolveMessagesDispatchModel_GrokRequiresCrossClientMapping(t *tes
 	require.Empty(t, group.ResolveMessagesDispatchModel("gpt-5.3-codex"))
 }
 
+func TestGroupResolveMessagesDispatchModel_CodeBuddyKeepsClaudeModelName(t *testing.T) {
+	t.Parallel()
+
+	// CodeBuddy 上游没有 gpt-5.x 系列模型，claude-* 才是它认识的名字。此前
+	// CodeBuddy 落在通用分支，被 sonnet 家族默认值改写成 gpt-5.3-codex，
+	// 导致 Claude 协议客户端（Claude Code 等）连上 buddy 分组必然失败。
+	group := &Group{
+		Platform: PlatformCodeBuddy,
+		MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
+			SonnetMappedModel: "gpt-5.3-codex",
+		},
+	}
+
+	for _, model := range []string{"claude-sonnet-4-5", "claude-opus-4-6", "claude-haiku-4-5"} {
+		require.Empty(t, group.ResolveMessagesDispatchModel(model), model)
+	}
+
+	// 对照组：OpenAI 分组必须仍然走默认映射（本修复不得波及）。
+	openAIGroup := &Group{Platform: PlatformOpenAI}
+	require.Equal(t, "gpt-5.3-codex", openAIGroup.ResolveMessagesDispatchModel("claude-sonnet-4-5"))
+}
+
 func TestSanitizeGroupMessagesDispatchFields_ClearsNonOpenAIPlatform(t *testing.T) {
 	t.Parallel()
 

@@ -502,3 +502,22 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.NotEqual(t, http.StatusNotFound, w.Code)
 }
+
+// TestGatewayRoutesCodeBuddyCountTokensReachesOpenAIGateway Claude Code 等 Anthropic
+// 协议客户端启动即调 /v1/messages/count_tokens。CodeBuddy 分组此前在该路由直接返回
+// 400 unsupported-provider，客户端连不上；buddy 上游虽无计数端点，但与国产供应商同属
+// 「本地估算」一类（见 ForwardCountTokensAsAnthropic），路由层必须放行到 OpenAI 网关。
+func TestGatewayRoutesCodeBuddyCountTokensReachesOpenAIGateway(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformCodeBuddy)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens",
+		strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusBadRequest, w.Code,
+		"CodeBuddy 分组不得在本路由被 400 拦下")
+	require.NotContains(t, w.Body.String(), "does not support the count_tokens API",
+		"该拒绝对话已被移除：本地估算即可满足 Claude 协议客户端")
+}

@@ -79,10 +79,15 @@ func (g *Group) ResolveMessagesDispatchModel(requestedModel string) string {
 		return xai.ModelMappingWithOptions(opts)["claude-*"]
 	}
 
-	// 国产供应商 / OpenCode 分组:调度级模型映射不适用(其配置被 sanitize 置空,
-	// 且下方的 gpt-5.x 默认值是 openai 专属,发给这些上游必错)。模型改写完全
-	// 交给账号级 model_mapping;Anthropic 协议上游本身接受 claude-* 模型名。
-	if IsMultiProtocolAPIKeyProvider(g.Platform) {
+	// 国产供应商 / OpenCode / CodeBuddy 分组：调度级模型映射不适用（其配置被
+	// sanitize 置空，且下方的 gpt-5.x 默认值是 openai 专属，发给这些上游必错）。
+	// 模型改写完全交给账号级 model_mapping。
+	//
+	// CodeBuddy（2026-09-30 补）：此前它不在本分支，Claude 协议客户端发
+	// claude-sonnet-4-5 会被下面的 family 默认改写成 gpt-5.3-codex——buddy 上游
+	// 没有该模型，请求必然失败。这是「buddy 用不了 Claude 接口」的第二个原因
+	// （第一个是 count_tokens 被路由层 400，见 routes/gateway.go）。
+	if IsMultiProtocolAPIKeyProvider(g.Platform) || g.Platform == PlatformCodeBuddy {
 		return ""
 	}
 

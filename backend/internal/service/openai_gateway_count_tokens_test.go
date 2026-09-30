@@ -413,3 +413,50 @@ func maxLocalInt(a, b int) int {
 	}
 	return b
 }
+
+// CodeBuddy 上游只有 /v2/chat/completions，没有 token 计数端点，故 count_tokens
+// 必须本地估算、不发任何上游请求（与 Grok / 国产供应商同一条路）。
+//
+// 背景（2026-09-30）：此前路由层对 buddy 分组直接返回 400 "CodeBuddy does not
+// support the count_tokens API"，而 Claude Code 等 Anthropic 协议客户端启动即调
+// 本端点——buddy 分组因此完全无法被 Claude 协议客户端使用。本用例同时钉住
+// "不发上游"（若哪天有人把它改成转发，lastReq 会非空、用例立刻失败）。
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_CodeBuddyEstimatesLocally(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"deepseek-v4.1-flash","system":"You are helpful.","messages":[{"role":"user","content":"你好，请数一下这段话大概多少 token。"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// 只给记录器、不给 resp：任何上游调用都会留下 lastReq，用例据此失败。
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled:           false,
+			AllowInsecureHTTP: true,
+		}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          501,
+		Name:        "buddy",
+		Platform:    PlatformCodeBuddy,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token": "token",
+			"uid":          "u-1",
+			"base_url":     "https://copilot.tencent.com",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, "deepseek-v4.1-flash")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Greater(t, gjson.GetBytes(rec.Body.Bytes(), "input_tokens").Int(), int64(0), "必须返回正整数估算值")
+	require.Nil(t, upstream.lastReq, "CodeBuddy 无 count_tokens 端点，必须本地估算、不得发上游")
+}

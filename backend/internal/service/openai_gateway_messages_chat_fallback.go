@@ -102,6 +102,25 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	// so the converted Chat Completions body never contains one and the policy
 	// would always be a no-op on this path.
 
+	// CodeBuddy：本路径此前完全跳过平台载荷规则（transformCodeBuddyRequestBody
+	// 只挂在 chat_completions_raw 的 CC 入口上），后果是 Claude 协议客户端
+	// （Claude Code 等）走 /v1/messages 时：tool_choice 对象形式 400 code 11101、
+	// 多轮 DeepSeek 缺 reasoning_content 400 code 11155、system 里的客户端身份
+	// 模板触发 11128。补齐后两条入口对同一上游施加同一套规则。
+	if isCodeBuddy {
+		transformed, transformErr := transformCodeBuddyRequestBody(chatBody, account)
+		if transformErr != nil {
+			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error",
+				fmt.Sprintf("failed to prepare CodeBuddy upstream request: %v", transformErr))
+			return nil, fmt.Errorf("transform codebuddy messages body: %w", transformErr)
+		}
+		chatBody = transformed
+		// 规则可能注入默认 effort 档；记录实际出站值（与上面 policy 分支同法）。
+		if effectiveEffort := strings.TrimSpace(gjson.GetBytes(chatBody, "reasoning_effort").String()); effectiveEffort != "" {
+			reasoningEffort = &effectiveEffort
+		}
+	}
+
 	logger.L().Debug("openai messages: forwarding via raw chat completions",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),

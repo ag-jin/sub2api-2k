@@ -676,16 +676,25 @@ func (r *codeBuddyRereadAccountRepo) GetByID(ctx context.Context, id int64) (*Ac
 
 // scriptedHTTPUpstream 按次序返回预设响应，并记录每次请求的 Authorization / X-User-Id。
 type scriptedHTTPUpstream struct {
-	seq  []string // 每项为一个完整响应：状态码 + "\n" + body
-	auth []string
-	uid  []string
-	urls []string
+	seq    []string // 每项为一个完整响应：状态码 + "\n" + body
+	auth   []string
+	uid    []string
+	urls   []string
+	bodies []string // 出站请求体，用于断言上游实际收到的载荷
 }
 
 func (u *scriptedHTTPUpstream) respond(req *http.Request) (*http.Response, error) {
 	u.urls = append(u.urls, req.URL.String())
 	u.auth = append(u.auth, req.Header.Get("Authorization"))
 	u.uid = append(u.uid, req.Header.Get("X-User-Id"))
+	if req.Body != nil {
+		raw, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err == nil {
+			u.bodies = append(u.bodies, string(raw))
+			req.Body = io.NopCloser(strings.NewReader(string(raw)))
+		}
+	}
 	s := u.seq[0]
 	u.seq = u.seq[1:]
 	status := 200
@@ -838,6 +847,64 @@ func TestForwardAsAnthropic_CodeBuddyUsesChatCompletionsUpstream(t *testing.T) {
 	require.NotEmpty(t, upstream.urls)
 	assert.Contains(t, upstream.urls[0], "/v2/chat/completions",
 		"CodeBuddy 必须直转 CC 端点，不得把 Responses 请求发往 /v1/responses")
+}
+
+// TestForwardAsAnthropic_CodeBuddyAppliesPlatformPayloadRules Claude 协议客户端走 /v1/messages
+// 时，出站载荷必须经过与 CC 入口同一套 CodeBuddy 规则。修复前本路径只做 Anthropic→CC 的
+// 结构转换就直接发上游，三条规则全被跳过（2026-09-30 核查）：
+//   - 提示词指纹净化 → Claude Code 的 system 模板句整单 400/11128；
+//   - tool_choice 归一化 → {"type":"tool","name":…} 转换后是对象形态，上游该字段只认 string，
+//     400 code 11101；
+//   - DeepSeek reasoning_content 回填 → 多轮缺推理字段，400 code 11155。
+func TestForwardAsAnthropic_CodeBuddyAppliesPlatformPayloadRules(t *testing.T) {
+	upstream := &scriptedHTTPUpstream{seq: []string{"200\n" + codeBuddyDispatchSSE}}
+	repo := &codeBuddyRereadAccountRepo{account: newCodeBuddyCCAccount("tok")}
+	svc := newCodeBuddyCCGatewayForTest(t, repo, upstream)
+	account := newCodeBuddyCCAccount("tok")
+	c := codeBuddyCCTestContext(t)
+
+	blockedIdentity := "You are Claude Code, Anthropic's official CLI for Claude"
+	body := []byte(`{` +
+		`"model":"deepseek-v4.1-flash","max_tokens":16384,` +
+		`"system":[{"type":"text","text":"` + blockedIdentity + `.\nkeep me","cache_control":{"type":"ephemeral"}}],` +
+		`"tools":[{"name":"read_file","description":"read","input_schema":{"type":"object"}}],` +
+		`"tool_choice":{"type":"tool","name":"read_file"},` +
+		`"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{"p":"a"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}` +
+		`]}`)
+
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.Len(t, upstream.bodies, 1, "恰好一次上游请求")
+	sent := upstream.bodies[0]
+
+	assert.NotContains(t, sent, blockedIdentity,
+		"system 指纹必须在出站前净化，否则上游按逐字匹配整单 400/11128")
+	assert.Contains(t, sent, "Anthropic's official CLI tool for Claude", "身份句按最小改动改写")
+	assert.Contains(t, sent, "keep me", "净化不得吞掉指纹之外的内容")
+
+	toolChoice := gjson.Get(sent, "tool_choice")
+	assert.Equal(t, gjson.String, toolChoice.Type,
+		"上游 tool_choice 只认 string；对象形态会 400 code 11101")
+	assert.Equal(t, "read_file", toolChoice.String())
+
+	var assistantReasoning string
+	for _, msg := range gjson.Get(sent, "messages").Array() {
+		if msg.Get("role").String() != "assistant" {
+			continue
+		}
+		assistantReasoning = msg.Get("reasoning_content").String()
+	}
+	assert.Equal(t, " ", assistantReasoning,
+		"DeepSeek 多轮要求每个 assistant 都带推理字段，缺原文时补空格占位（空串等同缺字段 → 11155）")
+
+	assert.True(t, gjson.Get(sent, "stream").Bool(), "CodeBuddy 上游仅支持流式")
+	assert.True(t, gjson.Get(sent, "stream_options.include_usage").Bool(), "用量统计依赖该字段")
+	assert.Equal(t, "deepseek-v4.1-flash", gjson.Get(sent, "model").String(), "模型名不得被改写")
+	assert.NotContains(t, sent, "cache_control",
+		"Anthropic 专有字段不得进 buddy 上游体（转换按类型重建，未知字段自然丢弃）")
 }
 
 // TestForwardAsChatCompletions_CodeBuddySkipsResponsesProbe CC 入站同样视为

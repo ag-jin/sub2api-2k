@@ -70,17 +70,15 @@ func RegisterGatewayRoutes(
 	}
 	countTokensHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo:
+		case service.PlatformOpenAI, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo,
+			service.PlatformCodeBuddy:
+			// CodeBuddy 上游只有 /v2/chat/completions，没有 token 计数端点，
+			// 与国产供应商同一条路：本地估算，不发上游（见 ForwardCountTokensAsAnthropic）。
+			// 此前这里直接 400；后果是 Claude Code 等 Anthropic 协议客户端启动即调本端点，
+			// buddy 分组因此完全无法被 Claude 协议客户端使用（2026-09-30 实测）。
 			h.OpenAIGateway.CountTokens(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokCountTokens(c)
-		case service.PlatformCodeBuddy:
-			// CodeBuddy 上游仅提供 /v2/chat/completions 对话端点，无 token 计数端点。
-			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"type":    "unsupported-provider",
-				"message": "CodeBuddy does not support the count_tokens API",
-			}})
 		default:
 			h.Gateway.CountTokens(c)
 		}
