@@ -293,14 +293,37 @@ func hasCodeBuddyReasoningEffort(out []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(out, "reasoningEffort").String()) != ""
 }
 
-// backfillCodeBuddyReasoningContent DeepSeek 多轮一致性（对齐官方客户端
-// requiresReasoningContentOnAssistantMessages）：会话内任一 assistant 消息带 reasoning 痕迹时，
-// 上游要求**所有** assistant 消息都带 reasoning_content 字段（string，可为空串），否则报错。
+// codeBuddyReasoningPlaceholder 无推理原文时的占位值。
 //
-// 规则：
+// 上游对 assistant 推理字段的校验是 `len(value) > 0` 且**不做 trim**：空串过不了、
+// 单个空格能过。所以"没有推理内容"必须补空格而不是补空串——空串等同于没挂字段，
+// 仍会被判 reasoning_content_missing（400 code=11155）。该字段是**透传校验位**
+// 而非内容位（官方客户端有同类占位先例，Moonshot 用 "-"），占位不污染模型上下文。
+//
+// 口径吸收自 workbuddy-manager `server/routers/responses.py::attach_reasoning`
+// （对其上游 2026-09-19 commit 5657229 的实测复验）。
+const codeBuddyReasoningPlaceholder = " "
+
+// BackfillCodeBuddyReasoningContent DeepSeek 多轮一致性（对齐官方客户端
+// requiresReasoningContentOnAssistantMessages）：会话内任一 assistant 消息带 reasoning 痕迹时，
+// 上游要求**所有** assistant 消息都带推理字段，否则报 400 code=11155
+// `reasoning_content_missing`（"the reasoning content from the previous turn must be
+// passed back in thinking mode"）。
+//
+// 该错误的后果不止当条请求失败：账号被记一次失败 → 连续失败触发降级冷却 → 池里
+// 无可用账号 → 客户端重试变成与模型无关的 503 死循环。故此处宁可宽容：
+//
+// 规则（对齐 workbuddy-manager::attach_reasoning 的实测口径）：
 //   - 任一 assistant 有非空 `reasoning`（string）或已有 `reasoning_content` 字段 → 触发；
-//   - 触发后每个 assistant：已有 reasoning_content 保留；否则复制 `reasoning` 值；两者皆无 → 补空串；
+//   - 触发后每个 assistant：**两个字段名都写**（`reasoning` + `reasoning_content`），
+//     值取已有推理原文——`reasoning_content` 优先（它是响应侧字段名，客户端原样带回），
+//     回退 `reasoning`；
+//   - 两处都取不到原文 → 补占位空格（不是空串，理由见 codeBuddyReasoningPlaceholder）；
 //   - 无任何痕迹 → 零改动（不白白加字段）；非 deepseek 模型 → 零改动。
+//
+// 为什么两个字段名都写：社区报告（issue #37，8 组对照实验）称上游**请求侧**校验读的是
+// `reasoning` 而非 `reasoning_content`。该结论本仓未复现，此处按参考实现同样"两个都写"
+// ——多写一个上游不认的字段代价为零，而漏写会让那一侧的校验直接判缺字段。
 func BackfillCodeBuddyReasoningContent(out []byte) ([]byte, error) {
 	model := gjson.GetBytes(out, "model").String()
 	if !isCodeBuddyDeepSeekModel(model) {
@@ -333,18 +356,27 @@ func BackfillCodeBuddyReasoningContent(out []byte) ([]byte, error) {
 		if role := strings.TrimSpace(msg.Get("role").String()); role != "assistant" {
 			continue
 		}
-		if msg.Get("reasoning_content").Exists() {
-			continue // 已有 → 不覆盖
-		}
+		// 本轮推理原文：reasoning_content 是响应侧字段名（腾讯 SSE 回放推理用它），
+		// 客户端原样带回时优先采信；回退 reasoning。
 		value := ""
-		if r := msg.Get("reasoning"); r.Type == gjson.String {
+		if rc := msg.Get("reasoning_content"); rc.Type == gjson.String && rc.String() != "" {
+			value = rc.String()
+		} else if r := msg.Get("reasoning"); r.Type == gjson.String && r.String() != "" {
 			value = r.String()
 		}
-		updated, err := sjson.SetBytes(out, fmt.Sprintf("messages.%d.reasoning_content", i), value)
-		if err != nil {
-			return nil, fmt.Errorf("backfill codebuddy reasoning_content: %w", err)
+		if value == "" {
+			value = codeBuddyReasoningPlaceholder
 		}
-		out = updated
+		for _, field := range []string{"reasoning", "reasoning_content"} {
+			if cur := msg.Get(field); cur.Type == gjson.String && cur.String() == value {
+				continue // 已是目标值 → 不写
+			}
+			updated, err := sjson.SetBytes(out, fmt.Sprintf("messages.%d.%s", i, field), value)
+			if err != nil {
+				return nil, fmt.Errorf("backfill codebuddy %s: %w", field, err)
+			}
+			out = updated
+		}
 	}
 	return out, nil
 }
