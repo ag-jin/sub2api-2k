@@ -1165,8 +1165,11 @@ func TestTransformCodeBuddyRequestBody_DeepSeekThinking(t *testing.T) {
 }
 
 // TestTransformCodeBuddyRequestBody_ReasoningContentBackfill DeepSeek 多轮一致性：会话里出现
-// reasoning 痕迹后，上游要求所有 assistant 消息都带 reasoning_content（官方客户端
-// requiresReasoningContentOnAssistantMessages）。无痕迹时零改动。
+// reasoning 痕迹后，上游要求所有 assistant 消息都带推理字段（官方客户端
+// requiresReasoningContentOnAssistantMessages），否则判 400 code=11155。
+//
+// 口径对齐 workbuddy-manager::attach_reasoning：**两个字段名都写**（reasoning +
+// reasoning_content），无原文时补**空格**占位（上游校验 len>0 且不 trim，空串过不了）。无痕迹时零改动。
 func TestTransformCodeBuddyRequestBody_ReasoningContentBackfill(t *testing.T) {
 	t.Run("trace triggers backfill on all assistant messages", func(t *testing.T) {
 		body := []byte(`{"model":"deepseek-v4.1-flash","messages":[` +
@@ -1177,18 +1180,23 @@ func TestTransformCodeBuddyRequestBody_ReasoningContentBackfill(t *testing.T) {
 		out, err := transformCodeBuddyRequestBody(body, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "think-1", gjson.GetBytes(out, "messages.0.reasoning_content").String(), "有 reasoning → 复制其值")
-		assert.Equal(t, "", gjson.GetBytes(out, "messages.2.reasoning_content").String(), "无痕迹的 assistant → 补空串")
+		assert.Equal(t, "think-1", gjson.GetBytes(out, "messages.0.reasoning").String(), "reasoning 别名同样补齐")
+		assert.Equal(t, " ", gjson.GetBytes(out, "messages.2.reasoning_content").String(), "无痕迹的 assistant → 空格占位（空串过不了上游 len>0 校验）")
+		assert.Equal(t, " ", gjson.GetBytes(out, "messages.2.reasoning").String(), "无痕迹的 assistant → 空格占位")
 		assert.Equal(t, "keep-me", gjson.GetBytes(out, "messages.3.reasoning_content").String(), "已有值不覆盖")
+		assert.Equal(t, "keep-me", gjson.GetBytes(out, "messages.3.reasoning").String(), "已有 reasoning_content → 补 reasoning 别名")
 		assert.False(t, gjson.GetBytes(out, "messages.1.reasoning_content").Exists(), "user 消息不补")
+		assert.False(t, gjson.GetBytes(out, "messages.1.reasoning").Exists(), "user 消息不补")
 	})
 
 	t.Run("thinking enabled triggers backfill even without traces", func(t *testing.T) {
 		// 官方触发条件：thinkingEnabled || 存在 reasoning 痕迹——deepseek 因目录默认档被开了思考，
-		// 历史里即使没有 reasoning 也要给所有 assistant 补 reasoning_content（上游要求）。
+		// 历史里即使没有 reasoning 也要给所有 assistant 补推理字段（上游要求）。
 		body := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"assistant","content":"a1"},{"role":"user","content":"u"}]}`)
 		out, err := transformCodeBuddyRequestBody(body, nil)
 		require.NoError(t, err)
-		assert.Equal(t, "", gjson.GetBytes(out, "messages.0.reasoning_content").String(), "开思考下 assistant 补空串")
+		assert.Equal(t, " ", gjson.GetBytes(out, "messages.0.reasoning_content").String(), "开思考下 assistant 补空格占位")
+		assert.Equal(t, " ", gjson.GetBytes(out, "messages.0.reasoning").String(), "开思考下 assistant 补空格占位")
 	})
 
 	t.Run("thinking disabled and no trace leaves body unchanged", func(t *testing.T) {
