@@ -255,6 +255,11 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 
+	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
+	// 与 session 必须同源一致，任何在其之后的覆写都会把签名拆散。zhipu 数据面挂点
+	// 仅此两处，另一处是 buildNativeAnthropicUpstreamRequest。
+	s.applyZhipuClientSign(upstreamReq.Context(), c, account, body, upstreamReq.Header)
+
 	proxyURL := ""
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()

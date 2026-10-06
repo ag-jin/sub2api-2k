@@ -190,6 +190,10 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
 
+	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
+	// 与 session 必须同源一致。zhipu 数据面挂点仅此两处，另一处是 sendCCUpstreamRequest。
+	s.applyZhipuClientSign(req.Context(), c, account, body, req.Header)
+
 	return req, body, nil
 }
 

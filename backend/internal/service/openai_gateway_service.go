@@ -448,6 +448,13 @@ type OpenAIGatewayService struct {
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
+	// zhipuSigner 是智谱签名 V4 的注入接缝（design M3 / 票 22；wire 注入
+	// *zcodesign.Signer）。为 nil 时签名整体关闭：未接线部署与其它平台零行为变化。
+	zhipuSigner zhipuClientSigner
+	// zhipuSignFailureHook 是签名失败 fail-open 降级的回调接缝：本票保证每条失败
+	// 路径恰好回调一次，L1 计数与 fail 策略本体属票 24。
+	zhipuSignFailureHook func(accountID int64, err error)
+
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
 	openaiSchedulerOnce            sync.Once
