@@ -93,3 +93,40 @@ describe('CNProviderQuotaCell', () => {
     expect(queryQuota).toHaveBeenCalledWith(account.id)
   })
 })
+
+describe('CNProviderQuotaCell needs-relogin badge', () => {
+  beforeEach(() => {
+    queryQuota.mockReset()
+  })
+
+  it('flags the cell when the managed sign-in expired, without exposing credential details', () => {
+    const flagged = {
+      ...account,
+      extra: { ...account.extra, zhipu_needs_relogin: true }
+    } as Account
+    const wrapper = mount(CNProviderQuotaCell, { props: { account: flagged } })
+
+    const badge = wrapper.get('[data-test="cn-provider-quota-needs-relogin"]')
+    expect(badge.text()).toBe('admin.accounts.cnProviders.zhipuLogin.needsRelogin')
+    expect(badge.attributes('title')).toBe(
+      'admin.accounts.cnProviders.zhipuLogin.needsReloginTooltip'
+    )
+    // 列表徽标只提示，不触发任何操作（重登入口在账号编辑弹窗）。
+    expect(badge.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('omits the badge when the flag is false or absent', () => {
+    const variants = [
+      { ...account.extra, zhipu_needs_relogin: false },
+      { ...account.extra }
+    ]
+    for (const extra of variants) {
+      const wrapper = mount(CNProviderQuotaCell, {
+        props: { account: { ...account, extra } as Account }
+      })
+      expect(wrapper.find('[data-test="cn-provider-quota-needs-relogin"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+})

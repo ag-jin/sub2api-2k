@@ -43,6 +43,17 @@
          noun label ("5h/weekly") read as a passive caption and users could not
          discover the manual refresh. -->
     <div class="flex flex-wrap items-center gap-1.5">
+      <!-- 登录失效徽标（design M6 / ui-panels §6.3）：只提示「需重新登录」，
+           不暴露凭据细节，也不触发任何操作（重登入口在账号编辑弹窗）。 -->
+      <span
+        v-if="needsRelogin"
+        data-test="cn-provider-quota-needs-relogin"
+        class="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+        :title="t('admin.accounts.cnProviders.zhipuLogin.needsReloginTooltip')"
+      >
+        <Icon name="exclamationTriangle" size="sm" :stroke-width="2" />
+        {{ t('admin.accounts.cnProviders.zhipuLogin.needsRelogin') }}
+      </span>
       <button
         type="button"
         data-test="cn-provider-quota-probe"
@@ -85,6 +96,7 @@ import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { CNProviderQuotaProbeResult } from '@/api/admin/cnProviders'
 import type { Account } from '@/types'
+import Icon from '@/components/icons/Icon.vue'
 import { cnQuotaCellVisible } from './credentialsBuilder'
 
 const props = defineProps<{
@@ -99,6 +111,12 @@ const readMode = (): string => {
 }
 
 const visible = computed(() => cnQuotaCellVisible(props.account.platform, readMode()))
+
+// 运行态标记：keeper 探针 401/自愈失败写 extra["zhipu_needs_relogin"]（design M2/M3），
+// 重登成功后由重登链路清除。
+const needsRelogin = computed(
+  () => (props.account.extra as Record<string, unknown> | undefined)?.['zhipu_needs_relogin'] === true
+)
 
 const loading = ref(false)
 const error = ref<string | null>(null)
