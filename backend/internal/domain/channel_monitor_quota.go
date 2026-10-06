@@ -68,6 +68,21 @@ type MonitorQuotaSnapshot struct {
 	// NeedsRelogin 登录态凭据需重登（读 accounts.extra 的
 	// zhipu_needs_relogin，契约见票 09）。可选，不影响 Success/状态判定。
 	NeedsRelogin bool `json:"needs_relogin,omitempty"`
+	// SignEffectiveRate 是智谱签名 L2 费率对账的最近一次有效系数（实际积分 ÷ 期望积分，
+	// design M5 费率对账段 / 票 27）：0.67 = 签名按签名渠道系数结算，≈1.0 = 签名被静默
+	// 按无签名计费。可选：未启用签名、未接线或从未成功对账时不出现（0）。
+	SignEffectiveRate float64 `json:"sign_effective_rate,omitempty"`
+	// SignPeakFactor 是对账时刻的时段系数（0.5 闲时 / 1.0 高峰），前端健康度卡片展示口径。
+	SignPeakFactor float64 `json:"sign_peak_factor,omitempty"`
+	// SignReconciledAt 是有效系数对应的已结算窗口末端（数据截止时刻）。可选。
+	SignReconciledAt *time.Time `json:"sign_reconciled_at,omitempty"`
+	// SignReconcileStale 表示最近一轮对账失败而保留了旧值：前端必须标注「陈旧」，
+	// 不得当作新鲜值展示。可选。
+	SignReconcileStale bool `json:"sign_reconcile_stale,omitempty"`
+	// SignReconcileDeviation 表示有效系数超过生效阈值
+	// （sign_reconcile_deviation_threshold，默认 0.70）：前端渲染偏离状态色，
+	// 票 25 的 ops 规则按同一指标值触发告警。可选。
+	SignReconcileDeviation bool `json:"sign_reconcile_deviation,omitempty"`
 }
 
 // MonitorBalance 单币种余额条目。

@@ -89,6 +89,10 @@ type ZhipuAccountMonitorService struct {
 	creditUsageMu    sync.Mutex
 	creditUsageCache map[string]zhipuCreditUsageCacheEntry
 
+	// signReconcile 是 L2 费率对账器（票 27）：装配期经 SetSignReconciler 注入一次，
+	// 运行期只读；为 nil 时周期入口与快照合并都是空操作（零行为变化）。
+	signReconcile *ZhipuSignReconciler
+
 	now func() time.Time
 }
 
@@ -255,6 +259,67 @@ func (s *ZhipuAccountMonitorService) nowTime() time.Time {
 		return time.Now()
 	}
 	return s.now()
+}
+
+// ---------------------------------------------------------------------------
+// L2 费率对账的周期挂载与快照输出（design M5 费率对账段 / 票 27）
+// ---------------------------------------------------------------------------
+
+// SetSignReconciler 注入 L2 费率对账器（票 27）。装配期调用一次，运行期只读；
+// 传 nil 等于未接线（周期入口与快照合并都成为空操作）。
+func (s *ZhipuAccountMonitorService) SetSignReconciler(reconciler *ZhipuSignReconciler) {
+	if s == nil {
+		return
+	}
+	s.signReconcile = reconciler
+}
+
+// RunDueSignReconcile 是对账的**周期入口**：挂在 M4 既有周期任务（keeper loop 每轮）
+// 内，每轮调一次——本服务不新建 goroutine/ticker（design M5：不新建 loop）。是否到期
+// 由 ZhipuSignReconciler 的窗口口径决定；未接线时是空操作。
+//
+// 主会话接线 TODO（不在票 27 的文件面内）：
+//   - keeper 侧：给 zhipuCredentialKeeper 增加一条可选接缝（如
+//     `RunDueSignReconcile(ctx context.Context)`），在 runOnce 的账号遍历之后调用一次；
+//   - wire 侧：
+//     `monitor.SetSignReconciler(NewZhipuSignReconciler(cfg, accountRepo, monitor, zhipuSignAlerts, nil))`
+//     并 `reconciler.SetConfigSource(zhipuSignConfigService)`（#28 的运行层覆盖热生效）。
+func (s *ZhipuAccountMonitorService) RunDueSignReconcile(ctx context.Context) {
+	if s == nil || s.signReconcile == nil {
+		return
+	}
+	s.signReconcile.RunIfDue(ctx)
+}
+
+// SignReconcileResult 返回最近一次可展示的对账结果（ok=false 表示从未成功对账）。
+func (s *ZhipuAccountMonitorService) SignReconcileResult() (ZhipuSignReconcileResult, bool) {
+	if s == nil || s.signReconcile == nil {
+		return ZhipuSignReconcileResult{}, false
+	}
+	return s.signReconcile.LastResult()
+}
+
+// ApplySignReconcileSnapshot 把最近一次 L2 对账结果合入配额快照（票 11 的快照字段）。
+// 未接线或从未成功对账时保持快照原样——老历史行与既有消费方零变化。
+//
+// 主会话接线 TODO（不在票 27 的文件面内）：ChannelMonitorQuotaFetcher 的智谱登录态分支
+// （fetchZhipuLoginSources / fetchCNQuota）在建好快照后调用一次本方法即可，无需新字段。
+func (s *ZhipuAccountMonitorService) ApplySignReconcileSnapshot(snapshot *domain.MonitorQuotaSnapshot) {
+	if s == nil || snapshot == nil || s.signReconcile == nil {
+		return
+	}
+	result, ok := s.signReconcile.LastResult()
+	if !ok {
+		return
+	}
+	snapshot.SignEffectiveRate = result.EffectiveRate
+	snapshot.SignPeakFactor = result.PeakFactor
+	snapshot.SignReconcileStale = result.Stale
+	snapshot.SignReconcileDeviation = result.Deviation
+	if !result.WindowEnd.IsZero() {
+		windowEnd := result.WindowEnd
+		snapshot.SignReconciledAt = &windowEnd
+	}
 }
 
 // zhipuCreditUsageCacheKey 以账号 + 上游窗口字符串为键：不同自然日窗口不互相串用，
