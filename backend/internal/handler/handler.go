@@ -20,6 +20,8 @@ type AdminHandlers struct {
 	AntigravityOAuth       *admin.AntigravityOAuthHandler
 	GrokOAuth              *admin.GrokOAuthHandler
 	CodeBuddy              *admin.CodeBuddyAdminHandler
+	ZhipuOAuth             *admin.ZhipuOAuthHandler
+	ZhipuSign              *admin.ZhipuSignHandler
 	CNProvider             *admin.CNProviderHandler
 	Proxy                  *admin.ProxyHandler
 	Redeem                 *admin.RedeemHandler
@@ -44,6 +46,7 @@ type AdminHandlers struct {
 	Affiliate              *admin.AffiliateHandler
 	Compliance             *admin.ComplianceHandler
 	AuditLog               *admin.AuditLogHandler
+	PricingPlan            *admin.PricingPlanHandler
 }
 
 // Handlers contains all HTTP handlers

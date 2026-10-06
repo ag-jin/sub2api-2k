@@ -12,6 +12,7 @@ const {
   getPublicSettings,
   getDashboardApiKeysUsage,
   getAvailableGroups,
+  getAvailablePricingPlans,
   getUserGroupRates,
   showError,
   showSuccess,
@@ -24,6 +25,7 @@ const {
   getPublicSettings: vi.fn(),
   getDashboardApiKeysUsage: vi.fn(),
   getAvailableGroups: vi.fn(),
+  getAvailablePricingPlans: vi.fn(),
   getUserGroupRates: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -76,6 +78,9 @@ vi.mock('@/api', () => ({
     getAvailable: getAvailableGroups,
     getUserGroupRates,
   },
+  pricingPlansAPI: {
+    getAvailable: getAvailablePricingPlans,
+  },
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -114,6 +119,7 @@ const createApiKey = (): ApiKey => ({
   key: 'sk-test-key',
   name: 'test-key',
   group_id: null,
+  pricing_plan_id: null,
   status: 'active',
   ip_whitelist: [],
   ip_blacklist: [],
@@ -251,6 +257,38 @@ const mountView = async () => {
   return wrapper
 }
 
+// Like mountView, but renders BaseDialog slots so the create/edit form is interactive.
+const BaseDialogSlotStub = {
+  template: '<div><slot /><slot name="footer" /></div>',
+}
+
+const mountViewWithDialogs = async () => {
+  const wrapper = mount(KeysView, {
+    global: {
+      stubs: {
+        AppLayout: AppLayoutStub,
+        TablePageLayout: TablePageLayoutStub,
+        DataTable: DataTableStub,
+        Pagination: PaginationStub,
+        BaseDialog: BaseDialogSlotStub,
+        ConfirmDialog: true,
+        EmptyState: true,
+        Select: SelectStub,
+        SearchInput: SearchInputStub,
+        Icon: IconStub,
+        UseKeyModal: true,
+        EndpointPopover: true,
+        GroupBadge: true,
+        GroupOptionItem: true,
+        Teleport: true,
+      },
+    },
+  })
+  await flushPromises()
+  await nextTick()
+  return wrapper
+}
+
 const visibleColumnKeys = (wrapper: VueWrapper) =>
   wrapper.get('[data-test="columns"]').text().split(',').filter(Boolean)
 
@@ -275,6 +313,7 @@ describe('user KeysView column settings', () => {
     getPublicSettings.mockReset()
     getDashboardApiKeysUsage.mockReset()
     getAvailableGroups.mockReset()
+    getAvailablePricingPlans.mockReset()
     getUserGroupRates.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
@@ -292,6 +331,7 @@ describe('user KeysView column settings', () => {
     getPublicSettings.mockResolvedValue({})
     getDashboardApiKeysUsage.mockResolvedValue({ stats: {} })
     getAvailableGroups.mockResolvedValue([])
+    getAvailablePricingPlans.mockResolvedValue([])
     getUserGroupRates.mockResolvedValue({})
     isCurrentStep.mockReturnValue(false)
   })
@@ -589,16 +629,26 @@ describe('user KeysView column settings', () => {
       await groupSelect(wrapper).vm.$emit('update:modelValue', 1)
       await chooseProvider(wrapper, 'domestic')
       expect(groupSelect(wrapper).props('modelValue')).toBeNull()
+      // 套餐中心合并语义：空目录下无组提交 = 无绑定 key 直接创建（上游分组
+      // 必选守卫已由套餐必选取代——见 route record 偏离记录）。
       await wrapper.get('#key-form').trigger('submit')
-      expect(keysAPI.create).not.toHaveBeenCalled()
-      expect(showError).toHaveBeenCalledWith('keys.groupRequired')
+      await flushPromises()
+      expect(keysAPI.create).toHaveBeenCalledWith(
+        'My key', null, null, undefined, [], [], 0, undefined,
+        { rate_limit_5h: 0, rate_limit_1d: 0, rate_limit_7d: 0 }
+      )
 
+      // 首次提交成功后弹窗已关闭：重开创建弹窗再验证带组提交。
+      vi.mocked(keysAPI.create).mockClear()
+      await wrapper.get('[data-tour="keys-create-btn"]').trigger('click')
+      await nextTick()
+      await wrapper.get('[data-tour="key-form-name"]').setValue('My key')
       await groupSelect(wrapper).vm.$emit('update:modelValue', 5)
       vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), group_id: 5 })
       await wrapper.get('#key-form').trigger('submit')
       await flushPromises()
       expect(keysAPI.create).toHaveBeenCalledOnce()
-      expect(vi.mocked(keysAPI.create).mock.calls[0].slice(0, 2)).toEqual(['My key', 5])
+      expect(vi.mocked(keysAPI.create).mock.calls[0].slice(0, 3)).toEqual(['My key', 5, null])
     })
 
     it('defaults to a provider with available groups and disables empty categories', async () => {
@@ -640,5 +690,63 @@ describe('user KeysView column settings', () => {
       expect(wrapper.find('[data-tour="key-form-provider"]').exists()).toBe(false)
       expect(optionIds(wrapper)).toHaveLength(11)
     })
+  })
+
+  it('creates an unbound legacy key when no public pricing plans are available', async () => {
+    const wrapper = await mountViewWithDialogs()
+
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await nextTick()
+    await wrapper.get('form#key-form').trigger('submit')
+    await flushPromises()
+
+    expect(keysAPI.create).toHaveBeenCalledWith(
+      '',
+      null,
+      null,
+      undefined,
+      [],
+      [],
+      0,
+      undefined,
+      { rate_limit_5h: 0, rate_limit_1d: 0, rate_limit_7d: 0 }
+    )
+    expect(showError).not.toHaveBeenCalledWith('Please select a pricing plan')
+  })
+
+  it('creates a key bound to the selected pricing plan without sending group_id', async () => {
+    getAvailablePricingPlans.mockResolvedValue([
+      { id: 7, name: 'standard', title: 'Standard Plan', description: 'Standard routing' },
+    ])
+    const wrapper = await mountViewWithDialogs()
+
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await nextTick()
+
+    const planSelect = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((select) =>
+        (select.props('options') as Array<{ value: number }>).some((option) => option.value === 7)
+      )
+    expect(planSelect).toBeTruthy()
+    await planSelect!.vm.$emit('update:modelValue', 7)
+    await wrapper.get('form#key-form').trigger('submit')
+    await flushPromises()
+
+    expect(keysAPI.create).toHaveBeenCalledWith(
+      '',
+      null,
+      7,
+      undefined,
+      [],
+      [],
+      0,
+      undefined,
+      { rate_limit_5h: 0, rate_limit_1d: 0, rate_limit_7d: 0 }
+    )
+    // 套餐 key 不携带 group_id（第 2 参恒 null，第 3 参为套餐 ID）。
+    expect((keysAPI.create as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(null)
+    expect((keysAPI.create as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(7)
+    expect(getAvailablePricingPlans).toHaveBeenCalled()
   })
 })

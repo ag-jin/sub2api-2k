@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplan"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 )
@@ -95,6 +96,20 @@ func (_c *APIKeyCreate) SetGroupID(v int64) *APIKeyCreate {
 func (_c *APIKeyCreate) SetNillableGroupID(v *int64) *APIKeyCreate {
 	if v != nil {
 		_c.SetGroupID(*v)
+	}
+	return _c
+}
+
+// SetPricingPlanID sets the "pricing_plan_id" field.
+func (_c *APIKeyCreate) SetPricingPlanID(v int64) *APIKeyCreate {
+	_c.mutation.SetPricingPlanID(v)
+	return _c
+}
+
+// SetNillablePricingPlanID sets the "pricing_plan_id" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillablePricingPlanID(v *int64) *APIKeyCreate {
+	if v != nil {
+		_c.SetPricingPlanID(*v)
 	}
 	return _c
 }
@@ -315,6 +330,11 @@ func (_c *APIKeyCreate) SetUser(v *User) *APIKeyCreate {
 // SetGroup sets the "group" edge to the Group entity.
 func (_c *APIKeyCreate) SetGroup(v *Group) *APIKeyCreate {
 	return _c.SetGroupID(v.ID)
+}
+
+// SetPricingPlan sets the "pricing_plan" edge to the PricingPlan entity.
+func (_c *APIKeyCreate) SetPricingPlan(v *PricingPlan) *APIKeyCreate {
+	return _c.SetPricingPlanID(v.ID)
 }
 
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by IDs.
@@ -629,6 +649,23 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 		_node.GroupID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
+	if nodes := _c.mutation.PricingPlanIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2O,
+			Inverse: true,
+			Table:   apikey.PricingPlanTable,
+			Columns: []string{apikey.PricingPlanColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(pricingplan.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_node.PricingPlanID = &nodes[0]
+		_spec.Edges = append(_spec.Edges, edge)
+	}
 	if nodes := _c.mutation.UsageLogsIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.O2M,
@@ -778,6 +815,24 @@ func (u *APIKeyUpsert) UpdateGroupID() *APIKeyUpsert {
 // ClearGroupID clears the value of the "group_id" field.
 func (u *APIKeyUpsert) ClearGroupID() *APIKeyUpsert {
 	u.SetNull(apikey.FieldGroupID)
+	return u
+}
+
+// SetPricingPlanID sets the "pricing_plan_id" field.
+func (u *APIKeyUpsert) SetPricingPlanID(v int64) *APIKeyUpsert {
+	u.Set(apikey.FieldPricingPlanID, v)
+	return u
+}
+
+// UpdatePricingPlanID sets the "pricing_plan_id" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdatePricingPlanID() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldPricingPlanID)
+	return u
+}
+
+// ClearPricingPlanID clears the value of the "pricing_plan_id" field.
+func (u *APIKeyUpsert) ClearPricingPlanID() *APIKeyUpsert {
+	u.SetNull(apikey.FieldPricingPlanID)
 	return u
 }
 
@@ -1203,6 +1258,27 @@ func (u *APIKeyUpsertOne) UpdateGroupID() *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) ClearGroupID() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearGroupID()
+	})
+}
+
+// SetPricingPlanID sets the "pricing_plan_id" field.
+func (u *APIKeyUpsertOne) SetPricingPlanID(v int64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetPricingPlanID(v)
+	})
+}
+
+// UpdatePricingPlanID sets the "pricing_plan_id" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdatePricingPlanID() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdatePricingPlanID()
+	})
+}
+
+// ClearPricingPlanID clears the value of the "pricing_plan_id" field.
+func (u *APIKeyUpsertOne) ClearPricingPlanID() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearPricingPlanID()
 	})
 }
 
@@ -1841,6 +1917,27 @@ func (u *APIKeyUpsertBulk) UpdateGroupID() *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) ClearGroupID() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearGroupID()
+	})
+}
+
+// SetPricingPlanID sets the "pricing_plan_id" field.
+func (u *APIKeyUpsertBulk) SetPricingPlanID(v int64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetPricingPlanID(v)
+	})
+}
+
+// UpdatePricingPlanID sets the "pricing_plan_id" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdatePricingPlanID() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdatePricingPlanID()
+	})
+}
+
+// ClearPricingPlanID clears the value of the "pricing_plan_id" field.
+func (u *APIKeyUpsertBulk) ClearPricingPlanID() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearPricingPlanID()
 	})
 }
 

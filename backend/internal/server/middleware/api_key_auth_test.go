@@ -1606,6 +1606,10 @@ func (r *stubApiKeyRepo) ListKeysByGroupID(ctx context.Context, groupID int64) (
 	return nil, errors.New("not implemented")
 }
 
+func (r *stubApiKeyRepo) ListKeysByPricingPlanID(ctx context.Context, planID int64) ([]string, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (r *stubApiKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error) {
 	return 0, errors.New("not implemented")
 }

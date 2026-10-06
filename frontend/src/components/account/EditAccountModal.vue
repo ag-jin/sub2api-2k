@@ -208,7 +208,124 @@
           </div>
           <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
         </div>
-        <div>
+        <!-- 智谱登录托管账号（07）：登录态面板。API Key 由登录自动管理，
+             不渲染可编辑输入框（不可编辑、不可清空）。 -->
+        <div
+          v-if="isZhipuLoginManaged"
+          data-testid="zhipu-managed-panel"
+          class="space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-700 dark:bg-blue-900/30"
+        >
+          <div class="flex items-center gap-2">
+            <Icon name="key" size="sm" class="text-blue-600 dark:text-blue-400" :stroke-width="2" />
+            <span class="text-sm font-medium text-blue-900 dark:text-blue-200">
+              {{ t('admin.accounts.cnProviders.zhipuLogin.managedTitle') }}
+            </span>
+            <!-- 失效徽标：文案不暴露凭据细节，仅提示需重新登录（design M6）。 -->
+            <span
+              v-if="zhipuNeedsRelogin"
+              data-testid="zhipu-needs-relogin-badge"
+              class="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+            >
+              <Icon name="exclamationTriangle" size="sm" :stroke-width="2" />
+              {{ t('admin.accounts.cnProviders.zhipuLogin.needsRelogin') }}
+            </span>
+          </div>
+
+          <p v-if="zhipuNeedsRelogin" class="text-xs text-red-600 dark:text-red-400">
+            {{ t('admin.accounts.cnProviders.zhipuLogin.needsReloginHint') }}
+          </p>
+
+          <div class="space-y-1">
+            <span class="text-xs font-medium text-blue-800 dark:text-blue-300">
+              {{ t('admin.accounts.cnProviders.zhipuLogin.tokenStatusTitle') }}
+            </span>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-900 dark:text-blue-200">
+              <span data-testid="zhipu-token-access-token">
+                {{ t('admin.accounts.cnProviders.zhipuLogin.tokenAccessToken') }}:
+                {{
+                  zhipuTokenStatus.accessToken
+                    ? t('admin.accounts.cnProviders.zhipuLogin.tokenPresent')
+                    : t('admin.accounts.cnProviders.zhipuLogin.tokenMissing')
+                }}
+              </span>
+              <span data-testid="zhipu-token-api-key">
+                {{ t('admin.accounts.cnProviders.zhipuLogin.tokenApiKey') }}:
+                {{
+                  zhipuTokenStatus.apiKey
+                    ? t('admin.accounts.cnProviders.zhipuLogin.tokenPresent')
+                    : t('admin.accounts.cnProviders.zhipuLogin.tokenMissing')
+                }}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
+            <div
+              data-testid="zhipu-managed-api-key"
+              class="input cursor-not-allowed bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400"
+            >
+              {{ t('admin.accounts.cnProviders.zhipuLogin.apiKeyManaged') }}
+            </div>
+            <p class="input-hint">
+              {{ t('admin.accounts.cnProviders.zhipuLogin.apiKeyManagedHint') }}
+            </p>
+          </div>
+
+          <!-- 重登：生成登录链接 → 粘贴授权码 → 兑换并刷新凭据 -->
+          <div class="space-y-3 border-t border-blue-200 pt-3 dark:border-blue-700">
+            <div class="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                data-testid="zhipu-relogin-start"
+                class="btn btn-secondary"
+                :disabled="reloginLoading"
+                @click="startZhipuRelogin"
+              >
+                {{ t('admin.accounts.cnProviders.zhipuLogin.relogin') }}
+              </button>
+              <p class="text-xs text-blue-800 dark:text-blue-300">
+                {{ t('admin.accounts.cnProviders.zhipuLogin.reloginHint') }}
+              </p>
+            </div>
+
+            <p
+              v-if="reloginSucceeded"
+              data-testid="zhipu-relogin-success"
+              class="text-xs text-emerald-600 dark:text-emerald-400"
+            >
+              {{ t('admin.accounts.cnProviders.zhipuLogin.reloginSucceeded') }}
+            </p>
+
+            <template v-if="reloginActive">
+              <OAuthAuthorizationFlow
+                ref="reloginFlowRef"
+                :add-method="'oauth'"
+                :auth-url="reloginAuthUrl"
+                :session-id="reloginSessionId"
+                :loading="reloginLoading"
+                :error="reloginError"
+                :show-help="false"
+                :show-proxy-warning="false"
+                :show-manual-option="true"
+                :initial-input-method="'manual'"
+                :platform="'zhipu'"
+                @generate-url="startZhipuRelogin"
+              />
+              <button
+                type="button"
+                data-testid="zhipu-relogin-submit"
+                class="btn btn-primary"
+                :disabled="!canSubmitRelogin"
+                @click="submitZhipuRelogin"
+              >
+                {{ t('admin.accounts.cnProviders.zhipuLogin.reloginSubmit') }}
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <div v-if="!isZhipuLoginManaged">
           <label class="input-label">
             {{
               account.platform === 'codebuddy'
@@ -3109,6 +3226,7 @@ import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
+import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
 import {
   applyAntigravityProjectID,
   applyHeaderOverride,
@@ -3145,6 +3263,7 @@ import {
   getBrowserTimeZone,
   parseDateTimeLocalInput
 } from '@/utils/format'
+import { useZhipuOAuth } from '@/composables/useZhipuOAuth'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
@@ -3252,6 +3371,98 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+
+// ── 智谱登录托管账号（07）：登录态面板 ──
+// 判定与后端 IsZhipuLoginManaged 一致：platform='zhipu' + type='apikey' + auth_flow。
+// 登录账号的 API Key 由登录链路自动解析，编辑弹窗只展示状态，不提供手填/清空入口。
+const ZHIPU_MANAGED_AUTH_FLOW = 'bigmodel_oauth'
+const ZHIPU_NEEDS_RELOGIN_EXTRA_KEY = 'zhipu_needs_relogin'
+const isZhipuLoginManaged = computed(() => {
+  if (props.account?.platform !== 'zhipu' || props.account?.type !== 'apikey') return false
+  const credentials = props.account.credentials as Record<string, unknown> | undefined
+  return credentials?.auth_flow === ZHIPU_MANAGED_AUTH_FLOW
+})
+// 脱敏响应不返回 token 原文，存在性以 credentials_status.has_<key> 为准；
+// 旧后端无 credentials_status 时回退读凭据键。
+const zhipuTokenStatus = computed(() => {
+  const credentials = (props.account?.credentials as Record<string, unknown>) || {}
+  const status = props.account?.credentials_status || {}
+  const present = (key: string) => status[`has_${key}`] ?? Boolean(credentials[key])
+  return {
+    apiKey: present('api_key'),
+    accessToken: present('access_token')
+  }
+})
+// 运行态标记：keeper 探针 401/自愈失败写 extra（design M2/M3），重登成功后清除。
+// 重登成功后父级行对象不会就地更新，故用会话内覆盖驱动面板与后续提交。
+const reloginClearedNeedsRelogin = ref(false)
+const zhipuNeedsRelogin = computed(
+  () =>
+    !reloginClearedNeedsRelogin.value &&
+    ((props.account?.extra as Record<string, unknown> | undefined)?.[
+      ZHIPU_NEEDS_RELOGIN_EXTRA_KEY
+    ] ?? false) === true
+)
+
+// ── 重登流程（05 的 useZhipuOAuth + /relogin）：生成链接 → 粘贴授权码 → 兑换 ──
+// defineExpose 已解包 ref，故 authCode 是字符串。
+interface ZhipuReloginFlowExposed {
+  authCode: string
+  reset: () => void
+}
+const zhipuRelogin = useZhipuOAuth()
+const reloginActive = ref(false)
+const reloginSucceeded = ref(false)
+const reloginFlowRef = ref<ZhipuReloginFlowExposed | null>(null)
+const reloginAuthUrl = computed(() => zhipuRelogin.loginUrl.value)
+const reloginSessionId = computed(() => zhipuRelogin.sessionId.value)
+const reloginLoading = computed(
+  () => zhipuRelogin.status.value === 'generating' || zhipuRelogin.status.value === 'exchanging'
+)
+const reloginError = computed(() => zhipuRelogin.errorMessage.value)
+const canSubmitRelogin = computed(
+  () =>
+    Boolean(reloginFlowRef.value?.authCode?.trim()) &&
+    Boolean(zhipuRelogin.sessionId.value) &&
+    !reloginLoading.value
+)
+
+function resetZhipuReloginState() {
+  reloginActive.value = false
+  reloginSucceeded.value = false
+  reloginClearedNeedsRelogin.value = false
+  reloginFlowRef.value?.reset()
+  zhipuRelogin.reset()
+}
+
+async function startZhipuRelogin() {
+  if (!props.account) return
+  reloginActive.value = true
+  reloginSucceeded.value = false
+  zhipuRelogin.reset()
+  await zhipuRelogin.generateLoginUrl({ proxyId: props.account.proxy_id })
+}
+
+async function submitZhipuRelogin() {
+  if (!props.account) return
+  const code = reloginFlowRef.value?.authCode?.trim() ?? ''
+  if (!code) return
+  const account = props.account
+  const ok = await zhipuRelogin.relogin(account.id, { code })
+  if (!ok) return
+  reloginSucceeded.value = true
+  reloginClearedNeedsRelogin.value = true
+  reloginActive.value = false
+  reloginFlowRef.value?.reset()
+  zhipuRelogin.reset()
+  appStore.showSuccess(t('admin.accounts.cnProviders.zhipuLogin.reloginSucceeded'))
+  // 同步父级列表：清掉已失效的 needs_relogin 标记（后端重登已清）。
+  const patchedExtra: Record<string, unknown> = {
+    ...((account.extra as Record<string, unknown> | undefined) || {})
+  }
+  delete patchedExtra[ZHIPU_NEEDS_RELOGIN_EXTRA_KEY]
+  emit('updated', { ...account, extra: patchedExtra } as Account)
+}
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -4446,6 +4657,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     selectedErrorCodes.value = []
   }
   editApiKey.value = ''
+  resetZhipuReloginState()
 }
 
 async function loadTLSProfiles() {
@@ -5157,11 +5369,13 @@ const handleSubmit = async () => {
           return
         }
       } else {
+        // 智谱登录托管账号的 key 由登录链路维护，脱敏后必然读不到原文，故不参与必填校验
+        // （面板只读展示，绝不写入/清空 api_key）。
         const hasExistingApiKey =
           props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
         if (editApiKey.value.trim()) {
           newCredentials.api_key = editApiKey.value.trim()
-        } else if (!hasExistingApiKey) {
+        } else if (!hasExistingApiKey && !isZhipuLoginManaged.value) {
           appStore.showError(t('admin.accounts.apiKeyIsRequired'))
           return
         }
@@ -5782,6 +5996,10 @@ const handleSubmit = async () => {
       }
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
+      // 重登成功已清除运行态标记：避免把 props 里过期的 needs_relogin 再写回。
+      if (isZhipuLoginManaged.value && reloginClearedNeedsRelogin.value) {
+        delete newExtra[ZHIPU_NEEDS_RELOGIN_EXTRA_KEY]
+      }
       updatePayload.extra = newExtra
     }
 

@@ -4,16 +4,22 @@ import "time"
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
-	Version     int                      `json:"version"`
-	APIKeyID    int64                    `json:"api_key_id"`
-	UserID      int64                    `json:"user_id"`
-	GroupID     *int64                   `json:"group_id,omitempty"`
-	Name        string                   `json:"name"`
-	Status      string                   `json:"status"`
-	IPWhitelist []string                 `json:"ip_whitelist,omitempty"`
-	IPBlacklist []string                 `json:"ip_blacklist,omitempty"`
-	User        APIKeyAuthUserSnapshot   `json:"user"`
-	Group       *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
+	Version  int    `json:"version"`
+	APIKeyID int64  `json:"api_key_id"`
+	UserID   int64  `json:"user_id"`
+	GroupID  *int64 `json:"group_id,omitempty"`
+	// PricingPlanID 绑定的定价套餐 ID（nil = legacy group 计费）。
+	// 与 GroupID 互斥：套餐 Key 恒无 group_id。
+	PricingPlanID *int64 `json:"pricing_plan_id,omitempty"`
+	// PricingPlan 套餐认证快照（identity + 模型协议条目 + 路由层）。
+	// nil 表示该 Key 未绑定套餐或套餐不可用（不可用套餐在认证时被拒绝）。
+	PricingPlan *APIKeyAuthPricingPlanSnapshot `json:"pricing_plan,omitempty"`
+	Name        string                         `json:"name"`
+	Status      string                         `json:"status"`
+	IPWhitelist []string                       `json:"ip_whitelist,omitempty"`
+	IPBlacklist []string                       `json:"ip_blacklist,omitempty"`
+	User        APIKeyAuthUserSnapshot         `json:"user"`
+	Group       *APIKeyAuthGroupSnapshot       `json:"group,omitempty"`
 
 	// Quota fields for API Key independent quota feature
 	Quota     float64 `json:"quota"`      // Quota limit in USD (0 = unlimited)
@@ -26,6 +32,43 @@ type APIKeyAuthSnapshot struct {
 	RateLimit5h float64 `json:"rate_limit_5h"`
 	RateLimit1d float64 `json:"rate_limit_1d"`
 	RateLimit7d float64 `json:"rate_limit_7d"`
+}
+
+// APIKeyAuthPricingPlanSnapshot 套餐认证快照：套餐身份 + 启用的模型协议条目 +
+// 按优先级升序的启用路由层（内部 group 引用）。仅网关调度与模型×协议准入使用，
+// 绝不进入公开 API DTO（不暴露套餐内部 group 数据）。
+type APIKeyAuthPricingPlanSnapshot struct {
+	PlanID int64  `json:"plan_id"`
+	Status string `json:"status"`
+	// Models 启用的「模型 -> 协议」条目，按 priority 升序（同优先级按 id）。
+	Models []APIKeyAuthPricingPlanModelSnapshot `json:"models,omitempty"`
+	// Routes 启用的路由层，按 priority 升序（同优先级按 id）。每个层携带
+	// 内部 group 引用；无匹配层时回退到 legacy 行为。
+	Routes []APIKeyAuthPricingPlanRouteSnapshot `json:"routes,omitempty"`
+}
+
+// APIKeyAuthPricingPlanModelSnapshot 套餐内启用的「公开模型 -> 上游协议」条目。
+type APIKeyAuthPricingPlanModelSnapshot struct {
+	PublicModel string `json:"public_model"`
+	Protocol    string `json:"protocol"`
+	// UpstreamModel is the internal upstream model name for this offer.
+	UpstreamModel string `json:"upstream_model"`
+	// Pricing is the customer-facing sales price and contains no internal cost data.
+	Pricing *ChannelModelPricing `json:"pricing,omitempty"`
+	// Direct 是否直连协议（true 时按 Protocol 原生出站，不做兼容转换）。
+	Direct bool `json:"direct"`
+	// AllowCompatibilityFallback 是否允许跨协议兼容转换兜底
+	// （如 plan messages 请求降级到 chat 账号）。
+	AllowCompatibilityFallback bool `json:"allow_compatibility_fallback,omitempty"`
+}
+
+// APIKeyAuthPricingPlanRouteSnapshot 套餐内启用的路由层：每个层 = 一个内部
+// group（pricing_plan_routes.group_id），按 priority 升序裁决（低值优先）。
+// Gateway 按层顺序调度，层内仍走既有账号调度器。
+type APIKeyAuthPricingPlanRouteSnapshot struct {
+	GroupID  int64 `json:"group_id"`
+	Priority int   `json:"priority"`
+	Enabled  bool  `json:"enabled"`
 }
 
 // APIKeyAuthUserSnapshot 用户快照

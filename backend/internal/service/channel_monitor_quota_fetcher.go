@@ -55,6 +55,27 @@ type monitorAccountSource interface {
 	GetByID(ctx context.Context, id int64) (*Account, error)
 }
 
+// monitorZhipuLoginSource 登录态智谱账号的管理面探针（design M4 第四数据源；
+// ZhipuAccountMonitorService 的 credit-usage 部分天然满足）。
+//
+// TODO(票 12): design M4 规定本接口另有第二个方法
+// FetchResetStatusForAccount(ctx, account) (*domain.MonitorResetCardStatus, error)，
+// 由票 12 实现后并入此处；本票只消费 credit-usage，ResetCards 保持缺省。
+type monitorZhipuLoginSource interface {
+	FetchUsageDetailForAccount(ctx context.Context, account *Account, start, end time.Time) ([]domain.MonitorQuotaModelCredit, error)
+}
+
+// monitorSignReconcileSnapshotSink 是 L2 对账结果并入快照的口（票 27 接线）：
+// *ZhipuAccountMonitorService 天然满足。经 monitorZhipuLoginSource 动态下探获取，
+// 测试 fake 不实现该方法也不受影响。
+type monitorSignReconcileSnapshotSink interface {
+	ApplySignReconcileSnapshot(snapshot *domain.MonitorQuotaSnapshot)
+}
+
+// zhipuMonitorCreditUsageDays 是监控快照请求的积分明细窗口长度：含当日的近 7 个
+// 自然日（与前端面板口径一致；ZhipuAccountMonitorService 会归一为 +8 自然日窗口）。
+const zhipuMonitorCreditUsageDays = 7
+
 // ChannelMonitorQuotaFetcher 配额抓取器（成功/失败快照均带 TTL 缓存，
 // 同账号并发抓取由 singleflight 合并）。
 type ChannelMonitorQuotaFetcher struct {
@@ -62,6 +83,9 @@ type ChannelMonitorQuotaFetcher struct {
 	cnQuota   monitorCNQuotaSource
 	cnBalance monitorCNBalanceSource
 	accounts  monitorAccountSource
+	// zhipuLogin 登录态智谱账号的第四数据源（design M4，票 11）。可为 nil：
+	// 未接线时 CN 快照只带 NeedsRelogin，不产生积分明细（回滚即回到三源现状）。
+	zhipuLogin monitorZhipuLoginSource
 	// balanceThreshold cn_balance 余额告警阈值（与账号停调共用配置，见 monitorBalanceThreshold）。
 	balanceThreshold float64
 
@@ -77,12 +101,15 @@ type monitorQuotaCacheEntry struct {
 
 // NewChannelMonitorQuotaFetcher 构造配额抓取器。
 // 参数取具体服务类型以便 wire 直连；单元测试在同包内用 struct 字面量注入 stub。
+// zhipuMonitor 为第四数据源（design M4 票 11 接线）：nil 时登录态账号的快照只带
+// NeedsRelogin，不产生积分明细与 L2 对账字段（回滚即回到三源现状）。
 func NewChannelMonitorQuotaFetcher(
 	usage *AccountUsageService,
 	cnQuota *CNProviderQuotaService,
 	cnBalance *CNProviderBalanceService,
 	accounts AccountRepository,
 	cfg *config.Config,
+	zhipuMonitor *ZhipuAccountMonitorService,
 ) *ChannelMonitorQuotaFetcher {
 	f := &ChannelMonitorQuotaFetcher{
 		cache:            make(map[int64]monitorQuotaCacheEntry),
@@ -99,6 +126,9 @@ func NewChannelMonitorQuotaFetcher(
 	}
 	if accounts != nil {
 		f.accounts = accounts
+	}
+	if zhipuMonitor != nil {
+		f.zhipuLogin = zhipuMonitor
 	}
 	return f
 }
@@ -217,10 +247,16 @@ func (f *ChannelMonitorQuotaFetcher) fetchUncached(ctx context.Context, accountI
 	// 下游服务不再各自 GetByID（每次含 proxies/groups 联查）。
 	switch account.Platform {
 	case domain.PlatformKimi, domain.PlatformZhipu, domain.PlatformDeepseek, domain.PlatformMiniMax:
+		var snapshot *domain.MonitorQuotaSnapshot
 		if account.IsCodingPlan() {
-			return f.fetchCNQuota(ctx, account, now)
+			snapshot = f.fetchCNQuota(ctx, account, now)
+		} else {
+			snapshot = f.fetchCNBalance(ctx, account, now)
 		}
-		return f.fetchCNBalance(ctx, account, now)
+		// 登录态智谱账号：在既有 CN 结果上并入 M4 附加字段（设计第四数据源）。
+		// 失败只缺字段，Success/状态判定仍由上面的 CN 配额结果决定。
+		f.appendZhipuLoginFields(ctx, account, snapshot, now)
+		return snapshot
 	case domain.PlatformOpenCodeGo:
 		return f.fetchCNQuota(ctx, account, now)
 	default:
@@ -360,6 +396,48 @@ func sortedQuotaModelNames(quotas map[string]*AntigravityModelQuota) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// appendZhipuLoginFields 把登录态智谱账号（design M4）的附加字段就地并入 CN 快照：
+//   - NeedsRelogin 读 accounts.extra 的 zhipu_needs_relogin（票 09 契约，无上游调用）；
+//   - ModelCredits 取近 zhipuMonitorCreditUsageDays 个自然日的逐模型积分明细（第四数据源）。
+//
+// 新字段一期不参与状态判定：任何失败都只让对应字段缺失，绝不修改
+// Success/Error/CredentialInvalid（避免新数据源抖动把健康渠道误报为 degraded）。
+func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context, account *Account, snapshot *domain.MonitorQuotaSnapshot, now time.Time) {
+	if f == nil || snapshot == nil || account == nil || !account.IsZhipuLoginManaged() {
+		return
+	}
+	snapshot.NeedsRelogin = zhipuNeedsRelogin(account)
+	if f.zhipuLogin == nil {
+		// 未接线（或回滚）时静默跳过：快照形状与三源现状一致。
+		return
+	}
+	// L2 对账结果并入快照（票 27 接线）：与积分明细抓取独立，抓取失败不影响
+	// 对账字段的展示；fake 不实现 sink 口时同样静默跳过。
+	if sink, ok := f.zhipuLogin.(monitorSignReconcileSnapshotSink); ok {
+		sink.ApplySignReconcileSnapshot(snapshot)
+	}
+	start := now.AddDate(0, 0, -(zhipuMonitorCreditUsageDays - 1))
+	credits, err := f.zhipuLogin.FetchUsageDetailForAccount(ctx, account, start, now)
+	if err != nil {
+		slog.Debug("channel_monitor: zhipu credit usage probe failed",
+			"account_id", account.ID, "error", err)
+		return
+	}
+	if len(credits) > 0 {
+		snapshot.ModelCredits = credits
+	}
+}
+
+// zhipuNeedsRelogin 读 accounts.extra 的重登标记（票 09 写入契约：布尔 true；
+// 缺键/非布尔/非 true 一律视为 false，老账号行天然兼容）。
+func zhipuNeedsRelogin(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	needs, _ := account.Extra[ZhipuNeedsReloginExtraKey].(bool)
+	return needs
 }
 
 // fetchCNQuota 国产 coding plan：CNProviderQuotaService.QueryUsageForAccount → 快照。
@@ -509,6 +587,9 @@ func usageFailureInfo(usage *UsageInfo) (failed, credentialInvalid bool, msg str
 //   - 账号未关联（配置问题）    → degraded
 //   - 凭据失效（401/403）     → failed
 //   - 网络/解析等其他错误      → error
+//
+// M4 新字段（ModelCredits/ResetCards/NeedsRelogin）一期不参与判定：
+// 状态仍只由上面的 Success/Tiers/BalanceLow/CredentialInvalid 推导。
 func deriveQuotaCheckResult(snapshot *domain.MonitorQuotaSnapshot, model string, checkedAt time.Time) *CheckResult {
 	res := &CheckResult{Model: model, CheckedAt: checkedAt}
 	if snapshot == nil {
@@ -540,21 +621,30 @@ func deriveQuotaCheckResult(snapshot *domain.MonitorQuotaSnapshot, model string,
 
 // quotaDegradedHint 生成 degraded 的 message（指出触发告警的窗口/余额）；
 // 空串表示无告警。
+//
+// needs_relogin（登录态失效，M4）一期不参与状态判定：它只在已经存在告警原因时
+// 追加提示，绝不单独把快照从 operational 拉成 degraded。
 func quotaDegradedHint(snapshot *domain.MonitorQuotaSnapshot) string {
+	hint := ""
 	for _, tier := range snapshot.Tiers {
 		if tier.UsedPercent >= monitorQuotaDegradedUsedPercent {
 			name := tier.Window
 			if tier.Label != "" {
 				name = tier.Label + "/" + tier.Window
 			}
-			return fmt.Sprintf("quota high: %s at %s%%", name, strconv.FormatFloat(tier.UsedPercent, 'f', 1, 64))
+			hint = fmt.Sprintf("quota high: %s at %s%%", name, strconv.FormatFloat(tier.UsedPercent, 'f', 1, 64))
+			break
 		}
 	}
-	if snapshot.BalanceLow {
+	if hint == "" && snapshot.BalanceLow {
 		if snapshot.Balance != nil {
-			return fmt.Sprintf("balance low: %s %s", strconv.FormatFloat(*snapshot.Balance, 'f', -1, 64), firstNonEmpty(snapshot.Currency, "?"))
+			hint = fmt.Sprintf("balance low: %s %s", strconv.FormatFloat(*snapshot.Balance, 'f', -1, 64), firstNonEmpty(snapshot.Currency, "?"))
+		} else {
+			hint = fmt.Sprintf("balance low (%s)", firstNonEmpty(snapshot.Currency, "?"))
 		}
-		return fmt.Sprintf("balance low (%s)", firstNonEmpty(snapshot.Currency, "?"))
 	}
-	return ""
+	if hint != "" && snapshot.NeedsRelogin {
+		hint += "; zhipu login needs relogin"
+	}
+	return hint
 }

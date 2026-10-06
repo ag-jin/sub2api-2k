@@ -113,6 +113,14 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			abortWithGoogleError(c, 401, "User account is not active")
 			return
 		}
+		if apiKey.PricingPlanID != nil {
+			if err := apiKeyService.BindInitialPricingPlanRoute(c.Request.Context(), apiKey); err != nil {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+				MarkIngressRejected(c, IngressRejectGroupDisabled)
+				abortWithGoogleError(c, 403, "The group or pricing plan for this API key is currently unavailable")
+				return
+			}
+		}
 		if code, message, ok := validateAPIKeyGroupAvailable(apiKey); !ok {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
 			if code == "GROUP_DELETED" {

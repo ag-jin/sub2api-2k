@@ -44,6 +44,10 @@ func (APIKey) Fields() []ent.Field {
 		field.Int64("group_id").
 			Optional().
 			Nillable(),
+		field.Int64("pricing_plan_id").
+			Optional().
+			Nillable().
+			Comment("Pricing plan this API key belongs to (nil = legacy group billing)"),
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),
@@ -129,6 +133,10 @@ func (APIKey) Edges() []ent.Edge {
 			Ref("api_keys").
 			Field("group_id").
 			Unique(),
+		edge.From("pricing_plan", PricingPlan.Type).
+			Ref("api_keys").
+			Field("pricing_plan_id").
+			Unique(),
 		edge.To("usage_logs", UsageLog.Type),
 	}
 }
@@ -138,6 +146,7 @@ func (APIKey) Indexes() []ent.Index {
 		// key 字段已在 Fields() 中声明 Unique()，无需重复索引
 		index.Fields("user_id"),
 		index.Fields("group_id"),
+		index.Fields("pricing_plan_id"),
 		index.Fields("status"),
 		index.Fields("deleted_at"),
 		index.Fields("last_used_at"),

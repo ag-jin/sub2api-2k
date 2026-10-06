@@ -148,6 +148,10 @@ export default {
     groupChangedSuccess: '分组更换成功',
     failedToChangeGroup: '更换分组失败',
     groupRequired: '请选择分组',
+    planLabel: '定价套餐',
+    selectPlan: '选择定价套餐',
+    searchPlan: '搜索套餐...',
+    planRequired: '请选择定价套餐',
     usage: '用量',
     today: '今日',
     total: '近30天',
@@ -543,6 +547,68 @@ export default {
         flash: 'Flash'
       }
     },
+    // 智谱登录托管账号：近 7 日逐模型积分明细（MonitorQuotaView）
+    credits: {
+      title: '近 7 日模型积分明细',
+      range: '近 7 日',
+      updatedAt: '更新于 {time}',
+      columns: {
+        date: '日期',
+        model: '模型',
+        inputTokens: '输入 Tokens',
+        cachedTokens: '缓存 Tokens',
+        outputTokens: '输出 Tokens',
+        credits: '积分'
+      },
+      empty: '暂无近 7 日模型积分记录',
+      unavailable: '积分明细暂不可用',
+      stale: '当前为较早快照，积分结算可能延迟 4–11 分钟',
+      failed: '无法读取积分明细'
+    },
+    // 智谱登录托管账号：重置卡只读展示（R0：永不提供使用/消耗入口）
+    resetCards: {
+      title: '重置卡',
+      readOnly: '只读',
+      types: {
+        five_hour: '5 小时卡',
+        week: '周卡'
+      },
+      count: '{count} 张',
+      expiresAt: '到期：{time}',
+      expiresIn: '{time} 后到期',
+      expiring: '将于 {time} 到期',
+      expiringSoonNotice: '到期未使用将失效',
+      expired: '已于 {time} 到期',
+      unknownExpiry: '到期时间未知',
+      empty: '暂无重置卡数据',
+      typeEmpty: '暂无该类重置卡数据',
+      observeOnly: '本系统仅观测重置卡，不会使用或消耗',
+      stale: '当前为较早快照，信息可能已过期',
+      needsRelogin: '登录状态已失效，无法更新重置卡信息',
+      failed: '无法读取重置卡信息'
+    },
+    // 智谱签名「有效系数」健康卡（design M5 费率对账，票 27/30）
+    signHealth: {
+      title: '有效系数',
+      current: '当前',
+      target: '目标',
+      variance: '偏差',
+      peakFactor: '当前时段系数 {factor}',
+      peakFactorTooltip: '快照字段 sign_peak_factor：0.5 = 闲时，1.0 = 高峰',
+      reconciledAt: '对账于 {time}',
+      reconciledAtTooltip: '快照字段 sign_reconciled_at：该有效系数对应的已结算窗口末端',
+      effectiveRateTooltip: '快照字段 sign_effective_rate：实际积分 ÷ 期望积分。0.67 = 签名生效；≈1.0 = 签名被静默按无签名计费',
+      states: {
+        onTarget: '达到目标',
+        aboveTarget: '高于目标',
+        alert: '系数告警',
+        unknown: '暂无对账数据'
+      },
+      stale: '数据可能已过期',
+      failed: '无法读取有效系数',
+      reasonAboveAlertThreshold: '高于告警阈值 {threshold}（默认 0.70）',
+      reasonDeviationFlag: 'L2 对账判定偏离（sign_reconcile_deviation）'
+    },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',
     latencyEmpty: '-',
@@ -649,37 +715,37 @@ export default {
   // Model Plaza (public group/model pricing showcase)
   modelPlaza: {
     title: '模型广场',
-    description: '按分组浏览可用模型与价格',
+    description: '按套餐浏览可用模型与价格',
     loading: '加载中...',
-    empty: '暂无可展示的分组',
+    empty: '暂无可展示的套餐',
     loadFailed: '加载模型广场失败',
     noSearchResult: '没有匹配的模型',
-    anonymousHint: '登录后可查看你的专属分组与专属倍率',
+    anonymousHint: '登录后可查看你的专属套餐',
     filters: {
-      platformLabel: '平台',
-      groupLabel: '分组',
-      rateLabel: '倍率',
+      planLabel: '套餐',
+      protocolLabel: '协议',
       modelLabel: '模型',
       searchPlaceholder: '搜索模型名称',
       all: '全部'
     },
-    badges: {
-      exclusive: '专属分组',
-      subscription: '订阅'
-    },
     detail: {
-      noModels: '该分组暂未配置模型',
+      noModels: '该套餐暂未配置模型',
       noPricing: '未配置定价',
       peakNote: '高峰时段 {window} 计费倍率 ×{multiplier}',
       longContextDisabledNote: '该分组未启用长上下文阶梯计费，超阈值请求仍按基础档计费，官方阶梯仅供参考'
     },
     table: {
       model: '模型',
+      protocol: '协议',
+      billing: '计费',
+      price: '价格',
       input: '输入',
       output: '输出',
       cache: '缓存',
       cacheWrite: '写入',
       cacheRead: '读取',
+      direct: '直连',
+      relay: '中转',
       cacheWriteShort: '写',
       cacheReadShort: '读',
       tierHint: '按单次请求的总上下文（输入 + 缓存写入 + 缓存读取）所在档位对整单计价',
@@ -699,8 +765,11 @@ export default {
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',
+      perUnitVideo: '/ 条',
       perRequest: '按次计费',
-      perImage: '按图片计费'
+      perImage: '按图片计费',
+      perVideo: '按视频计费',
+      billingToken: '按 Token 计费'
     },
     nav: {
       login: '登录',

@@ -32,8 +32,11 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 
 // CreateAPIKeyRequest represents the create API key request payload
 type CreateAPIKeyRequest struct {
-	Name          string   `json:"name" binding:"required"`
-	GroupID       *int64   `json:"group_id"`        // nullable
+	Name    string `json:"name" binding:"required"`
+	GroupID *int64 `json:"group_id"` // nullable
+	// PricingPlanID 绑定的定价套餐 ID（nullable）。与 group_id 互斥，
+	// 同时设置时拒绝（套餐 Key 不使用 legacy group）。
+	PricingPlanID *int64   `json:"pricing_plan_id"`
 	CustomKey     *string  `json:"custom_key"`      // 可选的自定义key
 	IPWhitelist   []string `json:"ip_whitelist"`    // IP 白名单
 	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
@@ -48,14 +51,17 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
-	Name        string    `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      string    `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
-	Quota       *float64  `json:"quota"`        // 配额限制 (USD), 0=无限制
-	ExpiresAt   *string   `json:"expires_at"`   // 过期时间 (ISO 8601)
-	ResetQuota  *bool     `json:"reset_quota"`  // 重置已用配额
+	Name    string `json:"name"`
+	GroupID *int64 `json:"group_id"`
+	// PricingPlanID 更新绑定套餐（nil = 不修改）；与 group_id 互斥。
+	PricingPlanID    *int64    `json:"pricing_plan_id"`
+	ClearPricingPlan bool      `json:"clear_pricing_plan"` // 显式解除套餐绑定
+	Status           string    `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist      *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist      *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Quota            *float64  `json:"quota"`        // 配额限制 (USD), 0=无限制
+	ExpiresAt        *string   `json:"expires_at"`   // 过期时间 (ISO 8601)
+	ResetQuota       *bool     `json:"reset_quota"`  // 重置已用配额
 
 	// Rate limit fields (nil = no change, 0 = unlimited)
 	RateLimit5h         *float64 `json:"rate_limit_5h"`
@@ -82,6 +88,9 @@ func validateAPIKeyCreateRequest(req CreateAPIKeyRequest) error {
 	if req.ExpiresInDays != nil && *req.ExpiresInDays <= 0 {
 		return errors.New("invalid expires_in_days")
 	}
+	if req.PricingPlanID != nil && req.GroupID != nil {
+		return errors.New("group_id cannot be set together with pricing_plan_id")
+	}
 	return nil
 }
 
@@ -97,6 +106,9 @@ func validateAPIKeyUpdateRequest(req UpdateAPIKeyRequest) error {
 	}
 	if req.RateLimit7d != nil && !validAPIKeyLimit(*req.RateLimit7d) {
 		return errors.New("invalid rate_limit_7d")
+	}
+	if req.PricingPlanID != nil && req.GroupID != nil {
+		return errors.New("group_id cannot be set together with pricing_plan_id")
 	}
 	return nil
 }
@@ -199,6 +211,7 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 	svcReq := service.CreateAPIKeyRequest{
 		Name:          req.Name,
 		GroupID:       req.GroupID,
+		PricingPlanID: req.PricingPlanID,
 		CustomKey:     req.CustomKey,
 		IPWhitelist:   req.IPWhitelist,
 		IPBlacklist:   req.IPBlacklist,
@@ -260,6 +273,8 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		RateLimit1d:         req.RateLimit1d,
 		RateLimit7d:         req.RateLimit7d,
 		ResetRateLimitUsage: req.ResetRateLimitUsage,
+		PricingPlanID:       req.PricingPlanID,
+		ClearPricingPlan:    req.ClearPricingPlan,
 	}
 	if req.Name != "" {
 		svcReq.Name = &req.Name
@@ -355,4 +370,21 @@ func (h *APIKeyHandler) GetUserGroupRates(c *gin.Context) {
 	}
 
 	response.Success(c, rates)
+}
+
+// GetSelectablePricingPlans 获取可选购/可绑定的活跃套餐列表（仅
+// id/name/title/description 白名单，不暴露 routes/groups/模型协议/成本）。
+// GET /api/v1/pricing-plans/available
+func (h *APIKeyHandler) GetSelectablePricingPlans(c *gin.Context) {
+	plans, err := h.apiKeyService.GetSelectablePricingPlans(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	out := make([]dto.PricingPlanOption, 0, len(plans))
+	for i := range plans {
+		out = append(out, *dto.PricingPlanOptionFromService(&plans[i]))
+	}
+	response.Success(c, out)
 }

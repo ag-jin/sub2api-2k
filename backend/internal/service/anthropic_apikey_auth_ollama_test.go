@@ -319,7 +319,7 @@ func TestOpenAIGatewayService_NativeAnthropicBridge_OllamaCloudBearer(t *testing
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{"model":"kimi-k2-thinking","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
-	req, _, err := svc.buildNativeAnthropicUpstreamRequest(context.Background(), c, account, body, "ollama-cloud-key", targetURL)
+	req, _, _, err := svc.buildNativeAnthropicUpstreamRequest(context.Background(), c, account, body, "ollama-cloud-key", targetURL)
 	require.NoError(t, err)
 	require.Equal(t, "Bearer ollama-cloud-key", req.Header.Get("Authorization"))
 	require.Empty(t, req.Header.Get("x-api-key"))
@@ -328,7 +328,7 @@ func TestOpenAIGatewayService_NativeAnthropicBridge_OllamaCloudBearer(t *testing
 	account.Credentials["base_url"] = "https://api.moonshot.cn/anthropic"
 	targetURL, err = svc.nativeAnthropicTargetURL(account)
 	require.NoError(t, err)
-	req, _, err = svc.buildNativeAnthropicUpstreamRequest(context.Background(), c, account, body, "ollama-cloud-key", targetURL)
+	req, _, _, err = svc.buildNativeAnthropicUpstreamRequest(context.Background(), c, account, body, "ollama-cloud-key", targetURL)
 	require.NoError(t, err)
 	require.Empty(t, req.Header.Get("Authorization"))
 	require.Equal(t, "ollama-cloud-key", req.Header.Get("x-api-key"))

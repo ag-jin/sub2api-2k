@@ -110,6 +110,14 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				AbortWithError(c, http.StatusServiceUnavailable, "API_KEY_AUTH_OVERLOADED", "API key authentication is temporarily unavailable")
 				return
 			}
+			// 套餐 Key 的套餐缺失/停用：按 legacy group 不可用同款语义拒绝
+			// （通用授权错误，不暴露套餐内部数据）。
+			if errors.Is(err, service.ErrPricingPlanUnavailable) {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+				MarkIngressRejected(c, IngressRejectGroupDisabled)
+				AbortWithError(c, 403, "GROUP_OR_PLAN_UNAVAILABLE", "The group or pricing plan for this API key is currently unavailable")
+				return
+			}
 			AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate API key")
 			return
 		}
@@ -156,6 +164,16 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			MarkIngressRejected(c, IngressRejectUserInactive)
 			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
 			return
+		}
+		// 套餐 Key 在路由分派前绑定首个可用私有池。这样 RequireGroupAssignment、
+		// 协议 handler 分派、订阅检查和既有调度都读取同一个实际内部 group。
+		if apiKey.PricingPlanID != nil {
+			if err := apiKeyService.BindInitialPricingPlanRoute(c.Request.Context(), apiKey); err != nil {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+				MarkIngressRejected(c, IngressRejectGroupDisabled)
+				AbortWithError(c, 403, "GROUP_OR_PLAN_UNAVAILABLE", "The group or pricing plan for this API key is currently unavailable")
+				return
+			}
 		}
 		if abortIfAPIKeyGroupUnavailable(c, apiKey) {
 			return
@@ -424,7 +442,7 @@ func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey) bool {
 }
 
 func validateAPIKeyGroupAllowed(apiKey *service.APIKey) bool {
-	if apiKey == nil || apiKey.GroupID == nil || apiKey.User == nil || apiKey.Group == nil {
+	if apiKey == nil || apiKey.PricingPlanID != nil || apiKey.GroupID == nil || apiKey.User == nil || apiKey.Group == nil {
 		return true
 	}
 	group := apiKey.Group

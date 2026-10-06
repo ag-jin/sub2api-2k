@@ -471,6 +471,23 @@ export default {
           email: '邮件已发送',
           emailSent: '已发送',
           emailIgnored: '已忽略'
+        },
+        // 平台筛选：智谱签名告警按 dimensions.platform=zhipu 识别（票 30）
+        filters: {
+          platformZhipu: '智谱（zhipu）'
+        },
+        // 智谱签名告警在既有事件行里的补充明细（票 30 / ui-panels §6.2）
+        zhipuSign: {
+          kind: {
+            fail_window: 'L1 实时失效窗口（zhipu_sign_fail_window）',
+            effective_rate: 'L2 费率对账（zhipu_sign_effective_rate）'
+          },
+          l1Title: '智谱签名已降级',
+          l2Title: '智谱有效系数高于 {threshold}',
+          windowCount: '窗口计数 {value} / 阈值 {threshold}',
+          effectiveRate: '当前 {value} · 目标 0.67 · 阈值 {threshold}',
+          accounts: '涉及账号：',
+          suggestedAction: '建议动作：'
         }
       },
       alertRules: {

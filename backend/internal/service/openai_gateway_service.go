@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -475,6 +476,16 @@ type OpenAIGatewayService struct {
 	// codeBuddyCooldownApplier 按 CodeBuddy 上游业务码施加冷却（4.6）。
 	// 用窄接口注入，避免 gateway 直接依赖 CodeBuddyAdminService 的具体类型。
 	codeBuddyCooldownApplier codeBuddyCooldownApplier
+	// zhipuSigner 是智谱签名 V4 的注入接缝（design M3 / 票 22；wire 注入
+	// *zcodesign.Signer）。为 nil 时签名整体关闭：未接线部署与其它平台零行为变化。
+	zhipuSigner zhipuClientSigner
+	// zhipuSignFailureHook 是签名失败的降级回调接缝（票 22 起）：签名失败路径恰好
+	// 回调一次，与生效的 fail 策略无关。L1 计数与策略裁决本体属票 24。
+	zhipuSignFailureHook func(accountID int64, err error)
+	// zhipuSignAlerts 是 L1 指标 / fail 策略 / 账号级熔断引擎（design M3.1 / 票 24；
+	// wire 注入 *ZhipuSignAlerts）。为 nil 时计数与熔断整体关闭、策略退回部署层配置
+	// （默认 open），即未接线部署与既有测试的零行为变化。
+	zhipuSignAlerts *ZhipuSignAlerts
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -616,6 +627,24 @@ func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Cont
 		return ChannelMappingResult{MappedModel: model}, false
 	}
 	return s.channelService.ResolveChannelMappingAndRestrict(ctx, groupID, model)
+}
+
+// ResolveGroupByID loads an internal dispatch pool for pricing-plan routing.
+// OpenAI-compatible handlers use the same request-local group binding as the
+// primary gateway so account selection, internal cost, and audit attribution
+// all continue to use the selected pool.
+func (s *OpenAIGatewayService) ResolveGroupByID(ctx context.Context, groupID int64) (*Group, error) {
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == groupID {
+		return group, nil
+	}
+	if s == nil || s.channelService == nil || s.channelService.groupRepo == nil {
+		return nil, fmt.Errorf("group repository is unavailable")
+	}
+	group, err := s.channelService.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group failed: %w", err)
+	}
+	return group, nil
 }
 
 func (s *OpenAIGatewayService) isCodexImageGenerationBridgeEnabled(ctx context.Context, account *Account, apiKey *APIKey) bool {

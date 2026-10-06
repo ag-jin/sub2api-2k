@@ -19,7 +19,7 @@ import { useRoute } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import PlazaNavBar from '@/components/modelPlaza/PlazaNavBar.vue'
 import ModelPlazaContent from '@/components/modelPlaza/ModelPlazaContent.vue'
-import { getModelPlaza, type ModelPlazaResponse } from '@/api/modelPlaza'
+import { getModelPlaza, type PricingCatalog } from '@/api/modelPlaza'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -30,7 +30,7 @@ const authStore = useAuthStore()
 // embedded=1 但未登录(如转发的链接)自动降级为独立形态。
 const isEmbedded = computed(() => route.query.embedded === '1' && authStore.isAuthenticated)
 
-const data = ref<ModelPlazaResponse | null>(null)
+const data = ref<PricingCatalog | null>(null)
 const loading = ref(true)
 const loadFailed = ref(false)
 

@@ -23,6 +23,28 @@
          noun label ("5h/weekly") read as a passive caption and users could not
          discover the manual refresh. -->
     <div class="flex flex-wrap items-center gap-1.5">
+      <!-- 登录失效徽标（design M6 / ui-panels §6.3）：只提示「需重新登录」，
+           不暴露凭据细节，也不触发任何操作（重登入口在账号编辑弹窗）。 -->
+      <span
+        v-if="needsRelogin"
+        data-test="cn-provider-quota-needs-relogin"
+        class="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+        :title="t('admin.accounts.cnProviders.zhipuLogin.needsReloginTooltip')"
+      >
+        <Icon name="exclamationTriangle" size="sm" :stroke-width="2" />
+        {{ t('admin.accounts.cnProviders.zhipuLogin.needsRelogin') }}
+      </span>
+      <!-- 签名降级/熔断徽标（design M6 / ui-panels §6.3，票 24/30）：账号级熔断摘除
+           签名生效位时出现；纯展示，不伪装成可点击（无对应告警详情链接）。 -->
+      <span
+        v-if="signDegraded"
+        data-test="cn-provider-quota-sign-degraded"
+        class="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+        :title="signDegradedTooltip"
+      >
+        <Icon name="exclamationTriangle" size="sm" :stroke-width="2" />
+        {{ t('admin.accounts.cnProviders.zhipuSign.degraded') }}
+      </span>
       <button
         type="button"
         data-test="cn-provider-quota-probe"
@@ -63,9 +85,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
+import type { ZhipuSignAccountStatus } from '@/api/admin/zhipu'
 import type { CNProviderQuotaProbeResult } from '@/api/admin/cnProviders'
 import type { Account } from '@/types'
+import Icon from '@/components/icons/Icon.vue'
 import { cnQuotaCellVisible } from './credentialsBuilder'
+import { loadZhipuSignStatus, resolveZhipuSignDegraded } from '@/composables/useZhipuSignStatus'
 import UsageProgressBar from './UsageProgressBar.vue'
 
 const props = defineProps<{
@@ -81,9 +106,46 @@ const readMode = (): string => {
 
 const visible = computed(() => cnQuotaCellVisible(props.account.platform, readMode()))
 
+// 运行态标记：keeper 探针 401/自愈失败写 extra["zhipu_needs_relogin"]（design M2/M3），
+// 重登成功后由重登链路清除。
+const needsRelogin = computed(
+  () => (props.account.extra as Record<string, unknown> | undefined)?.['zhipu_needs_relogin'] === true
+)
+
 const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<CNProviderQuotaProbeResult | null>(null)
+
+/**
+ * 签名降级/熔断徽标的运行态来源（票 24 的账号级熔断，经票 28 的状态接口读取）。
+ *
+ * 状态读取走 `useZhipuSignStatus` 的模块级缓存：账号列表每行一个单元格，
+ * 缓存把一次列表渲染收敛成最多一次请求；读取失败静默降级为「无徽标」，
+ * 不影响既有配额单元格渲染。
+ */
+const signDegraded = ref<ZhipuSignAccountStatus | null>(null)
+
+/** 签名只作用于智谱登录托管的 coding 账号（与单元格可见性同口径）。 */
+const isZhipuSigningAccount = computed(
+  () => props.account.platform === 'zhipu' && readMode() === 'coding'
+)
+
+const signDegradedTooltip = computed(() => {
+  const base = t('admin.accounts.cnProviders.zhipuSign.degradedTooltip')
+  const reason = signDegraded.value?.circuit_break_reason?.trim()
+  return reason ? `${base} · ${reason}` : base
+})
+
+/** 读取一次该账号的熔断状态：未接线 / 查不到 / 未熔断都保持无徽标（不虚构状态）。 */
+const refreshSignDegraded = async () => {
+  signDegraded.value = null
+  if (!isZhipuSigningAccount.value) return
+  const accountId = props.account.id
+  const status = await loadZhipuSignStatus()
+  // 账号在等待期间被切换（列表复用行）时丢弃过期结果
+  if (accountId !== props.account.id) return
+  signDegraded.value = resolveZhipuSignDegraded(status, accountId)
+}
 
 // 后端周期任务/手动探测写入的 extra 快照键（<provider>_ 前缀，与后端
 // cnQuotaExtraUpdates 对齐）。页面加载即有数据，无需等待探测。
@@ -136,6 +198,7 @@ const snapshotIsStale = computed(() => {
 onMounted(() => {
   if (!visible.value) return
   data.value = snapshotData.value
+  void refreshSignDegraded()
   if (!snapshotIsStale.value) return
   // 模块级去抖：列表页每行一个实例，翻页/筛选/刷新会重复挂载；同一账号
   // 短时间内已自动探测过则跳过，避免对上游形成探测风暴。
@@ -196,6 +259,7 @@ watch(
     data.value = null
     error.value = null
     loading.value = false
+    void refreshSignDegraded()
   }
 )
 </script>

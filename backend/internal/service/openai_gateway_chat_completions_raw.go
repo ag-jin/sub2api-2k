@@ -633,6 +633,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		)
 	}
 
+	// 首 token 截止守卫已触发且始终未收到数据块：上游在限时内挂起（排队/静默），
+	// 守卫取消上游请求导致的 context.Canceled 属于上游故障而非客户端断开，
+	// 判为可切换的 failover 错误而非 clientAborted。
+	if firstTokenGuard != nil && firstTokenGuard.Fired() && firstTokenMs == nil {
+		return nil, s.newOpenAIChatFirstTokenTimeoutError(c.Request.Context(), c, account, originalModel, requestID, time.Since(startTime))
+	}
+
 	// 客户端取消/断开后上游读失败与上游截断不可区分（取消会连带取消上游请求），
 	// 沿用既有语义：按已收到的用量正常收尾计费，不判为上游故障。
 	clientAborted := clientDisconnected ||

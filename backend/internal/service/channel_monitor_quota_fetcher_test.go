@@ -93,6 +93,52 @@ func (s *stubMonitorAccountSource) GetByID(ctx context.Context, id int64) (*Acco
 	return s.accounts[id], nil
 }
 
+// stubMonitorZhipuLoginSource 桩：schedule 08 的 credit-usage 探针
+// （fetch 方法与真实 ZhipuAccountMonitorService 的签名一致）。
+type stubMonitorZhipuLoginSource struct {
+	credits []domain.MonitorQuotaModelCredit
+	err     error
+	// block 非 nil 时阻塞在该 channel 上，用于并发/超时测试。
+	block chan struct{}
+
+	mu          sync.Mutex
+	calls       int
+	lastAccount *Account
+	lastStart   time.Time
+	lastEnd     time.Time
+}
+
+func (s *stubMonitorZhipuLoginSource) FetchUsageDetailForAccount(ctx context.Context, account *Account, start, end time.Time) ([]domain.MonitorQuotaModelCredit, error) {
+	s.mu.Lock()
+	s.calls++
+	s.lastAccount = account
+	s.lastStart = start
+	s.lastEnd = end
+	s.mu.Unlock()
+	if s.block != nil {
+		<-s.block
+	}
+	return s.credits, s.err
+}
+
+func (s *stubMonitorZhipuLoginSource) getCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *stubMonitorZhipuLoginSource) window() (time.Time, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastStart, s.lastEnd
+}
+
+func (s *stubMonitorZhipuLoginSource) getLastAccount() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastAccount
+}
+
 func newQuotaFetcherTestSetup(t *testing.T) (*ChannelMonitorQuotaFetcher, *stubMonitorUsageSource, *stubMonitorCNQuotaSource, *stubMonitorCNBalanceSource, *stubMonitorAccountSource) {
 	t.Helper()
 	usage := &stubMonitorUsageSource{}
@@ -269,6 +315,222 @@ func TestQuotaFetcher_LoadsAccountOnceAndPassesItThrough(t *testing.T) {
 		require.Same(t, acc, cnBalance.lastAccount)
 		require.Equal(t, 1, cnBalance.calls)
 	})
+}
+
+// --- 第四数据源：登录态智谱账号的积分明细 / 重登状态（design M4 / 票 11）---
+
+// zhipuLoginManagedQuotaAccount 构造一条「登录托管」智谱 coding 账号（票 03 契约：
+// platform=zhipu + type=apikey + credentials.auth_flow=bigmodel_oauth）。
+func zhipuLoginManagedQuotaAccount(id int64, extra map[string]any) *Account {
+	return &Account{
+		ID:       id,
+		Platform: domain.PlatformZhipu,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"account_mode": AccountModeCoding,
+			"auth_flow":    ZhipuLoginAuthFlow,
+		},
+		Extra: extra,
+	}
+}
+
+func TestQuotaFetcher_ZhipuLoginManagedMergesCreditsAndRelogin(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	managed := zhipuLoginManagedQuotaAccount(31, map[string]any{ZhipuNeedsReloginExtraKey: true})
+	accounts.accounts[31] = managed
+	cnQuota.result = &CNProviderQuotaProbeResult{
+		Success:   true,
+		PlanLevel: "coding",
+		Tiers:     []CNQuotaTier{{Window: "5h", UsedPercent: 33.3}, {Window: "weekly", UsedPercent: 12}},
+	}
+	credits := []domain.MonitorQuotaModelCredit{
+		{Model: "glm-5.3", Date: "2026-10-05", InputTokens: 1200, CachedTokens: 340, OutputTokens: 560, Credits: 1.25},
+		{Model: "glm-4.6-flash", Date: "2026-10-06", InputTokens: 20, CachedTokens: 0, OutputTokens: 5, Credits: 0.01},
+	}
+	zhipuLogin := &stubMonitorZhipuLoginSource{credits: credits}
+	fetcher.zhipuLogin = zhipuLogin
+
+	snapshot := fetcher.Fetch(context.Background(), 31)
+
+	// 既有 CN 配额结果原样保留。
+	require.True(t, snapshot.Success)
+	require.Equal(t, "cn_quota", snapshot.Source)
+	require.Equal(t, "coding", snapshot.PlanLevel)
+	require.Len(t, snapshot.Tiers, 2)
+	require.Equal(t, "weekly", snapshot.Tiers[1].Window)
+
+	// 新字段并入同一快照。
+	require.Equal(t, credits, snapshot.ModelCredits)
+	require.True(t, snapshot.NeedsRelogin)
+	require.Empty(t, snapshot.Error)
+
+	// 数据源收到的是已加载的账号指针，窗口为近 7 个自然日。
+	require.Equal(t, 1, zhipuLogin.getCalls())
+	require.Same(t, managed, zhipuLogin.getLastAccount())
+	start, end := zhipuLogin.window()
+	require.WithinDuration(t, start.Add(6*24*time.Hour), end, time.Hour)
+	require.WithinDuration(t, time.Now(), end, time.Minute)
+
+	// 快照进 TTL 缓存：第二次 Fetch 不再打监控数据源。
+	require.Equal(t, credits, fetcher.Fetch(context.Background(), 31).ModelCredits)
+	require.Equal(t, 1, zhipuLogin.getCalls())
+}
+
+// 部分失败：第四数据源失败只缺字段，Success/tiers/Error 全由既有 CN 结果决定；
+// 连 401/403 形状的错误也不改变数据面判定（CredentialInvalid 是数据面结论）。
+func TestQuotaFetcher_ZhipuLoginSourceFailureOnlyDropsFields(t *testing.T) {
+	cases := []struct {
+		name             string
+		source           *stubMonitorZhipuLoginSource
+		extra            map[string]any
+		wantNeedsRelogin bool
+	}{
+		{
+			name:   "probe transport error",
+			source: &stubMonitorZhipuLoginSource{err: errors.New("zhipu credit usage: connection refused")},
+		},
+		{
+			name:             "probe unauthorized",
+			source:           &stubMonitorZhipuLoginSource{err: errors.New("zhipu credit usage: upstream rejected credentials: HTTP 401")},
+			extra:            map[string]any{ZhipuNeedsReloginExtraKey: true},
+			wantNeedsRelogin: true,
+		},
+		{
+			name:   "empty detail keeps field absent",
+			source: &stubMonitorZhipuLoginSource{credits: []domain.MonitorQuotaModelCredit{}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+			accounts.accounts[33] = zhipuLoginManagedQuotaAccount(33, tc.extra)
+			cnQuota.result = &CNProviderQuotaProbeResult{Success: true, Tiers: []CNQuotaTier{{Window: "5h", UsedPercent: 20}}}
+			fetcher.zhipuLogin = tc.source
+
+			snapshot := fetcher.Fetch(context.Background(), 33)
+
+			require.True(t, snapshot.Success, "Success 仍由既有 CN 配额结果决定")
+			require.Empty(t, snapshot.Error)
+			require.False(t, snapshot.CredentialInvalid)
+			require.Len(t, snapshot.Tiers, 1)
+			require.Nil(t, snapshot.ModelCredits)
+			require.Equal(t, tc.wantNeedsRelogin, snapshot.NeedsRelogin)
+			require.Equal(t, 1, tc.source.getCalls())
+			require.Equal(t, MonitorStatusOperational, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
+		})
+	}
+}
+
+// CN 配额本身失败时，第四数据源失败不得改写既有 Error/状态。
+func TestQuotaFetcher_ZhipuLoginSourceFailureKeepsCNError(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	accounts.accounts[35] = zhipuLoginManagedQuotaAccount(35, nil)
+	cnQuota.result = &CNProviderQuotaProbeResult{Success: false, StatusCode: 500, Error: "cn quota boom"}
+	fetcher.zhipuLogin = &stubMonitorZhipuLoginSource{err: errors.New("credit usage exploded")}
+
+	snapshot := fetcher.Fetch(context.Background(), 35)
+
+	require.False(t, snapshot.Success)
+	require.Equal(t, "cn quota boom", snapshot.Error)
+	require.False(t, snapshot.CredentialInvalid)
+	require.Nil(t, snapshot.ModelCredits)
+	require.Equal(t, MonitorStatusError, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
+}
+
+// 未接线/回滚：第四数据源为 nil 时登录态账号只补 extra 标记，
+// Success/tiers 与既有三源现状一致，不 panic。
+func TestQuotaFetcher_ZhipuLoginManagedWithoutSourceKeepsReloginOnly(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	accounts.accounts[34] = zhipuLoginManagedQuotaAccount(34, map[string]any{ZhipuNeedsReloginExtraKey: true})
+	cnQuota.result = &CNProviderQuotaProbeResult{Success: true, Tiers: []CNQuotaTier{{Window: "5h", UsedPercent: 20}}}
+	require.Nil(t, fetcher.zhipuLogin)
+
+	snapshot := fetcher.Fetch(context.Background(), 34)
+
+	require.True(t, snapshot.Success)
+	require.Len(t, snapshot.Tiers, 1)
+	require.Nil(t, snapshot.ModelCredits)
+	require.True(t, snapshot.NeedsRelogin)
+}
+
+// 非登录态账号（存量手填 apikey 的 zhipu / kimi / deepseek / 海外平台）走原路径：
+// 第四数据源调用计数恒为 0，新字段保持缺省（返回字段与现状等价）。
+func TestQuotaFetcher_NonZhipuLoginAccountsSkipFourthSource(t *testing.T) {
+	cases := []struct {
+		name      string
+		accountID int64
+		account   *Account
+	}{
+		{
+			// 存量手填 apikey：即使 extra 里有重登标记也不得读（标记只对托管账号有意义）。
+			name:      "legacy zhipu api key coding plan",
+			accountID: 51,
+			account: &Account{
+				ID: 51, Platform: domain.PlatformZhipu, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"account_mode": AccountModeCoding, "api_key": "sk-legacy"},
+				Extra:       map[string]any{ZhipuNeedsReloginExtraKey: true},
+			},
+		},
+		{
+			name:      "legacy zhipu api key payg",
+			accountID: 52,
+			account: &Account{
+				ID: 52, Platform: domain.PlatformZhipu, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"account_mode": AccountModePayG},
+			},
+		},
+		{
+			// 登录标记存在但 type 不是 apikey（非托管）：同样跳过。
+			name:      "zhipu oauth type without managed marker",
+			accountID: 53,
+			account: &Account{
+				ID: 53, Platform: domain.PlatformZhipu, Type: AccountTypeOAuth,
+				Credentials: map[string]any{"account_mode": AccountModeCoding, "auth_flow": ZhipuLoginAuthFlow},
+			},
+		},
+		{
+			name:      "kimi coding plan",
+			accountID: 54,
+			account: &Account{
+				ID: 54, Platform: domain.PlatformKimi,
+				Credentials: map[string]any{"account_mode": AccountModeCoding},
+				Extra:       map[string]any{ZhipuNeedsReloginExtraKey: true},
+			},
+		},
+		{
+			name:      "deepseek payg",
+			accountID: 55,
+			account: &Account{
+				ID: 55, Platform: domain.PlatformDeepseek,
+				Credentials: map[string]any{"account_mode": AccountModePayG},
+			},
+		},
+		{
+			name:      "overseas anthropic",
+			accountID: 56,
+			account:   &Account{ID: 56, Platform: domain.PlatformAnthropic},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, usage, cnQuota, cnBalance, accounts := newQuotaFetcherTestSetup(t)
+			accounts.accounts[tc.accountID] = tc.account
+			usage.usage = &UsageInfo{}
+			cnQuota.result = &CNProviderQuotaProbeResult{Success: true}
+			cnBalance.result = &CNProviderBalanceResult{Success: true, Available: true, Balance: 5, Currency: "CNY"}
+			source := &stubMonitorZhipuLoginSource{credits: []domain.MonitorQuotaModelCredit{
+				{Model: "glm-5.3", Date: "2026-10-06", Credits: 9},
+			}}
+			fetcher.zhipuLogin = source
+
+			snapshot := fetcher.Fetch(context.Background(), tc.accountID)
+
+			require.True(t, snapshot.Success)
+			require.Equal(t, 0, source.getCalls(), "非登录态账号不得调用第四数据源")
+			require.Nil(t, snapshot.ModelCredits)
+			require.False(t, snapshot.NeedsRelogin)
+		})
+	}
 }
 
 // --- 失败路径（Fetch 永不返回 error） ---
@@ -482,14 +744,14 @@ func TestQuotaFetcher_CNBalanceLowMarksDegraded(t *testing.T) {
 }
 
 func TestNewChannelMonitorQuotaFetcher_ThresholdFromConfig(t *testing.T) {
-	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, nil).balanceThreshold, 0.0001)
+	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, nil, nil).balanceThreshold, 0.0001)
 
 	cfg10 := &config.Config{Gateway: config.GatewayConfig{CNProviders: config.GatewayCNProvidersConfig{BalanceThreshold: 10}}}
-	require.InDelta(t, 10, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg10).balanceThreshold, 0.0001)
+	require.InDelta(t, 10, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg10, nil).balanceThreshold, 0.0001)
 
 	// 非正值（含显式 0）回退默认，避免 0 阈值下「余额=0 也不告警」。
 	cfg0 := &config.Config{Gateway: config.GatewayConfig{CNProviders: config.GatewayCNProvidersConfig{BalanceThreshold: 0}}}
-	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg0).balanceThreshold, 0.0001)
+	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg0, nil).balanceThreshold, 0.0001)
 }
 
 func TestQuotaFetcher_NilDependenciesProduceErrorSnapshots(t *testing.T) {
@@ -744,4 +1006,88 @@ func TestDeriveQuotaCheckResult_StatusMatrix(t *testing.T) {
 
 	res = deriveQuotaCheckResult(nil, "quota", now)
 	require.Equal(t, MonitorStatusError, res.Status)
+}
+
+// 回归（票 11 验收）：M4 新字段一期不参与状态判定——有积分明细/重置卡/重登标记
+// 也不能把健康账号从 operational 拉下来；只在已经 degraded 时附加 needs_relogin 文案。
+func TestDeriveQuotaCheckResult_IgnoresZhipuLoginFields(t *testing.T) {
+	now := time.Now()
+	credits := []domain.MonitorQuotaModelCredit{{Model: "glm-5.3", Date: "2026-10-06", Credits: 3.5}}
+	cards := []domain.MonitorResetCard{{Type: "five_hour", ExpireAt: "2026-10-06T20:00:00+08:00"}}
+
+	cases := []struct {
+		name            string
+		snapshot        *domain.MonitorQuotaSnapshot
+		wantStatus      string
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "healthy with credits and relogin stays operational",
+			snapshot: &domain.MonitorQuotaSnapshot{
+				Success: true, Tiers: []domain.MonitorQuotaTier{{Window: "5h", UsedPercent: 20}},
+				ModelCredits: credits, ResetCards: cards, NeedsRelogin: true,
+			},
+			wantStatus: MonitorStatusOperational,
+		},
+		{
+			name: "degraded hint appends relogin text",
+			snapshot: &domain.MonitorQuotaSnapshot{
+				Success: true, Tiers: []domain.MonitorQuotaTier{{Window: "5h", UsedPercent: 95}},
+				ModelCredits: credits, NeedsRelogin: true,
+			},
+			wantStatus:   MonitorStatusDegraded,
+			wantContains: []string{"quota high: 5h at 95.0%", "relogin"},
+		},
+		{
+			name: "degraded hint unchanged without relogin",
+			snapshot: &domain.MonitorQuotaSnapshot{
+				Success: true, Tiers: []domain.MonitorQuotaTier{{Window: "5h", UsedPercent: 95}},
+				ModelCredits: credits, ResetCards: cards,
+			},
+			wantStatus:      MonitorStatusDegraded,
+			wantContains:    []string{"quota high: 5h at 95.0%"},
+			wantNotContains: []string{"relogin"},
+		},
+		{
+			name: "failed stays failed regardless of new fields",
+			snapshot: &domain.MonitorQuotaSnapshot{
+				Success: false, CredentialInvalid: true, Error: "401 unauthorized",
+				ModelCredits: credits, ResetCards: cards, NeedsRelogin: true,
+			},
+			wantStatus:   MonitorStatusFailed,
+			wantContains: []string{"401 unauthorized"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := deriveQuotaCheckResult(tc.snapshot, "quota", now)
+			require.Equal(t, tc.wantStatus, res.Status)
+			for _, want := range tc.wantContains {
+				require.Contains(t, res.Message, want)
+			}
+			for _, notWant := range tc.wantNotContains {
+				require.NotContains(t, res.Message, notWant)
+			}
+			if len(tc.wantContains) == 0 {
+				require.Empty(t, res.Message)
+			}
+		})
+	}
+}
+
+// 集成点（票 11 测试要求）：登录托管账号 type=apikey，validateCodingPlanAccount
+// 只看 platform+mode，天然通过，无需为登录态新增分支。
+func TestValidateCodingPlanAccount_ZhipuLoginManagedAccountPasses(t *testing.T) {
+	managed := zhipuLoginManagedQuotaAccount(41, map[string]any{ZhipuNeedsReloginExtraKey: true})
+	require.NoError(t, validateCodingPlanAccount(managed))
+
+	// 既有负向路径不变。
+	require.Error(t, validateCodingPlanAccount(&Account{
+		ID: 42, Platform: domain.PlatformAnthropic, Credentials: map[string]any{"account_mode": AccountModeCoding},
+	}))
+	require.Error(t, validateCodingPlanAccount(&Account{
+		ID: 43, Platform: domain.PlatformZhipu, Credentials: map[string]any{"account_mode": AccountModePayG},
+	}))
+	require.Error(t, validateCodingPlanAccount(nil))
 }

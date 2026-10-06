@@ -124,6 +124,10 @@ CLAUDE.md
 scripts
 !backend/scripts/
 !backend/scripts/resolve-version.sh
+# R0 不变量检查脚本（票 13）：根 scripts/ 默认被忽略，显式放行检查脚本与其说明
+!/scripts/
+!/scripts/check_r0_invariant.sh
+!/scripts/README.md
 .code-review-state
 #openspec/
 code-reviews/
@@ -156,5 +160,10 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
+.kiro-decompile/
+.mimosa/
+backend/.mimosa/
+frontend/.mimosa/
+.scratch/dev-artifacts/
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
 /plugins/

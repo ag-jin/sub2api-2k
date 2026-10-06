@@ -224,6 +224,74 @@ export default {
         syncModelsSuccess: '已同步 {count} 个新模型',
         syncModelsAlreadyUpToDate: '模型列表已是最新',
         syncModelsError: '同步模型失败'
+      },
+
+      // 签名 V4（票 29）：生效值一律来自 /admin/zhipu/sign/config，界面不硬编码默认值
+      signV4: {
+        title: '签名 V4',
+        subtitle: '智谱（bigmodel）上游请求签名。改动立即热生效，并写入管理端审计日志。',
+        loading: '签名配置加载中...',
+        effective: '生效值',
+        effectiveOn: '启用',
+        effectiveOff: '停用',
+        inherited: '当前值继承部署配置（未被管理端覆盖）',
+        overridden: '当前值已被管理端覆盖（优先级高于部署配置）',
+        scope: '作用域：全局网关开关（sign_v4_enabled）与账号级标记（zcode_client_sign）同时满足才签名',
+        toggleLabel: '启用签名 V4',
+        toggleHint: '关闭后所有智谱账号的请求不再注入签名头；上游可能按降级费率（1.0 系数）计费。',
+        auditHint: '保存会立即推送到签名器（无需重启），并记录审计日志。',
+        saving: '保存中...',
+        policy: {
+          label: '签名失败策略',
+          hint: '签名失败（握手失败或上游返回 VERIFY 类拒绝）时的处理方式。',
+          confirmTitle: '切换签名失败策略',
+          confirmMessage: '将签名失败策略切换为「{policy}」？{impact}',
+          confirm: '确认切换',
+          cancel: '取消',
+          open: {
+            title: 'fail-open（降级放行）',
+            desc: '剥离签名头继续请求，保证可用性，但该请求按未签名计费。',
+            impact: '费率影响：降级请求的有效系数为 1.0，成本约为签名态（0.67）的 ×1.5，并触发 L1 降级告警。'
+          },
+          closed: {
+            title: 'fail-closed（拒绝降级）',
+            desc: '返回可故障转移的错误，交给调度器换账号，宁可不发请求也不接受降级计费。',
+            impact: '费率影响：拒绝以 1.0 系数（成本 ×1.5）发起请求；该账号在调度侧被跳过，可能表现为可用账号变少。'
+          }
+        },
+        status: {
+          title: '握手私钥状态',
+          hint: '仅列出「启用签名」的智谱账号（登录托管 + 账号级标记生效）。',
+          loading: '状态加载中...',
+          error: '状态加载失败',
+          retry: '重试',
+          empty: '暂无启用签名的智谱账号（未握手）',
+          keyCached: '私钥缓存',
+          keyCachedYes: '已命中',
+          keyCachedNo: '未命中',
+          lastHandshake: '上次握手',
+          neverHandshake: '从未握手',
+          keyExpires: '私钥过期',
+          notAvailable: '—',
+          consecutiveFailures: '连续失败',
+          circuitBreakTripped: '熔断中（已摘除签名）',
+          circuitBreakNone: '未熔断',
+          circuitBreakUnknown: '未知',
+          reasonLabel: '原因码'
+        },
+        save: {
+          success: '签名配置已保存，已热生效',
+          policySuccess: '签名失败策略已切换，已热生效'
+        },
+        errors: {
+          saveFailed: '保存签名配置失败',
+          configFailed: '签名配置读取失败',
+          forbidden: '无权限修改签名配置（需要管理员权限）',
+          unknown: '保存签名配置失败',
+          ZHIPU_SIGN_CONFIG_INVALID: '取值不合法，后端已拒绝写入（配置未变）',
+          ZHIPU_SIGN_CONFIG_EMPTY: '未提交任何签名配置项',
+          ZHIPU_SIGN_CONFIG_UNAVAILABLE: '设置存储不可用，配置未写入'
+        }
       }
     },
 

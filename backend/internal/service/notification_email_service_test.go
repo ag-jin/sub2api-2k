@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/quotedprintable"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -553,6 +555,144 @@ func (r *notificationEmailMemorySettingRepo) Delete(_ context.Context, key strin
 func TestNotificationEmailMemorySettingRepoSatisfiesInterface(t *testing.T) {
 	var _ SettingRepository = (*notificationEmailMemorySettingRepo)(nil)
 	require.False(t, strings.Contains(notificationEmailPreferenceKey(NotificationEmailEventBalanceLow, "User@Example.com"), "User@Example.com"))
+}
+
+// ---------------------------------------------------------------------------
+// 票 25：智谱签名告警的通知面（design M3.1(d)）
+// ---------------------------------------------------------------------------
+
+// zhipuSignAlertNotifyTestRuleID 是通知用例里的规则 ID（不依赖其它测试文件的常量，
+// 保证不带 -tags=unit 时本文件也能单独编译）。
+const zhipuSignAlertNotifyTestRuleID = 4201
+
+// TestNotificationEmailZhipuSignAlertEventAndTemplate 覆盖验收标准第三条：事件常量、
+// 默认模板（两语言可渲染、含建议动作、不含凭据）、规则 → 事件映射与既有模板管理。
+func TestNotificationEmailZhipuSignAlertEventAndTemplate(t *testing.T) {
+	ctx := context.Background()
+	svc := NewNotificationEmailService(newNotificationEmailMemorySettingRepo(), nil)
+
+	found := false
+	for _, info := range svc.ListEventInfos() {
+		if info.Event != NotificationEmailEventZhipuSignAlert {
+			continue
+		}
+		found = true
+		require.False(t, info.Optional)
+		require.Equal(t, "ops", info.Category)
+		for _, placeholder := range []string{
+			"rule_name", "severity", "alert_status", "metric_type",
+			"operator", "metric_value", "threshold_value", "triggered_at", "alert_description",
+		} {
+			require.Contains(t, info.Placeholders, placeholder)
+		}
+	}
+	require.True(t, found, "zhipu.sign_alert 必须注册在通知事件清单里")
+
+	variables := map[string]string{
+		"rule_name":         "智谱签名失效（L1 实时窗口）",
+		"severity":          "P1",
+		"alert_status":      OpsAlertStatusFiring,
+		"metric_type":       OpsMetricTypeZhipuSignFailWindow,
+		"operator":          ">",
+		"metric_value":      "2.00",
+		"threshold_value":   "0.00",
+		"triggered_at":      "2026-10-06T00:00:00Z",
+		"alert_description": "zhipu_sign_fail_window > 0.00 (current 2.00) over last 5m (platform=zhipu)；建议动作：检查 X-Client-Version",
+	}
+	for _, locale := range []string{"en", "zh"} {
+		tmpl, err := svc.GetTemplate(ctx, NotificationEmailEventZhipuSignAlert, locale)
+		require.NoError(t, err)
+		require.False(t, tmpl.IsCustom)
+		require.NotEmpty(t, tmpl.Subject)
+		require.NotEmpty(t, tmpl.HTML)
+
+		preview, err := svc.PreviewTemplate(ctx, NotificationEmailPreviewInput{
+			Event:     NotificationEmailEventZhipuSignAlert,
+			Locale:    locale,
+			Variables: variables,
+		})
+		require.NoError(t, err)
+		require.Contains(t, preview.Subject, "智谱签名失效（L1 实时窗口）")
+		require.Contains(t, preview.HTML, "zhipu_sign_fail_window")
+		require.Contains(t, preview.HTML, "X-Client-Version")
+		require.Contains(t, preview.HTML, "sign_v4_enabled")
+		require.NotContains(t, preview.HTML, "api_key")
+	}
+
+	// 规则 → 通知事件的映射：智谱内置指标走专用事件与模板，其余规则沿用 ops.alert。
+	for _, metricType := range []string{OpsMetricTypeZhipuSignFailWindow, OpsMetricTypeZhipuSignEffectiveRate} {
+		rule, ok := OpsBuiltinAlertRule(metricType)
+		require.True(t, ok)
+		require.Equal(t, NotificationEmailEventZhipuSignAlert, notificationEmailEventForOpsAlertRule(rule))
+	}
+	require.Equal(t, NotificationEmailEventOpsAlert, notificationEmailEventForOpsAlertRule(&OpsAlertRule{MetricType: "error_rate"}))
+	require.Equal(t, NotificationEmailEventOpsAlert, notificationEmailEventForOpsAlertRule(nil))
+
+	// 默认模板可由管理端覆盖并还原（走既有模板管理，不新增配置键）。
+	updated, err := svc.UpdateTemplate(ctx, NotificationEmailEventZhipuSignAlert, "zh", "自定义 {{rule_name}}", "<p>{{metric_value}}</p>")
+	require.NoError(t, err)
+	require.True(t, updated.IsCustom)
+
+	restored, err := svc.RestoreOfficialTemplate(ctx, NotificationEmailEventZhipuSignAlert, "zh")
+	require.NoError(t, err)
+	require.False(t, restored.IsCustom)
+	require.Contains(t, restored.HTML, "sign_v4_enabled")
+}
+
+// TestOpsAlertEvaluatorZhipuSignAlertEmailUsesOpsRecipients 覆盖验收标准第三条的收件人口径：
+// 智谱签名告警复用既有 ops 告警邮件通道（收件人 = OpsEmailNotificationConfig.Alert.Recipients，
+// 不新增配置键），只是换成 zhipu.sign_alert 的默认模板。
+func TestOpsAlertEvaluatorZhipuSignAlertEmailUsesOpsRecipients(t *testing.T) {
+	ctx := context.Background()
+	repo := newNotificationEmailMemorySettingRepo()
+	smtpServer := startNotificationEmailTestSMTPServer(t)
+	require.NoError(t, repo.SetMultiple(ctx, smtpServer.settings()))
+
+	alertConfig, err := json.Marshal(map[string]any{
+		"alert": map[string]any{
+			"enabled":             true,
+			"recipients":          []string{"ops@example.com"},
+			"min_severity":        "",
+			"rate_limit_per_hour": 0,
+		},
+		"report": map[string]any{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.Set(ctx, SettingKeyOpsEmailNotificationConfig, string(alertConfig)))
+
+	emailService := NewEmailService(repo, nil)
+	NewNotificationEmailService(repo, emailService)
+
+	rule, ok := OpsBuiltinAlertRule(OpsMetricTypeZhipuSignFailWindow)
+	require.True(t, ok)
+	rule.ID = zhipuSignAlertNotifyTestRuleID
+	event := &OpsAlertEvent{
+		ID:             7,
+		RuleID:         rule.ID,
+		Severity:       rule.Severity,
+		Status:         OpsAlertStatusFiring,
+		Title:          rule.Name,
+		Description:    buildOpsAlertEventDescription(rule, 3, opsAlertEffectiveWindowMinutes(rule), "zhipu", nil),
+		MetricValue:    float64Ptr(3),
+		ThresholdValue: float64Ptr(rule.Threshold),
+		FiredAt:        time.Now().UTC(),
+	}
+
+	repoMock := &opsRepoMock{}
+	svc := &OpsAlertEvaluatorService{
+		opsService:   &OpsService{opsRepo: repoMock, settingRepo: repo},
+		opsRepo:      repoMock,
+		emailService: emailService,
+		emailLimiter: newSlidingWindowLimiter(0, time.Hour),
+	}
+
+	require.True(t, svc.maybeSendAlertEmail(ctx, defaultOpsAlertRuntimeSettings(), rule, event))
+	require.Equal(t, int64(1), smtpServer.messageCount())
+
+	body := smtpServer.lastMessageBody(t)
+	require.Contains(t, body, rule.Name)
+	require.Contains(t, body, "X-Client-Version")
+	require.Contains(t, body, "gateway.zhipu.sign_v4_enabled")
 }
 
 type notificationEmailTestSMTPServer struct {

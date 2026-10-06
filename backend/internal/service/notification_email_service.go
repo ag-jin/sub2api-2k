@@ -33,6 +33,9 @@ const (
 	NotificationEmailEventCyberPolicyNotice           = "content_moderation.cyber_policy_notice"
 	NotificationEmailEventOpsAlert                    = "ops.alert"
 	NotificationEmailEventOpsScheduledReport          = "ops.scheduled_report"
+	// NotificationEmailEventZhipuSignAlert 是智谱签名告警（L1 失效窗口 / L2 有效系数）
+	// 的专用事件（design M3.1(d)）；收件人解析复用既有 ops 告警邮件通道。
+	NotificationEmailEventZhipuSignAlert = "zhipu.sign_alert"
 
 	notificationEmailTemplateKeyPrefix    = "notification_email_template:"
 	notificationEmailPreferenceKeyPrefix  = "notification_email_preference:"
@@ -1033,6 +1036,7 @@ var notificationEmailEventOrder = []string{
 	NotificationEmailEventContentModerationDisabled,
 	NotificationEmailEventCyberPolicyNotice,
 	NotificationEmailEventOpsAlert,
+	NotificationEmailEventZhipuSignAlert,
 	NotificationEmailEventOpsScheduledReport,
 }
 
@@ -1151,6 +1155,15 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 			),
 			append(append([]string{}, notificationEmailOpsSummaryPlaceholders...), "report_detail_display", "report_html")...,
 		),
+	},
+	NotificationEmailEventZhipuSignAlert: {
+		Event:       NotificationEmailEventZhipuSignAlert,
+		Label:       "Zhipu client sign alert",
+		Description: "Sent to configured operations recipients when a Zhipu client-sign alert rule fires (L1 failure window or L2 effective rate).",
+		Category:    "ops",
+		Optional:    false,
+		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
+			"rule_name", "severity", "alert_status", "metric_type", "operator", "metric_value", "threshold_value", "triggered_at", "alert_description"),
 	},
 }
 
@@ -1436,6 +1449,45 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 			HTML:    notificationEmailOpsScheduledReportTemplate(notificationEmailLocaleChinese),
 		},
 	},
+	NotificationEmailEventZhipuSignAlert: {
+		notificationEmailDefaultLocale: {
+			Subject: "[Zhipu Sign Alert][{{severity}}] {{rule_name}}",
+			HTML: notificationEmailCard("#dc2626", "Zhipu client sign alert", `
+<p><strong>Rule</strong>: {{rule_name}}</p>
+<p><strong>Severity</strong>: {{severity}}</p>
+<p><strong>Status</strong>: {{alert_status}}</p>
+<p><strong>Metric</strong>: {{metric_type}} {{operator}} {{metric_value}} (threshold {{threshold_value}})</p>
+<p><strong>Fired at</strong>: {{triggered_at}}</p>
+<p><strong>Details</strong>: {{alert_description}}</p>
+<p><strong>Suggested action</strong>: check that the client version sent upstream matches the expected one (X-Client-Version, default 0.16.9). If the signature keeps failing, disable the global client-sign switch (gateway.zhipu.sign_v4_enabled) first, so traffic is not silently billed at the unsigned rate (1.0 instead of the 0.67 channel rate).</p>`),
+		},
+		notificationEmailLocaleChinese: {
+			Subject: "[智谱签名告警][{{severity}}] {{rule_name}}",
+			HTML: notificationEmailCard("#dc2626", "智谱签名告警", `
+<p><strong>规则</strong>：{{rule_name}}</p>
+<p><strong>严重级别</strong>：{{severity}}</p>
+<p><strong>状态</strong>：{{alert_status}}</p>
+<p><strong>指标</strong>：{{metric_type}} {{operator}} {{metric_value}}（阈值 {{threshold_value}}）</p>
+<p><strong>触发时间</strong>：{{triggered_at}}</p>
+<p><strong>说明</strong>：{{alert_description}}</p>
+<p><strong>建议动作</strong>：检查上游使用的客户端版本是否为预期值（X-Client-Version，默认 0.16.9）。若签名持续失效，先关停全局签名开关（gateway.zhipu.sign_v4_enabled），避免流量被静默按无签名费率（1.0 而非 0.67 渠道系数）计费。</p>`),
+		},
+	},
+}
+
+// notificationEmailEventForOpsAlertRule 返回 ops 告警规则对应的通知事件：智谱签名内置
+// 指标（L1 失效窗口 / L2 有效系数）用专用事件 zhipu.sign_alert（design M3.1(d) 的默认
+// 模板带建议动作），其余规则沿用通用的 ops.alert。收件人、严重度过滤、限流与静默一律
+// 走既有 ops 告警邮件通道，本函数只切换模板。
+func notificationEmailEventForOpsAlertRule(rule *OpsAlertRule) string {
+	if rule == nil {
+		return NotificationEmailEventOpsAlert
+	}
+	switch strings.TrimSpace(rule.MetricType) {
+	case OpsMetricTypeZhipuSignFailWindow, OpsMetricTypeZhipuSignEffectiveRate:
+		return NotificationEmailEventZhipuSignAlert
+	}
+	return NotificationEmailEventOpsAlert
 }
 
 func notificationEmailOpsScheduledReportTemplate(locale string) string {

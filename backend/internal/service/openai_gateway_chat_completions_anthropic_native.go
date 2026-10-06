@@ -110,16 +110,12 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		proxyURL = account.Proxy.URL()
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, _, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
-	releaseUpstreamCtx()
+	// 与 /v1/messages 直通路径共用同一发送口（含智谱签名自愈，票 23）；
+	// 签名挂点唯一（buildNativeAnthropicUpstreamRequest），错误语义不变。
+	// 上游新增的 sessionBodies（opencode 会话头 payload）经发送口原样透传。
+	resp, err := s.sendNativeAnthropicUpstreamRequest(ctx, c, account, anthropicBody, apiKey, targetURL, proxyURL, reqStream, body)
 	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
-	}
-
-	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
-	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 

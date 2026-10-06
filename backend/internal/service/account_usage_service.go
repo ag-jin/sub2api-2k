@@ -1472,6 +1472,7 @@ func (s *AccountUsageService) getOpenCodeUsage(ctx context.Context, account *Acc
 			return degraded, nil
 		}
 		usage := openCodeUsageFromSnapshot(snapshot, now)
+		persistOpenCodeRateLimit(ctx, s.accountRepo, s.runtimeBlocker, account, snapshot)
 		s.cache.opencodeCache.Store(account.ID, &opencodeUsageCache{usageInfo: usage, lastSuccess: usage, timestamp: now})
 		return usage, nil
 	})

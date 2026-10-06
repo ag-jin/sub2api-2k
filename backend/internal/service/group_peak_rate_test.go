@@ -214,7 +214,10 @@ func TestPeakMultiplier_SnapshotRoundTrip(t *testing.T) {
 	}
 	svc := &APIKeyService{}
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	if err != nil {
+		t.Fatalf("snapshotFromAPIKey: %v", err)
+	}
 	if snapshot == nil || snapshot.Group == nil {
 		t.Fatalf("snapshot or snapshot.Group must not be nil")
 	}

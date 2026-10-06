@@ -93,16 +93,9 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 		proxyURL = account.Proxy.URL()
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, clientStream)
-	upstreamReq, _, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, body, apiKey, targetURL)
-	releaseUpstreamCtx()
+	resp, err := s.sendNativeAnthropicUpstreamRequest(ctx, c, account, body, apiKey, targetURL, proxyURL, clientStream)
 	if err != nil {
 		return nil, err
-	}
-
-	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
-	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -120,6 +113,75 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 		return s.handleNativeAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
 	}
 	return s.handleNativeAnthropicBufferedResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
+}
+
+// sendNativeAnthropicUpstreamRequest 构建（含签名注入）并发送原生 Anthropic 上游
+// 请求，并在响应命中 VERIFY_* 时执行签名自愈（design M3.1(a) / 票 23）：作废私钥 →
+// 重新握手（singleflight 与每 key 退避由票 20 的 Signer 保证）→ 用同一请求体重放
+// **恰好一次**（重放走同一构建闭包，重新签名；单次重放由结构保证，不循环）。
+//
+// 三条原生直通入口（/v1/messages、/v1/chat/completions、/v1/responses）共用本函数：
+// 签名挂点只有一个（buildNativeAnthropicUpstreamRequest），自愈也必须同层，否则
+// 未改的入口会在 VERIFY_* 后带着作废私钥一直失败到私钥 TTL 到期。
+//
+// 错误语义与既有内联实现一致：构建失败原样返回（尚未发出请求，含票 24 的 closed
+// 策略可 failover 错误）；传输失败（含重放阶段的传输失败）经
+// handleOpenAIUpstreamTransportError 归一为既有 failover 语义；重放仍失败且策略为
+// closed 时交回自愈编排给出的可 failover 错误（换账号/渠道，不下发该响应）。
+func (s *OpenAIGatewayService) sendNativeAnthropicUpstreamRequest(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	apiKey string,
+	targetURL string,
+	proxyURL string,
+	stream bool,
+	sessionBodies ...[]byte,
+) (*http.Response, error) {
+	build := func() (*http.Request, bool, error) {
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, stream)
+		upstreamReq, _, signed, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, body, apiKey, targetURL, sessionBodies...)
+		releaseUpstreamCtx()
+		return upstreamReq, signed, err
+	}
+
+	upstreamReq, signed, err := build()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
+	if err != nil {
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
+	}
+	if resp == nil || resp.StatusCode < 400 || !signed {
+		// signed=false：本次没带签名（门控关闭或 fail-open），没有可作废的私钥。
+		return resp, nil
+	}
+
+	// 检测点唯一：复用错误体接缝（body 读后回卷，调用方仍可重读）。
+	errorBody, _ := s.readOpenAIUpstreamError(resp)
+	outcome := s.zhipuSignSelfHealVerifyFailure(ctx, account, signed, resp, errorBody, func() (*http.Response, error) {
+		replayReq, _, replayErr := build()
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		return s.doOpenAIUpstream(replayReq, proxyURL, account)
+	})
+	if !outcome.Replayed {
+		return resp, nil
+	}
+	if outcome.FailoverErr != nil {
+		// fail 策略 closed（票 24）：重放仍失败，不下发该响应，换账号/渠道重试。
+		if outcome.Resp != nil && outcome.Resp.Body != nil {
+			_ = outcome.Resp.Body.Close()
+		}
+		return nil, outcome.FailoverErr
+	}
+	if outcome.ReplayErr != nil {
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, outcome.ReplayErr, true)
+	}
+	return outcome.Resp, nil
 }
 
 // nativeAnthropicTargetURL 组装国产供应商原生 Anthropic messages 端点。
@@ -146,6 +208,9 @@ func resolveOpenCodeGoMappedModel(account *Account, body []byte, defaultMappedMo
 	return normalizeOpenAIModelForUpstream(account, billing)
 }
 
+// buildNativeAnthropicUpstreamRequest 构建原生 Anthropic 上游请求；signed 表示本次
+// 请求确实带了智谱签名（自愈状态机据此判定 VERIFY_* 是否与自己的私钥有关，design
+// M3.1(a) / 票 23）。
 func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	ctx context.Context,
 	c *gin.Context,
@@ -154,7 +219,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	apiKey string,
 	targetURL string,
 	sessionBodies ...[]byte,
-) (*http.Request, []byte, error) {
+) (*http.Request, []byte, bool, error) {
 	// 能力维度 body sanitize：与 Anthropic 平台 passthrough 相同，按 beta
 	// header 决定是否保留 body 中的 beta 能力字段，避免客户端"body 带字段但
 	// header 忘带 token"的 bug 让第三方上游 400。
@@ -176,7 +241,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	if c != nil && c.Request != nil {
@@ -213,7 +278,17 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	payloads := append([][]byte{body}, sessionBodies...)
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, payloads...)
 
-	return req, body, nil
+	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
+	// 与 session 必须同源一致。zhipu 数据面挂点仅此两处，另一处是 sendCCUpstreamRequest。
+	//
+	// 返回的 signErr 只在 fail 策略 closed（票 24）时非 nil：请求不发出，
+	// 交回可 failover 错误给调度器换账号/渠道。
+	signed, signErr := s.applyZhipuClientSign(req.Context(), c, account, body, req.Header)
+	if signErr != nil {
+		return nil, nil, false, signErr
+	}
+
+	return req, body, signed, nil
 }
 
 // handleNativeAnthropicBufferedResponse 处理非流式原生 Anthropic 响应：

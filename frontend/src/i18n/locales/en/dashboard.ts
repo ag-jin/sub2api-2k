@@ -148,6 +148,10 @@ export default {
     groupChangedSuccess: 'Group changed successfully',
     failedToChangeGroup: 'Failed to change group',
     groupRequired: 'Please select a group',
+    planLabel: 'Pricing Plan',
+    selectPlan: 'Select a pricing plan',
+    searchPlan: 'Search plans...',
+    planRequired: 'Please select a pricing plan',
     usage: 'Usage',
     today: 'Today',
     total: 'Last 30d',
@@ -538,6 +542,68 @@ export default {
         flash: 'Flash'
       }
     },
+    // Zhipu login-managed accounts: per-model credit details for the last 7 days (MonitorQuotaView)
+    credits: {
+      title: 'Model credit details, last 7 days',
+      range: 'Last 7 days',
+      updatedAt: 'Updated {time}',
+      columns: {
+        date: 'Date',
+        model: 'Model',
+        inputTokens: 'Input tokens',
+        cachedTokens: 'Cached tokens',
+        outputTokens: 'Output tokens',
+        credits: 'Credits'
+      },
+      empty: 'No model credit records in the last 7 days',
+      unavailable: 'Model credit details are unavailable',
+      stale: 'Showing an earlier snapshot. Credit settlement may be delayed by 4–11 minutes.',
+      failed: 'Unable to load model credit details'
+    },
+    // Zhipu login-managed accounts: read-only reset card display (R0: never offers a use/consume action)
+    resetCards: {
+      title: 'Reset cards',
+      readOnly: 'Read-only',
+      types: {
+        five_hour: '5-hour cards',
+        week: 'Weekly cards'
+      },
+      count: '{count} cards',
+      expiresAt: 'Expires: {time}',
+      expiresIn: 'Expires in {time}',
+      expiring: 'Expires on {time}',
+      expiringSoonNotice: 'Unused cards are void once expired',
+      expired: 'Expired on {time}',
+      unknownExpiry: 'Expiry unknown',
+      empty: 'No reset card data',
+      typeEmpty: 'No data for this card type',
+      observeOnly: 'This system only observes reset cards and never uses or consumes them',
+      stale: 'Showing an earlier snapshot. Information may be outdated.',
+      needsRelogin: 'Login has expired; reset card information cannot be updated.',
+      failed: 'Unable to load reset card information'
+    },
+    // Zhipu signing "effective rate" health card (design M5 reconciliation, tickets 27/30)
+    signHealth: {
+      title: 'Effective rate',
+      current: 'Current',
+      target: 'Target',
+      variance: 'Variance',
+      peakFactor: 'Current period factor {factor}',
+      peakFactorTooltip: 'Snapshot field sign_peak_factor: 0.5 = off-peak, 1.0 = peak',
+      reconciledAt: 'Reconciled {time}',
+      reconciledAtTooltip: 'Snapshot field sign_reconciled_at: end of the settled window this effective rate belongs to',
+      effectiveRateTooltip: 'Snapshot field sign_effective_rate: actual credits / expected credits. 0.67 = signing in effect; approx. 1.0 = requests silently billed as unsigned',
+      states: {
+        onTarget: 'On target',
+        aboveTarget: 'Above target',
+        alert: 'Rate alert',
+        unknown: 'No reconciliation data'
+      },
+      stale: 'Data may be outdated',
+      failed: 'Unable to load effective rate',
+      reasonAboveAlertThreshold: 'Above the alert threshold {threshold} (default 0.70)',
+      reasonDeviationFlag: 'L2 reconciliation flagged a deviation (sign_reconcile_deviation)'
+    },
     extraModelsHeader: 'Extra Models',
     extraModelsEmpty: 'No extra models',
     latencyEmpty: '-',
@@ -641,40 +707,40 @@ export default {
     }
   },
 
-  // Model Plaza (public group/model pricing showcase)
+  // Model Plaza (public plan/model/protocol pricing catalog)
   modelPlaza: {
     title: 'Model Plaza',
-    description: 'Browse available models and pricing by group',
+    description: 'Browse available models and pricing by plan',
     loading: 'Loading...',
-    empty: 'No groups to display',
+    empty: 'No plans to display',
     loadFailed: 'Failed to load model plaza',
     noSearchResult: 'No matching models',
-    anonymousHint: 'Sign in to see your exclusive groups and personal rates',
+    anonymousHint: 'Sign in to see your exclusive plans',
     filters: {
-      platformLabel: 'Platform',
-      groupLabel: 'Group',
-      rateLabel: 'Rate',
+      planLabel: 'Plan',
+      protocolLabel: 'Protocol',
       modelLabel: 'Model',
       searchPlaceholder: 'Search models',
       all: 'All'
     },
-    badges: {
-      exclusive: 'Exclusive',
-      subscription: 'Subscription'
-    },
     detail: {
-      noModels: 'No models configured for this group',
+      noModels: 'No models configured for this plan',
       noPricing: 'Pricing not configured',
       peakNote: 'Peak hours {window}: billing rate ×{multiplier}',
       longContextDisabledNote: 'Long-context tier pricing is disabled for this group: requests above the threshold are billed at the base tier; official tiers are for reference only'
     },
     table: {
       model: 'Model',
+      protocol: 'Protocol',
+      billing: 'Billing',
+      price: 'Price',
       input: 'Input',
       output: 'Output',
       cache: 'Cache',
       cacheWrite: 'Write',
       cacheRead: 'Read',
+      direct: 'Direct',
+      relay: 'Relay',
       cacheWriteShort: 'W',
       cacheReadShort: 'R',
       tierHint: 'The whole request is billed at the tier matching its total context (input + cache write + cache read)',
@@ -695,8 +761,11 @@ export default {
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',
+      perUnitVideo: '/ video',
       perRequest: 'Per request',
-      perImage: 'Per image'
+      perImage: 'Per image',
+      perVideo: 'Per video',
+      billingToken: 'Per token'
     },
     nav: {
       login: 'Sign In',

@@ -1,4 +1,5 @@
 import { openAIPlanTypeLabel } from '@/utils/planType'
+import type { ZhipuLoginCredential } from '@/api/admin/zhipu'
 
 export function applyInterceptWarmup(
   credentials: Record<string, unknown>,
@@ -475,6 +476,34 @@ export function cnQuotaCellVisible(platform: string, accountMode: string): boole
 
 export function cnBalanceCellVisible(platform: string, accountMode: string): boolean {
   return (platform === 'kimi' || platform === 'deepseek') && accountMode !== 'coding'
+}
+
+// ===== 智谱（bigmodel）登录账号凭据 =====
+// 键名与后端票 03 的 BuildAccountCredentials 白名单逐字一致（前后端双向锁死）；
+// 多写一个键都会被 03/04 的键集合断言打回。
+
+/**
+ * 登录模式（bigmodel_oauth）建号凭据：兑换结果 → credentials。
+ * account_mode 固定 coding：登录链路即 zcode 编程套餐；03 的同签名后端函数也不接收
+ * 模式参数，两侧共用同一常量。
+ */
+export function buildZhipuLoginCredentials(
+  cred: ZhipuLoginCredential,
+  protocol: CnApiProtocol
+): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {
+    auth_flow: 'bigmodel_oauth',
+    api_key: cred.api_key,
+    access_token: cred.access_token,
+    zcodejwttoken: cred.zcodejwttoken,
+    account_mode: 'coding',
+    api_protocol: protocol
+  }
+  // 03 白名单：refresh_token 仅在非空时落键（实测该字段可能为空串）。
+  if (cred.refresh_token) {
+    credentials.refresh_token = cred.refresh_token
+  }
+  return credentials
 }
 
 /**

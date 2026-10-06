@@ -2800,6 +2800,57 @@ func buildOpenAIAccountSchedulerScoreSnapshot(
 	return result
 }
 
+// openAISchedulingRateEligible 是调度成本信号的平台门控，由 openAIUpstreamCostFactors
+// 与 newOpenAILegacyUpstreamRateOrder 共用（ticket 26 单点抽取，替换原先两处重复的
+// `!account.IsOpenAIApiKey() && !account.IsOpenAIOAuthLike()`）。
+//
+// 既有信任面逐项不变：openai/openai-compatible（opencode）api key 与 openai oauth-like
+// 仍按原样参与；新增面只有 #03 定义的登录态智谱账号。手填 api_key 的智谱账号不进入
+// 成本因子——与「只有可信平台的上游自报倍率参与排序」的既有语义一致（见
+// newOpenAILegacyUpstreamRateOrder 的注释）。
+func openAISchedulingRateEligible(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	if account.IsOpenAIApiKey() || account.IsOpenAIOAuthLike() {
+		return true
+	}
+	return account.IsZhipuLoginManaged()
+}
+
+// 智谱调度成本倍率的输入键（design M5；键名冻结，下游 27/30 同源）。
+const (
+	zhipuSchedulingUpstreamBillingRateExtraKey = "upstream_billing_rate"
+	zhipuSchedulingDefaultUpstreamBillingRate  = 1.0
+	zhipuSchedulingSignCredentialKey           = "zcode_client_sign"
+	zhipuSchedulingSignCredentialV4            = "v4"
+)
+
+// zhipuSchedulingRate 返回登录态智谱账号的调度成本倍率（design M5）：
+//
+//	baseRate(extra["upstream_billing_rate"]，缺省 1.0) × ZhipuPeakFactor(now) × (签名启用 ? 0.67 : 1.0)
+//
+// 前置条件：调用方已通过 openAISchedulingRateEligible（本函数只描述登录态智谱账号）。
+//
+// 基准倍率容错语义（固定并锁定）：只有可解析的有限正数被采纳，缺失/不可解析/非正数/NaN/Inf
+// 一律按 1.0——坏输入不得把账号伪装成最便宜。
+//
+// 签名启用的判定只读账号级标记 credentials["zcode_client_sign"]=="v4"（与 22 的账号级开关同键）。
+// 全局开关 cfg.Gateway.Zhipu.SignV4Enabled 在签名注入点执行，调度纯函数拿不到配置，故全局关停
+// 期间本函数仍按 0.67 计价（方向是"少估成本"，不会掩盖真实的高成本账号）。
+func zhipuSchedulingRate(account *Account, now time.Time) float64 {
+	baseRate := zhipuSchedulingDefaultUpstreamBillingRate
+	if rate, ok := resolveAccountExtraNumber(account.Extra, zhipuSchedulingUpstreamBillingRateExtraKey); ok &&
+		rate > 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0) {
+		baseRate = rate
+	}
+	channelFactor := ZhipuUnsignedChannelFactor
+	if account.GetCredential(zhipuSchedulingSignCredentialKey) == zhipuSchedulingSignCredentialV4 {
+		channelFactor = ZhipuSignedChannelFactor
+	}
+	return baseRate * ZhipuPeakFactor(now) * channelFactor
+}
+
 func openAIUpstreamCostFactors(accounts []*Account, now time.Time, oauthSchedulingRateMultiplier float64) map[int64]float64 {
 	type rateSample struct {
 		accountID int64
@@ -2814,7 +2865,7 @@ func openAIUpstreamCostFactors(accounts []*Account, now time.Time, oauthScheduli
 			continue
 		}
 		factors[account.ID] = openAIUpstreamCostNeutralFactor
-		if !account.IsOpenAIApiKey() && !account.IsOpenAIOAuthLike() {
+		if !openAISchedulingRateEligible(account) {
 			continue
 		}
 		eligibleCount++
@@ -2875,10 +2926,11 @@ func newOpenAILegacyUpstreamRateOrder(accounts []*Account, now time.Time, oauthS
 		if account == nil {
 			continue
 		}
-		// 与 openAIUpstreamCostFactors 使用同一道平台门控：只有 OpenAI 平台账号
-		// 的倍率参与 legacy 低倍率优先排序。上游自报倍率来自中转方，不能让它对
-		// 其他平台的调度产生影响——否则自报低价即可吸走流量，而实际结算走本地倍率。
-		if !account.IsOpenAIApiKey() && !account.IsOpenAIOAuthLike() {
+		// 与 openAIUpstreamCostFactors 使用同一道平台门控（openAISchedulingRateEligible）：
+		// 只有 OpenAI 平台账号与登录态智谱账号的倍率参与 legacy 低倍率优先排序。
+		// 上游自报倍率来自中转方，不能让它对其他平台的调度产生影响——否则自报低价即可
+		// 吸走流量，而实际结算走本地倍率。手填 api_key 的智谱账号同样被挡在门外。
+		if !openAISchedulingRateEligible(account) {
 			continue
 		}
 		rate, ok := openAISchedulingRate(account, now, oauthSchedulingRateMultiplier)
@@ -2896,7 +2948,16 @@ func newOpenAILegacyUpstreamRateOrder(accounts []*Account, now time.Time, oauthS
 }
 
 func openAISchedulingRate(account *Account, now time.Time, oauthSchedulingRateMultiplier float64) (float64, bool) {
-	if account != nil && account.IsOpenAIOAuthLike() {
+	if account == nil {
+		return 0, false
+	}
+	// 登录态智谱账号走 zhipu 分支（时段 × 渠道 × 基准倍率），不参与 oauth 参考倍率。
+	// 门控由调用方 openAISchedulingRateEligible 执行；此处再判一次是为了让直接调用
+	// 也不会把智谱公式套到别的平台账号上。
+	if account.IsZhipuLoginManaged() {
+		return zhipuSchedulingRate(account, now), true
+	}
+	if account.IsOpenAIOAuthLike() {
 		return oauthSchedulingRateMultiplier, true
 	}
 	return openAIFreshUpstreamBillingRate(account, now)

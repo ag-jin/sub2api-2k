@@ -61,11 +61,14 @@ const (
 // 若编辑 Key 时无条件整行回写，并发累计的配额与限流计数就会被旧快照覆盖。
 // 因此调用方必须显式声明要改的列。
 type APIKeyUpdateFields struct {
-	Name      bool
-	Status    bool
-	Quota     bool
-	GroupID   bool
-	ExpiresAt bool
+	Name    bool
+	Status  bool
+	Quota   bool
+	GroupID bool
+	// PricingPlanID 覆盖 api_keys.pricing_plan_id。设定套餐时 GroupID 由
+	// 服务层一并清空（套餐与 group 互斥）。
+	PricingPlanID bool
+	ExpiresAt     bool
 	// QuotaUsed 仅供"重置配额用量"路径声明；常规计费走 IncrementQuotaUsed。
 	QuotaUsed bool
 	// RateLimits 覆盖 rate_limit_5h / _1d / _7d 三个阈值。
@@ -110,6 +113,9 @@ type APIKeyRepository interface {
 	CountByGroupID(ctx context.Context, groupID int64) (int64, error)
 	ListKeysByUserID(ctx context.Context, userID int64) ([]string, error)
 	ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error)
+	// ListKeysByPricingPlanID 返回绑定指定定价套餐的所有 API Key credential，
+	// 供套餐变更后的认证缓存批量失效使用（与 ListKeysByGroupID 同语义）。
+	ListKeysByPricingPlanID(ctx context.Context, planID int64) ([]string, error)
 
 	// Quota methods
 	IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error)
@@ -200,20 +206,29 @@ func NotifyAuthCacheSubscriptionReady(ctx context.Context) {
 	}
 }
 
-// APIKeyAuthCacheInvalidator 提供认证缓存失效能力
+// APIKeyAuthCacheInvalidator 提供通用认证缓存失效能力
 type APIKeyAuthCacheInvalidator interface {
 	InvalidateAuthCacheByKey(ctx context.Context, key string)
 	InvalidateAuthCacheByUserID(ctx context.Context, userID int64)
 	InvalidateAuthCacheByGroupID(ctx context.Context, groupID int64)
 }
 
+// APIKeyPricingPlanAuthCacheInvalidator is separate from the shared invalidator
+// contract so existing consumers only require the operations they use.
+type APIKeyPricingPlanAuthCacheInvalidator interface {
+	InvalidateAuthCacheByPricingPlanID(ctx context.Context, planID int64)
+}
+
 // CreateAPIKeyRequest 创建API Key请求
 type CreateAPIKeyRequest struct {
-	Name        string   `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
+	Name    string `json:"name"`
+	GroupID *int64 `json:"group_id"`
+	// PricingPlanID 绑定的定价套餐 ID。与 GroupID 互斥：两者都设置时
+	// 以套餐为准并忽略 GroupID（只能有一个生效）。
+	PricingPlanID *int64   `json:"pricing_plan_id"`
+	CustomKey     *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist   []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist   []string `json:"ip_blacklist"` // IP 黑名单
 
 	// Quota fields
 	Quota         float64 `json:"quota"`           // Quota limit in USD (0 = unlimited)
@@ -227,11 +242,15 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest 更新API Key请求
 type UpdateAPIKeyRequest struct {
-	Name        *string   `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      *string   `json:"status"`
-	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Name    *string `json:"name"`
+	GroupID *int64  `json:"group_id"`
+	// PricingPlanID 更新绑定套餐；nil 指针表示不修改，显式清空请用
+	// ClearPricingPlan。设定/更新套餐时按创建语义清空 GroupID。
+	PricingPlanID    *int64    `json:"pricing_plan_id"`
+	ClearPricingPlan bool      `json:"-"`
+	Status           *string   `json:"status"`
+	IPWhitelist      *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist      *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
 
 	// Quota fields
 	Quota           *float64   `json:"quota"`       // Quota limit in USD (nil = no change, 0 = unlimited)
@@ -262,6 +281,10 @@ func validateCreateAPIKeyRequest(req CreateAPIKeyRequest) error {
 	if req.ExpiresInDays != nil && *req.ExpiresInDays <= 0 {
 		return infraerrors.BadRequest("API_KEY_EXPIRY_INVALID", "expires_in_days must be greater than zero")
 	}
+	// 套餐与 legacy group 互斥：绑定套餐后 group_id 不可用。
+	if req.PricingPlanID != nil && req.GroupID != nil {
+		return infraerrors.BadRequest("API_KEY_PLAN_GROUP_CONFLICT", "group_id cannot be set together with pricing_plan_id")
+	}
 	return nil
 }
 
@@ -272,6 +295,9 @@ func validateUpdateAPIKeyRequest(req UpdateAPIKeyRequest) error {
 				return err
 			}
 		}
+	}
+	if req.PricingPlanID != nil && req.GroupID != nil {
+		return infraerrors.BadRequest("API_KEY_PLAN_GROUP_CONFLICT", "group_id cannot be set together with pricing_plan_id")
 	}
 	return nil
 }
@@ -288,6 +314,7 @@ type APIKeyService struct {
 	groupRepo                 GroupRepository
 	userSubRepo               UserSubscriptionRepository
 	userGroupRateRepo         UserGroupRateRepository
+	pricingPlanRepo           PricingPlanRepository
 	cache                     APIKeyCache
 	rateLimitCacheInvalid     RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
 	concurrencyService        *ConcurrencyService
@@ -363,6 +390,76 @@ func NewAPIKeyService(
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
 	s.rateLimitCacheInvalid = inv
+}
+
+// SetPricingPlanRepository wires the pricing plan repository (auth snapshot
+// hydration + plan eligibility checks). Called after construction in wire.
+func (s *APIKeyService) SetPricingPlanRepository(repo PricingPlanRepository) {
+	s.pricingPlanRepo = repo
+}
+
+// BindInitialPricingPlanRoute resolves the first active private dispatch pool
+// for a plan-bound key. It runs before gateway platform dispatch so the legacy
+// handlers, subscription lookup, and scheduler all observe the selected pool.
+func (s *APIKeyService) BindInitialPricingPlanRoute(ctx context.Context, apiKey *APIKey) error {
+	if apiKey == nil || apiKey.PricingPlanID == nil {
+		return nil
+	}
+	if apiKey.PricingPlanSnapshot == nil || s.groupRepo == nil {
+		return ErrPricingPlanUnavailable
+	}
+	for _, route := range apiKey.PricingPlanSnapshot.Routes {
+		if !route.Enabled || route.GroupID <= 0 {
+			continue
+		}
+		group, err := s.groupRepo.GetByIDLite(ctx, route.GroupID)
+		if err != nil || group == nil || !group.IsActive() {
+			continue
+		}
+		groupID := group.ID
+		apiKey.GroupID = &groupID
+		apiKey.Group = group
+		return nil
+	}
+	return ErrPricingPlanUnavailable
+}
+
+// validatePricingPlanBindable 校验目标套餐存在且可用（active），返回
+// ErrPricingPlanNotFound / ErrPricingPlanUnavailable。认证热路径读快照，
+// 只有创建/编辑 Key 时才回源校验。
+func (s *APIKeyService) validatePricingPlanBindable(ctx context.Context, planID int64) error {
+	if s.pricingPlanRepo == nil {
+		return ErrPricingPlanUnavailable
+	}
+	plan, err := s.pricingPlanRepo.GetPlanByID(ctx, planID)
+	if err != nil {
+		return err
+	}
+	if plan == nil || plan.Status != PricingPlanStatusActive || !plan.IsPublic {
+		return ErrPricingPlanUnavailable
+	}
+	return nil
+}
+
+// GetSelectablePricingPlans 返回用户可选购/可绑定的公开活跃套餐列表。
+// 只读套餐本体（id/name/title/description 等展示字段），不加载模型协议
+// 条目与内部路由层——客户端点拿不到 routes/groups/上游成本。未接入套餐
+// 仓储（仓库未注入）时返回空列表，端点表现为「无可选套餐」而非报错。
+func (s *APIKeyService) GetSelectablePricingPlans(ctx context.Context) ([]PricingPlan, error) {
+	if s.pricingPlanRepo == nil {
+		return nil, nil
+	}
+	plans, err := s.pricingPlanRepo.ListPlans(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	publicPlans := make([]PricingPlan, 0, len(plans))
+	for _, plan := range plans {
+		if plan.IsPublic {
+			publicPlans = append(publicPlans, plan)
+		}
+	}
+	return publicPlans, nil
 }
 
 func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
@@ -482,7 +579,8 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
+	// 验证分组权限（如果指定了分组）——legacy group 只在未绑定套餐时可用
+	// （validateCreateAPIKeyRequest 已拒绝两者同时设置）。
 	if req.GroupID != nil {
 		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
 		if err != nil {
@@ -492,6 +590,13 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		// 检查用户是否可以绑定该分组
 		if !s.canUserBindGroup(ctx, user, group) {
 			return nil, ErrGroupNotAllowed
+		}
+	}
+
+	// 绑定定价套餐：校验套餐存在且 active，套餐 Key 不使用 legacy group。
+	if req.PricingPlanID != nil {
+		if err := s.validatePricingPlanBindable(ctx, *req.PricingPlanID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -532,18 +637,23 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 创建API Key记录
 	apiKey := &APIKey{
-		UserID:      userID,
-		Key:         key,
-		Name:        html.EscapeString(req.Name),
-		GroupID:     req.GroupID,
-		Status:      StatusActive,
-		IPWhitelist: req.IPWhitelist,
-		IPBlacklist: req.IPBlacklist,
-		Quota:       req.Quota,
-		QuotaUsed:   0,
-		RateLimit5h: req.RateLimit5h,
-		RateLimit1d: req.RateLimit1d,
-		RateLimit7d: req.RateLimit7d,
+		UserID:        userID,
+		Key:           key,
+		Name:          html.EscapeString(req.Name),
+		GroupID:       req.GroupID,
+		PricingPlanID: req.PricingPlanID,
+		Status:        StatusActive,
+		IPWhitelist:   req.IPWhitelist,
+		IPBlacklist:   req.IPBlacklist,
+		Quota:         req.Quota,
+		QuotaUsed:     0,
+		RateLimit5h:   req.RateLimit5h,
+		RateLimit1d:   req.RateLimit1d,
+		RateLimit7d:   req.RateLimit7d,
+	}
+	// 套餐 Key 与 legacy group 互斥（防御性兜底：校验层已拒绝两者并存）。
+	if apiKey.PricingPlanID != nil {
+		apiKey.GroupID = nil
 	}
 
 	// Set expiration time if specified
@@ -815,6 +925,25 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 
 		apiKey.GroupID = req.GroupID
 		fields.GroupID = true
+	}
+
+	// 更新/清空定价套餐。设置套餐时校验可用性，并同步清空 legacy group
+	// （两者互斥，见 validateUpdateAPIKeyRequest）。
+	if req.ClearPricingPlan {
+		apiKey.PricingPlanID = nil
+		fields.PricingPlanID = true
+	}
+	if req.PricingPlanID != nil {
+		if err := s.validatePricingPlanBindable(ctx, *req.PricingPlanID); err != nil {
+			return nil, err
+		}
+		apiKey.PricingPlanID = req.PricingPlanID
+		fields.PricingPlanID = true
+		// 套餐 Key 不再使用 legacy group，清掉旧绑定防脏状态。
+		if apiKey.GroupID != nil {
+			apiKey.GroupID = nil
+			fields.GroupID = true
+		}
 	}
 
 	if req.Status != nil {

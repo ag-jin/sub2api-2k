@@ -24,6 +24,8 @@ func ProvideAdminHandlers(
 	antigravityOAuthHandler *admin.AntigravityOAuthHandler,
 	grokOAuthHandler *admin.GrokOAuthHandler,
 	codeBuddyAdminHandler *admin.CodeBuddyAdminHandler,
+	zhipuOAuthHandler *admin.ZhipuOAuthHandler,
+	zhipuSignHandler *admin.ZhipuSignHandler,
 	cnProviderHandler *admin.CNProviderHandler,
 	proxyHandler *admin.ProxyHandler,
 	redeemHandler *admin.RedeemHandler,
@@ -48,6 +50,7 @@ func ProvideAdminHandlers(
 	affiliateHandler *admin.AffiliateHandler,
 	complianceHandler *admin.ComplianceHandler,
 	auditLogHandler *admin.AuditLogHandler,
+	pricingPlanHandler *admin.PricingPlanHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 ) *AdminHandlers {
@@ -67,6 +70,8 @@ func ProvideAdminHandlers(
 		AntigravityOAuth:       antigravityOAuthHandler,
 		GrokOAuth:              grokOAuthHandler,
 		CodeBuddy:              codeBuddyAdminHandler,
+		ZhipuOAuth:             zhipuOAuthHandler,
+		ZhipuSign:              zhipuSignHandler,
 		CNProvider:             cnProviderHandler,
 		Proxy:                  proxyHandler,
 		Redeem:                 redeemHandler,
@@ -91,6 +96,7 @@ func ProvideAdminHandlers(
 		Affiliate:              affiliateHandler,
 		Compliance:             complianceHandler,
 		AuditLog:               auditLogHandler,
+		PricingPlan:            pricingPlanHandler,
 	}
 }
 
@@ -263,6 +269,8 @@ var ProviderSet = wire.NewSet(
 	admin.NewAntigravityOAuthHandler,
 	admin.NewGrokOAuthHandler,
 	admin.NewCodeBuddyAdminHandler,
+	admin.NewZhipuOAuthHandler,
+	admin.NewZhipuSignHandler,
 	admin.NewCNProviderHandler,
 	admin.NewProxyHandler,
 	admin.NewRedeemHandler,
@@ -286,6 +294,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAffiliateHandler,
 	admin.NewComplianceHandler,
 	admin.NewAuditLogHandler,
+	admin.NewPricingPlanHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -14,20 +15,28 @@ import (
 )
 
 type opencodeUsageTestUpstream struct {
-	mu       sync.Mutex
-	calls    int
-	status   int
-	body     string
-	wait     bool
-	lastAuth string
-	lastURL  string
+	mu              sync.Mutex
+	calls           int
+	status          int
+	body            string
+	wait            bool
+	lastAuth        string
+	lastURL         string
+	lastProxyURL    string
+	lastAccountID   int64
+	lastConcurrency int
+	lastHeader      http.Header
 }
 
-func (u *opencodeUsageTestUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+func (u *opencodeUsageTestUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
 	u.mu.Lock()
 	u.calls++
 	u.lastAuth = req.Header.Get("Authorization")
 	u.lastURL = req.URL.String()
+	u.lastProxyURL = proxyURL
+	u.lastAccountID = accountID
+	u.lastConcurrency = concurrency
+	u.lastHeader = req.Header.Clone()
 	wait := u.wait
 	status := u.status
 	body := u.body
@@ -52,9 +61,28 @@ func (u *opencodeUsageTestUpstream) count() int {
 	return u.calls
 }
 
+type opencodeUsageTestAccountRepo struct {
+	stubOpenAIAccountRepo
+	rateLimitCalls     int
+	lastRateLimitID    int64
+	lastRateLimitReset time.Time
+}
+
+func (r *opencodeUsageTestAccountRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
+	r.rateLimitCalls++
+	r.lastRateLimitID = id
+	r.lastRateLimitReset = resetAt
+	return nil
+}
+
+func (r *opencodeUsageTestAccountRepo) SetRateLimitedIfLater(ctx context.Context, id int64, resetAt time.Time) error {
+	return r.SetRateLimited(ctx, id, resetAt)
+}
+
 func newOpenCodeUsageTestService(upstream HTTPUpstream, account *Account) *AccountUsageService {
+	repo := &opencodeUsageTestAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*account}}}
 	return &AccountUsageService{
-		accountRepo:     &stubOpenAIAccountRepo{accounts: []Account{*account}},
+		accountRepo:     repo,
 		cache:           NewUsageCache(),
 		opencodeFetcher: NewOpenCodeUsageFetcher(upstream),
 	}
@@ -146,6 +174,25 @@ func TestOpenCodeUsagePreservesCallerCancellation(t *testing.T) {
 	}
 	if time.Since(started) > time.Second {
 		t.Fatal("caller cancellation was not preserved")
+	}
+}
+
+func TestOpenCodeUsageFetcherMaps429ToRateLimited(t *testing.T) {
+	upstream := &opencodeUsageTestUpstream{status: http.StatusTooManyRequests}
+	fetcher := NewOpenCodeUsageFetcher(upstream)
+
+	_, err := fetcher.FetchUsage(context.Background(), &OpenCodeUsageFetchOptions{
+		APIKey:       strings.Repeat("x", 1),
+		BaseURL:      "https://opencode.ai/zen/go/v1",
+		HTTPUpstream: upstream,
+	})
+
+	var usageErr *opencode.UsageError
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("error = %v, want UsageError", err)
+	}
+	if usageErr.Code != "rate_limited" || usageErr.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("usage error = %#v", usageErr)
 	}
 }
 

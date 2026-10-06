@@ -92,7 +92,8 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesWebSearchPricePerCall(t *testi
 		},
 	}
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
 	roundTrip := svc.snapshotToAPIKey(apiKey.Key, snapshot)
 
 	require.NotNil(t, roundTrip)

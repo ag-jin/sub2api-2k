@@ -1273,6 +1273,45 @@ func TestForwardAsRawChatCompletions_OpenCodeSendsSessionHeaderAndAgentUA(t *tes
 	require.Equal(t, openCodeUpstreamUserAgent, upstream.lastReq.Header.Get("user-agent"))
 }
 
+func TestForwardAsRawChatCompletions_OpenCodeSessionStableWithinConversation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 同一对话跨轮：首条 user 消息不变，尾部追加 assistant/user 轮次。
+	turn1 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"}],"stream":false}`)
+	turn2 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"},{"role":"assistant","content":"reply"},{"role":"user","content":"follow up"}],"stream":false}`)
+
+	newUpstream := func() *httpUpstreamRecorder {
+		return &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"oc_s","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			)),
+		}}
+	}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+
+	up1 := newUpstream()
+	svc.httpUpstream = up1
+	c1, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c1.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(turn1))
+	_, err := svc.forwardAsRawChatCompletions(context.Background(), c1, opencodeRawChatCompletionsTestAccount(), turn1, "")
+	require.NoError(t, err)
+
+	up2 := newUpstream()
+	svc.httpUpstream = up2
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(turn2))
+	_, err = svc.forwardAsRawChatCompletions(context.Background(), c2, opencodeRawChatCompletionsTestAccount(), turn2, "")
+	require.NoError(t, err)
+
+	require.Equal(t,
+		up1.lastReq.Header.Get("x-opencode-session"),
+		up2.lastReq.Header.Get("x-opencode-session"),
+		"same conversation must keep a stable session id",
+	)
+}
+
 func TestForwardAsRawChatCompletions_OpenCodeSessionDistinctAcrossConversationsAndKeys(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

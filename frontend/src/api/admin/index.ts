@@ -19,6 +19,7 @@ import geminiAPI from './gemini'
 import antigravityAPI from './antigravity'
 import grokAPI from './grok'
 import codebuddyAPI from './codebuddy'
+import zhipuAPI from './zhipu'
 import cnProvidersAPI from './cnProviders'
 import userAttributesAPI from './userAttributes'
 import opsAPI from './ops'
@@ -36,6 +37,7 @@ import affiliatesAPI from './affiliates'
 import riskControlAPI from './riskControl'
 import adminComplianceAPI from './compliance'
 import auditAPI from './audit'
+import pricingPlansAPI from './pricingPlans'
 import pluginsAPI from './plugins'
 
 /**
@@ -58,6 +60,7 @@ export const adminAPI = {
   antigravity: antigravityAPI,
   grok: grokAPI,
   codebuddy: codebuddyAPI,
+  zhipu: zhipuAPI,
   cnProviders: cnProvidersAPI,
   userAttributes: userAttributesAPI,
   ops: opsAPI,
@@ -75,6 +78,7 @@ export const adminAPI = {
   riskControl: riskControlAPI,
   compliance: adminComplianceAPI,
   audit: auditAPI,
+  pricingPlans: pricingPlansAPI,
   plugins: pluginsAPI
 }
 
@@ -95,6 +99,7 @@ export {
   antigravityAPI,
   grokAPI,
   codebuddyAPI,
+  zhipuAPI,
   cnProvidersAPI,
   userAttributesAPI,
   opsAPI,
@@ -112,6 +117,7 @@ export {
   riskControlAPI,
   adminComplianceAPI,
   auditAPI,
+  pricingPlansAPI,
   pluginsAPI
 }
 
@@ -124,6 +130,19 @@ export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from 
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'
 export type { TLSFingerprintProfile, CreateProfileRequest, UpdateProfileRequest } from './tlsFingerprintProfile'
 export type { ContentModerationConfig, ContentModerationLog, ModerationMode } from './riskControl'
+export type {
+  AdminPricingPlan,
+  AdminPricingPlanModel,
+  AdminPricingPlanRoute,
+  PlanModelPricing,
+  PlanPricingInterval,
+  PlanTimePricing,
+  PricingPlanBillingMode,
+  PricingPlanModelInput,
+  PricingPlanProtocol,
+  PricingPlanRouteInput,
+  PricingPlanUpsertRequest
+} from './pricingPlans'
 export type {
   PluginInstallation,
   PluginCompatibility,

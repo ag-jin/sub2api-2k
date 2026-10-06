@@ -28,14 +28,17 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
-	Name        string
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
+	ID      int64
+	UserID  int64
+	Key     string
+	Name    string
+	GroupID *int64
+	// PricingPlanID 该 API Key 绑定的定价套餐（nil = 走 legacy group 计费/调度）。
+	// 绑定套餐时 GroupID 必须为 nil：调度按套餐路由层展开，不直接使用分组。
+	PricingPlanID *int64
+	Status        string
+	IPWhitelist   []string
+	IPBlacklist   []string
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`
@@ -45,7 +48,15 @@ type APIKey struct {
 	UpdatedAt           time.Time
 	User                *User
 	Group               *Group
-	CurrentConcurrency  int
+	// PricingPlan 仅携带套餐身份与状态（服务端内部使用，公开 DTO 不暴露内部数据）。
+	PricingPlan *PricingPlan
+	// PricingPlanSnapshot 认证快照中的套餐完整表示（模型协议条目 + 路由层），
+	// 供网关 handler 做模型×协议准入与分层调度；公开 DTO 不暴露。
+	PricingPlanSnapshot *APIKeyAuthPricingPlanSnapshot `json:"-"`
+	// ActivePricingPlanOffer is the request-authorized public model/protocol sale
+	// offer. The selected internal Group remains separate for dispatch and cost.
+	ActivePricingPlanOffer *APIKeyAuthPricingPlanModelSnapshot `json:"-"`
+	CurrentConcurrency     int
 
 	// Quota fields
 	Quota     float64    // Quota limit in USD (0 = unlimited)

@@ -799,6 +799,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	pricingPlanRepo       PricingPlanRepository
 }
 
 // NewGatewayService creates a new GatewayService
@@ -885,6 +886,13 @@ func NewGatewayService(
 		svc.initDebugGatewayBodyFile(path)
 	}
 	return svc
+}
+
+// SetPricingPlanRepository wires the pricing plan repository for plan-aware
+// gateway resolution (ordered layer groups / model protocol offers). Called
+// after construction in wire; hot path reads the auth-cache plan snapshot.
+func (s *GatewayService) SetPricingPlanRepository(repo PricingPlanRepository) {
+	s.pricingPlanRepo = repo
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash

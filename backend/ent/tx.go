@@ -60,6 +60,12 @@ type Tx struct {
 	PaymentProviderInstance *PaymentProviderInstanceClient
 	// PendingAuthSession is the client for interacting with the PendingAuthSession builders.
 	PendingAuthSession *PendingAuthSessionClient
+	// PricingPlan is the client for interacting with the PricingPlan builders.
+	PricingPlan *PricingPlanClient
+	// PricingPlanModel is the client for interacting with the PricingPlanModel builders.
+	PricingPlanModel *PricingPlanModelClient
+	// PricingPlanRoute is the client for interacting with the PricingPlanRoute builders.
+	PricingPlanRoute *PricingPlanRouteClient
 	// PromoCode is the client for interacting with the PromoCode builders.
 	PromoCode *PromoCodeClient
 	// PromoCodeUsage is the client for interacting with the PromoCodeUsage builders.
@@ -246,6 +252,9 @@ func (tx *Tx) init() {
 	tx.PaymentOrder = NewPaymentOrderClient(tx.config)
 	tx.PaymentProviderInstance = NewPaymentProviderInstanceClient(tx.config)
 	tx.PendingAuthSession = NewPendingAuthSessionClient(tx.config)
+	tx.PricingPlan = NewPricingPlanClient(tx.config)
+	tx.PricingPlanModel = NewPricingPlanModelClient(tx.config)
+	tx.PricingPlanRoute = NewPricingPlanRouteClient(tx.config)
 	tx.PromoCode = NewPromoCodeClient(tx.config)
 	tx.PromoCodeUsage = NewPromoCodeUsageClient(tx.config)
 	tx.Proxy = NewProxyClient(tx.config)

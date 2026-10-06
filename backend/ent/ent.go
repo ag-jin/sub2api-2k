@@ -35,6 +35,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplan"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplanmodel"
+	"github.com/Wei-Shaw/sub2api/ent/pricingplanroute"
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
@@ -134,6 +137,9 @@ func checkColumn(t, c string) error {
 			paymentorder.Table:                  paymentorder.ValidColumn,
 			paymentproviderinstance.Table:       paymentproviderinstance.ValidColumn,
 			pendingauthsession.Table:            pendingauthsession.ValidColumn,
+			pricingplan.Table:                   pricingplan.ValidColumn,
+			pricingplanmodel.Table:              pricingplanmodel.ValidColumn,
+			pricingplanroute.Table:              pricingplanroute.ValidColumn,
 			promocode.Table:                     promocode.ValidColumn,
 			promocodeusage.Table:                promocodeusage.ValidColumn,
 			proxy.Table:                         proxy.ValidColumn,

@@ -26,7 +26,10 @@ func TestAPIKeyAuthSnapshotGroupPricingRoundtrip(t *testing.T) {
 	}
 	svc := &APIKeyService{}
 
-	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: svc.snapshotFromAPIKey(context.Background(), apiKey)})
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
 	require.NoError(t, err)
 	var cached APIKeyAuthCacheEntry
 	require.NoError(t, json.Unmarshal(payload, &cached))

@@ -50,7 +50,8 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	svc := &APIKeyService{}
 	apiKey := profitAuthTestAPIKey()
 
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	require.Equal(t, apiKeyAuthSnapshotVersion, snapshot.Version)
 	require.Equal(t, apiKeyAuthSnapshotVersion, snapshot.Version, "认证快照版本必须与当前常量一致")
@@ -82,7 +83,8 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 // 旧版本快照（v16 及更早，无利润字段保真保证）必须被淘汰回源，不得复用。
 func TestAPIKeyAuthSnapshotOldVersionEvicted(t *testing.T) {
 	svc := &APIKeyService{}
-	snapshot := svc.snapshotFromAPIKey(context.Background(), profitAuthTestAPIKey())
+	snapshot, err := svc.snapshotFromAPIKey(context.Background(), profitAuthTestAPIKey())
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	snapshot.Version = 16
 

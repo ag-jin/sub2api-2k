@@ -8,6 +8,7 @@ import (
 
 // PricingSource 定价来源标识
 const (
+	PricingSourcePlan     = "pricing_plan"
 	PricingSourceGroup    = "group"
 	PricingSourceChannel  = "channel"
 	PricingSourceLiteLLM  = "litellm"
@@ -60,9 +61,10 @@ func NewModelPricingResolver(channelService *ChannelService, billingService *Bil
 
 // PricingInput 定价解析输入
 type PricingInput struct {
-	Model   string
-	GroupID *int64 // nil 表示不检查渠道
-	Group   *Group
+	Model       string
+	GroupID     *int64 // nil 表示不检查渠道
+	Group       *Group
+	PlanPricing *ChannelModelPricing
 }
 
 // Resolve 解析模型定价。
@@ -70,6 +72,13 @@ type PricingInput struct {
 // 2. 如果指定了 GroupID，查找渠道定价并覆盖
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
 	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
+	// A plan offer is a customer-facing sales price. It deliberately wins over
+	// the selected internal dispatch pool's Group/Channel price.
+	if input.PlanPricing != nil {
+		resolved := r.resolveConfiguredPricing(input.PlanPricing, input.Model, PricingSourcePlan)
+		resolved.longContextPricingEnabled = true
+		return resolved
+	}
 	if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
 		// Group token cards only override the first-tier / flat rates.
 		// Long-context ladders come from official presets, gated by the checkbox.

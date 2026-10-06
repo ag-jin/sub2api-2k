@@ -213,3 +213,58 @@ func TestNativeAnthropicPassthroughLeavesOtherThinkingUntouched(t *testing.T) {
 		})
 	}
 }
+
+// zhipuNativeAnthropicTestAccount 构造票 #33 回归用的最小智谱账号：原生
+// Anthropic 协议（升级渠道的既定配置，design M3），固定 base_url 以便断言出站端点。
+func zhipuNativeAnthropicTestAccount() *Account {
+	return &Account{
+		ID:          703,
+		Name:        "zhipu-native",
+		Platform:    PlatformZhipu,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":      "sk-test",
+			"api_protocol": APIProtocolAnthropic,
+			"base_url":     "http://anthropic.example",
+		},
+	}
+}
+
+// TestNativeAnthropicPassthroughPreservesImageBlocks 是票 #33 的回归锁：
+// api_protocol=anthropic 渠道经 /v1/messages 直通时，请求体里的 base64 image 块
+// 必须原样到达上游（type/source/media_type/base64 数据全保留，不得清洗或重建）。
+//
+// 回归背景：生产渠道走 chat_completions（api_protocol=openai），智谱
+// /api/paas/v4/chat/completions 对 glm-5.3 系**静默忽略** image_url parts，
+// 图片从未到达模型（识图表现为纯幻觉/input_tokens 不含图片）。升级渠道改成
+// anthropic 原生直通（→ open.bigmodel.cn/api/anthropic/v1/messages）即天然保图；
+// 本测试防止后续对直通 body 的清洗/重建把这条修复弄丢。
+func TestNativeAnthropicPassthroughPreservesImageBlocks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 1x1 PNG，测试用固定数据，无任何用户图片内容（R0）。
+	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	contentBlocks := `[{"type":"text","text":"这张图里有什么"},` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + imageData + `"}}]`
+	body := []byte(`{"model":"glm-5.3","max_tokens":64,"stream":false,` +
+		`"messages":[{"role":"user","content":` + contentBlocks + `}]}`)
+
+	upstream := &httpUpstreamRecorder{resp: nativeAnthropicBufferedResponse()}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.ForwardAsAnthropic(context.Background(),
+		adaptiveProtocolTestContext("/v1/messages", body), zhipuNativeAnthropicTestAccount(), body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "http://anthropic.example/v1/messages", upstream.lastReq.URL.String())
+
+	sent := upstream.lastBody
+	require.NotEmpty(t, sent)
+	// 图片块逐字段保留，base64 数据完整（不得截断/重编码）。
+	require.Equal(t, "image", gjson.GetBytes(sent, "messages.0.content.1.type").String())
+	require.Equal(t, "base64", gjson.GetBytes(sent, "messages.0.content.1.source.type").String())
+	require.Equal(t, "image/png", gjson.GetBytes(sent, "messages.0.content.1.source.media_type").String())
+	require.Equal(t, imageData, gjson.GetBytes(sent, "messages.0.content.1.source.data").String())
+	// 最强断言：整个 content 块数组与入站逐字段一致（无清洗/无重建）。
+	require.JSONEq(t, contentBlocks, gjson.GetBytes(sent, "messages.0.content").Raw)
+}

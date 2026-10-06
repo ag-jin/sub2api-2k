@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,11 @@ type OpsAlertEvaluatorService struct {
 	mu         sync.Mutex
 	ruleStates map[int64]*opsAlertRuleState
 
+	// zhipuSignMetrics 是智谱签名内置指标（L1 失效窗口 / L2 有效系数）的只读数据源，
+	// 装配期由 SetZhipuSignMetrics 注入一次（票 24 的 *ZhipuSignAlerts）。为 nil 时两个
+	// 内置指标类型「不可计算」→ 规则跳过（不产生事件），既有指标不受影响。
+	zhipuSignMetrics zhipuSignAlertMetricSource
+
 	emailLimiter *slidingWindowLimiter
 
 	skipLogMu sync.Mutex
@@ -60,6 +66,41 @@ type OpsAlertEvaluatorService struct {
 type opsAlertRuleState struct {
 	LastEvaluatedAt     time.Time
 	ConsecutiveBreaches int
+}
+
+// zhipuSignAlertMetricSource 是智谱签名内置指标的只读数据源（design M3.1(b)(d) 的 L1/L2
+// 数据源）。生产实现是票 24 的 *ZhipuSignAlerts（装配期经 SetZhipuSignMetrics 注入一次；
+// 票 27 通过它的 RecordEffectiveRate 上报 L2 gauge）。
+//
+// 未接线时两个内置指标类型一律「不可计算」（ok=false）：规则被跳过而不是按 0 告警 ——
+// 指标缺失不等于指标正常。
+type zhipuSignAlertMetricSource interface {
+	// AlertEnabled 是 sign_alert_enabled 的生效值（默认 true）。
+	AlertEnabled(ctx context.Context) bool
+	// CounterSnapshot 返回某类 L1 指标当前 5 分钟桶的计数（全局 + 账号维度）。
+	CounterSnapshot(ctx context.Context, kind string) ZhipuSignCounterSnapshot
+	// EffectiveRate 返回最近一次 L2 对账有效系数；尚未上报时 ok=false。
+	EffectiveRate(ctx context.Context) (float64, bool)
+}
+
+// SetZhipuSignMetrics 注入智谱签名内置指标源（装配期调用一次，运行期只读；传 nil 等于未接线）。
+func (s *OpsAlertEvaluatorService) SetZhipuSignMetrics(source zhipuSignAlertMetricSource) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.zhipuSignMetrics = source
+}
+
+// zhipuSignMetricSource 读取已注入的指标源（运行期只读；与 ruleStates 共用锁）。
+func (s *OpsAlertEvaluatorService) zhipuSignMetricSource() zhipuSignAlertMetricSource {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.zhipuSignMetrics
 }
 
 func NewOpsAlertEvaluatorService(
@@ -219,10 +260,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 
 		scopePlatform, scopeGroupID, scopeRegion := parseOpsAlertRuleScope(rule.Filters)
 
-		windowMinutes := rule.WindowMinutes
-		if windowMinutes <= 0 {
-			windowMinutes = 1
-		}
+		windowMinutes := opsAlertEffectiveWindowMinutes(rule)
 		windowStart := safeEnd.Add(-time.Duration(windowMinutes) * time.Minute)
 		windowEnd := safeEnd
 
@@ -276,10 +314,10 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 				Severity:       strings.TrimSpace(rule.Severity),
 				Status:         OpsAlertStatusFiring,
 				Title:          fmt.Sprintf("%s: %s", strings.TrimSpace(rule.Severity), strings.TrimSpace(rule.Name)),
-				Description:    buildOpsAlertDescription(rule, metricValue, windowMinutes, scopePlatform, scopeGroupID),
+				Description:    buildOpsAlertEventDescription(rule, metricValue, windowMinutes, scopePlatform, scopeGroupID),
 				MetricValue:    float64Ptr(metricValue),
 				ThresholdValue: float64Ptr(rule.Threshold),
-				Dimensions:     buildOpsAlertDimensions(scopePlatform, scopeGroupID),
+				Dimensions:     s.opsAlertEventDimensions(ctx, rule, buildOpsAlertDimensions(scopePlatform, scopeGroupID)),
 				FiredAt:        now,
 				CreatedAt:      now,
 			}
@@ -581,6 +619,10 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 			return 0, false
 		}
 		return float64(n), true
+	case OpsMetricTypeZhipuSignFailWindow:
+		return s.zhipuSignFailWindowMetric(ctx)
+	case OpsMetricTypeZhipuSignEffectiveRate:
+		return s.zhipuSignEffectiveRateMetric(ctx)
 	}
 
 	overview, err := s.opsRepo.GetDashboardOverview(ctx, &OpsDashboardFilter{
@@ -616,6 +658,119 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 	default:
 		return 0, false
 	}
+}
+
+// zhipuSignFailWindowMetric 是 L1 指标值（design M3.1(b)(d)）：当前 5 分钟桶内
+// 「VERIFY_* 验签失效 + 握手失败 + 降级无签名发送」的次数之和。
+//
+// 窗口由计数器自身的 5 分钟桶固定（见 ZhipuSignL1AlertKinds / opsAlertEffectiveWindowMinutes），
+// 规则里的 window_minutes 不改变统计口径。sign_alert_enabled=false 时返回 ok=false：
+// 规则被跳过（不产生事件、不发邮件），但计数器仍在采集。
+func (s *OpsAlertEvaluatorService) zhipuSignFailWindowMetric(ctx context.Context) (float64, bool) {
+	source := s.zhipuSignMetricSource()
+	if source == nil || !source.AlertEnabled(ctx) {
+		return 0, false
+	}
+	var total int64
+	for _, kind := range ZhipuSignL1AlertKinds() {
+		total += source.CounterSnapshot(ctx, kind).Global
+	}
+	return float64(total), true
+}
+
+// zhipuSignEffectiveRateMetric 是 L2 指标值（design M3.1(d)）：最近一次费率对账的有效系数
+// （票 27 上报）。尚未上报时 ok=false —— 没有数据就不评估，避免用 0 冒充「签名未生效」。
+func (s *OpsAlertEvaluatorService) zhipuSignEffectiveRateMetric(ctx context.Context) (float64, bool) {
+	source := s.zhipuSignMetricSource()
+	if source == nil || !source.AlertEnabled(ctx) {
+		return 0, false
+	}
+	return source.EffectiveRate(ctx)
+}
+
+// opsAlertEffectiveWindowMinutes 返回规则的有效窗口（分钟）：内置指标类型自带统计窗口
+// （L1 = 5 分钟桶，L2 = 对账周期），按它渲染文案与维度，避免规则里的 window_minutes 与
+// 指标实际窗口不一致；其余指标沿用既有语义（<=0 → 1 分钟）。
+func opsAlertEffectiveWindowMinutes(rule *OpsAlertRule) int {
+	windowMinutes := 1
+	if rule == nil {
+		return windowMinutes
+	}
+	if rule.WindowMinutes > 0 {
+		windowMinutes = rule.WindowMinutes
+	}
+	if metric, ok := OpsBuiltinAlertMetricFor(rule.MetricType); ok && metric.WindowMinutes > 0 {
+		return metric.WindowMinutes
+	}
+	return windowMinutes
+}
+
+// buildOpsAlertEventDescription 在通用告警描述后追加内置指标的建议动作（design M3.1(d)：
+// 签名告警文案必须给出处置建议）。文案只提配置键与协议版本，不含任何凭据。
+func buildOpsAlertEventDescription(rule *OpsAlertRule, value float64, windowMinutes int, platform string, groupID *int64) string {
+	description := buildOpsAlertDescription(rule, value, windowMinutes, platform, groupID)
+	if rule == nil {
+		return description
+	}
+	metric, ok := OpsBuiltinAlertMetricFor(rule.MetricType)
+	if !ok || strings.TrimSpace(metric.SuggestedAction) == "" {
+		return description
+	}
+	return fmt.Sprintf("%s；建议动作：%s", description, metric.SuggestedAction)
+}
+
+// opsAlertZhipuSignAccountDimensionMax 是事件里携带的账号数量上限：维度只用于文案定位，
+// 不承载完整清单（完整数据在计数器与面板明细里）。
+const opsAlertZhipuSignAccountDimensionMax = 20
+
+// opsAlertEventDimensions 在内置指标（智谱签名 L1）事件上补账号维度：计数器本身有
+// :acct:{id} 维度（design M3.1(b)），事件据此在 ops 面板定位到具体账号。
+//
+// 维度是尽力而为的定位辅助：与指标值同窗口，但不保证同一快照（读取次数按事件触发才发生，
+// 不落在每次评估的热路径上）。
+func (s *OpsAlertEvaluatorService) opsAlertEventDimensions(ctx context.Context, rule *OpsAlertRule, dims map[string]any) map[string]any {
+	if rule == nil || strings.TrimSpace(rule.MetricType) != OpsMetricTypeZhipuSignFailWindow {
+		return dims
+	}
+	source := s.zhipuSignMetricSource()
+	if source == nil {
+		return dims
+	}
+
+	seen := make(map[int64]struct{})
+	var accounts []int64
+	var bucket int64
+	for _, kind := range ZhipuSignL1AlertKinds() {
+		snapshot := source.CounterSnapshot(ctx, kind)
+		if snapshot.Bucket > bucket {
+			bucket = snapshot.Bucket
+		}
+		for accountID, count := range snapshot.Accounts {
+			if accountID <= 0 || count <= 0 {
+				continue
+			}
+			if _, ok := seen[accountID]; ok {
+				continue
+			}
+			seen[accountID] = struct{}{}
+			accounts = append(accounts, accountID)
+		}
+	}
+	if len(accounts) == 0 {
+		return dims
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i] < accounts[j] })
+	if len(accounts) > opsAlertZhipuSignAccountDimensionMax {
+		accounts = accounts[:opsAlertZhipuSignAccountDimensionMax]
+	}
+	if dims == nil {
+		dims = map[string]any{}
+	}
+	dims["zhipu_sign_accounts"] = accounts
+	if bucket > 0 {
+		dims["zhipu_sign_window_bucket"] = bucket
+	}
+	return dims
 }
 
 func compareMetric(value float64, operator string, threshold float64) bool {
@@ -709,6 +864,9 @@ func (s *OpsAlertEvaluatorService) maybeSendAlertEmail(ctx context.Context, runt
 
 	subject := fmt.Sprintf("[Ops Alert][%s] %s", strings.TrimSpace(rule.Severity), strings.TrimSpace(rule.Name))
 	body := buildOpsAlertEmailBody(rule, event)
+	// 内置指标（智谱签名 L1/L2）走专用通知事件与默认模板（design M3.1(d)），其余规则沿用
+	// ops.alert：收件人、严重度过滤、限流、静默一律复用既有 ops 告警邮件通道。
+	emailEvent := notificationEmailEventForOpsAlertRule(rule)
 
 	anySent := false
 	for _, to := range emailCfg.Alert.Recipients {
@@ -721,7 +879,7 @@ func (s *OpsAlertEvaluatorService) maybeSendAlertEmail(ctx context.Context, runt
 		}
 		if s.emailService.notificationEmailService != nil {
 			if err := s.emailService.notificationEmailService.Send(ctx, NotificationEmailSendInput{
-				Event:          NotificationEmailEventOpsAlert,
+				Event:          emailEvent,
 				RecipientEmail: addr,
 				RecipientName:  emailRecipientName(addr),
 				SourceType:     "ops_alert",

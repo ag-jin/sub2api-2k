@@ -64,6 +64,12 @@ func RegisterAdminRoutes(
 		// CodeBuddy（腾讯 Copilot）后台专属（扫码纳管 / 每日签到）
 		registerCodeBuddyRoutes(admin, h)
 
+		// 智谱（bigmodel）登录
+		registerZhipuOAuthRoutes(admin, h)
+
+		// 智谱签名 V4 配置与状态（票 28）
+		registerZhipuSignRoutes(admin, h)
+
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
 		registerCNProviderRoutes(admin, h)
 
@@ -133,6 +139,20 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+
+		// 定价套餐管理
+		registerPricingPlanRoutes(admin, h)
+	}
+}
+
+func registerPricingPlanRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	pricingPlans := admin.Group("/pricing-plans")
+	{
+		pricingPlans.GET("", h.Admin.PricingPlan.List)
+		pricingPlans.POST("", h.Admin.PricingPlan.Create)
+		pricingPlans.GET("/:id", h.Admin.PricingPlan.GetByID)
+		pricingPlans.PUT("/:id", h.Admin.PricingPlan.Update)
+		pricingPlans.DELETE("/:id", h.Admin.PricingPlan.Delete)
 	}
 }
 
@@ -537,6 +557,37 @@ func registerCodeBuddyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// **length 用法注意**：这条必须在 /accounts/checkin-all 之类静态段之后、
 		// 且 `:id` 段只出现在本行，不会吃掉上面的静态路径。
 		codebuddy.POST("/accounts/:id/growth/run", h.Admin.CodeBuddy.GrowthRunChannel)
+	}
+}
+
+// registerZhipuOAuthRoutes 注册智谱（bigmodel）登录端点（design M1 / 票 04）：
+// 生成登录链接、兑换授权码、登录建号、重登。全部挂在 admin 分组下，继承既有
+// 管理端鉴权/限流/审计中间件。M4 的只读 /accounts/:id/reset-card 由票 12/13
+// 追加到本函数；R0：本函数绝不注册任何重置卡「使用」路由。
+func registerZhipuOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	zhipu := admin.Group("/zhipu")
+	{
+		zhipu.POST("/oauth/login-url", h.Admin.ZhipuOAuth.GenerateLoginURL)
+		zhipu.POST("/oauth/exchange", h.Admin.ZhipuOAuth.Exchange)
+		zhipu.POST("/oauth/create-from-login", h.Admin.ZhipuOAuth.CreateAccountFromLogin)
+		zhipu.POST("/accounts/:id/relogin", h.Admin.ZhipuOAuth.ReloginAccount)
+	}
+}
+
+// registerZhipuSignRoutes 注册智谱签名 V4 的管理端配置与状态端点（design M3.1(d)(e) / 票 28）：
+//
+//	GET /admin/zhipu/sign/config   生效配置（含被运行期覆盖的键，供 29 渲染「已修改」）
+//	PUT /admin/zhipu/sign/config   校验后写入修改（热更新；PUT 由 admin 分组审计中间件留痕）
+//	GET /admin/zhipu/sign/status   只读状态（私钥缓存/上次握手/连续失败 + TODO(#24) 熔断占位）
+//
+// 与 registerZhipuOAuthRoutes 一样挂在既有 admin 分组下，继承管理端鉴权/限流/审计/合规
+// 守卫；本函数只注册两个读端点与一个写端点，不含任何凭据读取或重置卡「使用」路由（R0）。
+func registerZhipuSignRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	zhipu := admin.Group("/zhipu")
+	{
+		zhipu.GET("/sign/config", h.Admin.ZhipuSign.GetConfig)
+		zhipu.PUT("/sign/config", h.Admin.ZhipuSign.UpdateConfig)
+		zhipu.GET("/sign/status", h.Admin.ZhipuSign.GetStatus)
 	}
 }
 

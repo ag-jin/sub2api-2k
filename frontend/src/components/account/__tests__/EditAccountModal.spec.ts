@@ -1,18 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode, showErrorMock } = vi.hoisted(() => ({
+const {
+  updateAccountMock,
+  checkMixedChannelRiskMock,
+  authIsSimpleMode,
+  zhipuGenerateLoginUrlMock,
+  zhipuExchangeMock,
+  zhipuReloginMock,
+  showErrorMock,
+  showSuccessMock
+} = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   authIsSimpleMode: { value: true },
-  showErrorMock: vi.fn()
+  zhipuGenerateLoginUrlMock: vi.fn(),
+  zhipuExchangeMock: vi.fn(),
+  zhipuReloginMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showSuccessMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: showErrorMock,
-    showSuccess: vi.fn(),
+    showSuccess: showSuccessMock,
     showInfo: vi.fn()
   })
 }))
@@ -37,6 +50,11 @@ vi.mock('@/api/admin', () => ({
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([])
+    },
+    zhipu: {
+      generateLoginUrl: zhipuGenerateLoginUrlMock,
+      exchange: zhipuExchangeMock,
+      relogin: zhipuReloginMock
     }
   }
 }))
@@ -137,6 +155,36 @@ const GroupSelectorStub = defineComponent({
       >
         group
       </button>
+    </div>
+  `
+})
+
+// Zhipu relogin reuses the shared OAuth flow component (ticket 05 handoff);
+// the stub exposes the same surface the modal drives: `generate-url` + `authCode`.
+const OAuthAuthorizationFlowStub = defineComponent({
+  name: 'OAuthAuthorizationFlow',
+  props: {
+    authUrl: { type: String, default: '' },
+    sessionId: { type: String, default: '' },
+    loading: { type: Boolean, default: false },
+    error: { type: String, default: '' },
+    platform: { type: String, default: '' },
+    showManualOption: Boolean,
+    initialInputMethod: String
+  },
+  data: () => ({ authCode: '', inputMethod: 'manual' }),
+  // 真实组件通过 defineExpose 暴露 authCode/reset，桩保持同一表面。
+  expose: ['authCode', 'reset'],
+  methods: {
+    reset() {
+      this.authCode = ''
+    }
+  },
+  template: `
+    <div data-testid="zhipu-relogin-flow">
+      <p data-testid="zhipu-relogin-auth-url">{{ authUrl }}</p>
+      <p data-testid="zhipu-relogin-error">{{ error }}</p>
+      <button type="button" data-testid="zhipu-relogin-generate" @click="$emit('generate-url')">generate</button>
     </div>
   `
 })
@@ -303,6 +351,31 @@ function buildOpenAIOAuthParentAccount() {
   } as any
 }
 
+function buildZhipuManagedAccount(): any {
+  return {
+    ...buildAccount(),
+    id: 21,
+    name: 'Zhipu Login',
+    platform: 'zhipu',
+    type: 'apikey',
+    proxy_id: 3,
+    credentials: {
+      auth_flow: 'bigmodel_oauth',
+      account_mode: 'coding',
+      api_protocol: 'adaptive',
+      base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      api_base_urls: {
+        chat_completions: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        anthropic: 'https://open.bigmodel.cn/api/anthropic'
+      },
+      zcodejwttoken: 'zhipu.jwt.token'
+    },
+    // 后端响应已脱敏：token 原文不返回，存在性经 credentials_status.has_<key> 暴露。
+    credentials_status: { has_api_key: true, has_access_token: true, has_zcodejwttoken: true },
+    extra: {}
+  } as any
+}
+
 function mountModal(account = buildAccount(), renderGroupSelector = false) {
   return mount(EditAccountModal, {
     props: {
@@ -318,7 +391,8 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
         Icon: true,
         ProxySelector: true,
         GroupSelector: renderGroupSelector ? false : GroupSelectorStub,
-        ModelWhitelistSelector: ModelWhitelistSelectorStub
+        ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        OAuthAuthorizationFlow: OAuthAuthorizationFlowStub
       }
     }
   })
@@ -1697,6 +1771,216 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+// 智谱登录托管账号（credentials.auth_flow === 'bigmodel_oauth'）：编辑弹窗展示
+// 登录态面板，API Key 只读（由登录自动管理），并提供重登入口。
+describe('EditAccountModal zhipu login-managed accounts', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    zhipuGenerateLoginUrlMock.mockReset()
+    zhipuExchangeMock.mockReset()
+    zhipuReloginMock.mockReset()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+  })
+
+  it('shows the login status panel and a read-only api key for managed accounts', () => {
+    const account = buildZhipuManagedAccount()
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="zhipu-managed-panel"]').exists()).toBe(true)
+    // api key 不可编辑、不可清空：密码输入框整体不渲染。
+    expect(wrapper.find('form#edit-account-form input[type="password"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="zhipu-managed-api-key"]').text()).toBe(
+      'admin.accounts.cnProviders.zhipuLogin.apiKeyManaged'
+    )
+    // token 状态：存在性来自 credentials_status.has_<key>。
+    expect(wrapper.get('[data-testid="zhipu-token-access-token"]').text()).toContain(
+      'admin.accounts.cnProviders.zhipuLogin.tokenPresent'
+    )
+    expect(wrapper.get('[data-testid="zhipu-token-api-key"]').text()).toContain(
+      'admin.accounts.cnProviders.zhipuLogin.tokenPresent'
+    )
+    wrapper.unmount()
+  })
+
+  it('keeps the editable api key and hides the panel for non-managed zhipu accounts', () => {
+    const account = buildAccount()
+    account.platform = 'zhipu'
+    account.credentials = {
+      api_key: 'sk-glm',
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://relay.example.com/v1'
+    }
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="zhipu-managed-panel"]').exists()).toBe(false)
+    expect(wrapper.find('form#edit-account-form input[type="password"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows the needs-relogin badge only when extra.zhipu_needs_relogin is true', () => {
+    const flagged = buildZhipuManagedAccount()
+    flagged.extra = { zhipu_needs_relogin: true }
+    const flaggedWrapper = mountModal(flagged)
+    expect(flaggedWrapper.find('[data-testid="zhipu-needs-relogin-badge"]').exists()).toBe(true)
+    flaggedWrapper.unmount()
+
+    for (const extra of [{ zhipu_needs_relogin: false }, {}, { zhipu_needs_relogin: 'yes' }]) {
+      const wrapper = mountModal({ ...buildZhipuManagedAccount(), extra })
+      expect(wrapper.find('[data-testid="zhipu-needs-relogin-badge"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it('re-authenticates through generate link → auth code → relogin and refreshes the panel', async () => {
+    const account = buildZhipuManagedAccount()
+    account.extra = { zhipu_needs_relogin: true }
+    zhipuGenerateLoginUrlMock.mockResolvedValue({
+      login_url: 'https://bigmodel.cn/login?appId=zcode',
+      session_id: 'sess-relogin',
+      state: 'state-relogin'
+    })
+    zhipuReloginMock.mockResolvedValue(undefined)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="zhipu-relogin-flow"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="zhipu-relogin-start"]').trigger('click')
+    await flushPromises()
+
+    expect(zhipuGenerateLoginUrlMock).toHaveBeenCalledWith({ proxy_id: 3 })
+    expect(wrapper.get('[data-testid="zhipu-relogin-auth-url"]').text()).toBe(
+      'https://bigmodel.cn/login?appId=zcode'
+    )
+
+    const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+    flow.vm.authCode = 'auth-code-relogin'
+    await flushPromises()
+    await wrapper.get('[data-testid="zhipu-relogin-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(zhipuReloginMock).toHaveBeenCalledWith(account.id, {
+      session_id: 'sess-relogin',
+      state: 'state-relogin',
+      auth_code: 'auth-code-relogin'
+    })
+    // 成功后：面板显示成功态、徽标消失、父级收到已清标记的账号。
+    expect(wrapper.find('[data-testid="zhipu-relogin-success"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="zhipu-needs-relogin-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="zhipu-relogin-flow"]').exists()).toBe(false)
+    const updated = wrapper.emitted('updated')?.[0]?.[0] as any
+    expect(updated?.id).toBe(account.id)
+    expect(updated?.extra).not.toHaveProperty('zhipu_needs_relogin')
+    expect(showSuccessMock).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps the relogin flow open and surfaces the failure', async () => {
+    const account = buildZhipuManagedAccount()
+    account.extra = { zhipu_needs_relogin: true }
+    zhipuGenerateLoginUrlMock.mockResolvedValue({
+      login_url: 'https://bigmodel.cn/login?appId=zcode',
+      session_id: 'sess-relogin',
+      state: 'state-relogin'
+    })
+    zhipuReloginMock.mockRejectedValue({ message: 'ZHIPU_OAUTH_SESSION_EXPIRED' })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="zhipu-relogin-start"]').trigger('click')
+    await flushPromises()
+
+    const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+    flow.vm.authCode = 'stale-code'
+    await flushPromises()
+    await wrapper.get('[data-testid="zhipu-relogin-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(zhipuReloginMock).toHaveBeenCalledTimes(1)
+    // 失败态：错误可见、流程保持打开可重试、徽标与标记不受影响。
+    expect(wrapper.get('[data-testid="zhipu-relogin-error"]').text()).toBe(
+      'ZHIPU_OAUTH_SESSION_EXPIRED'
+    )
+    expect(wrapper.find('[data-testid="zhipu-relogin-flow"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="zhipu-relogin-success"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="zhipu-needs-relogin-badge"]').exists()).toBe(true)
+    expect(showErrorMock).toHaveBeenCalled()
+    expect(wrapper.emitted('updated')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not call relogin without an authorization code', async () => {
+    const account = buildZhipuManagedAccount()
+    zhipuGenerateLoginUrlMock.mockResolvedValue({
+      login_url: 'https://bigmodel.cn/login?appId=zcode',
+      session_id: 'sess-relogin',
+      state: 'state-relogin'
+    })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="zhipu-relogin-start"]').trigger('click')
+    await flushPromises()
+
+    expect(
+      wrapper.get('[data-testid="zhipu-relogin-submit"]').attributes('disabled')
+    ).toBeDefined()
+    await wrapper.get('[data-testid="zhipu-relogin-submit"]').trigger('click')
+    await flushPromises()
+    expect(zhipuReloginMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('saves a managed account without requiring or clearing the login-managed api key', async () => {
+    const account = buildZhipuManagedAccount()
+    // 旧后端/脱敏响应：credentials_status 缺失且凭据里没有 api_key 原文。
+    delete account.credentials_status
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock).not.toHaveBeenCalledWith('admin.accounts.apiKeyIsRequired')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    // 登录托管账号提交体不携带 api_key（清空/覆盖都不允许，交由登录链路管理）。
+    expect(payload?.credentials).not.toHaveProperty('api_key')
+    expect(payload?.credentials).toMatchObject({
+      auth_flow: 'bigmodel_oauth',
+      account_mode: 'coding',
+      api_protocol: 'adaptive'
+    })
+    wrapper.unmount()
+  })
+
+  it('keeps the CN submit payload unchanged for non-managed accounts', async () => {
+    const account = buildAccount()
+    account.platform = 'zhipu'
+    account.credentials = {
+      api_key: 'sk-glm',
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://relay.example.com/v1'
+    }
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toEqual({
+      api_key: 'sk-glm',
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://relay.example.com/v1'
+    })
     wrapper.unmount()
   })
 })

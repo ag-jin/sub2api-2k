@@ -580,6 +580,53 @@
           </Select>
         </div>
 
+        <div>
+          <label class="input-label" for="key-form-plan">{{ t('keys.planLabel') }}</label>
+          <Select
+            id="key-form-plan"
+            :aria-label="t('keys.planLabel')"
+            v-model="formData.pricing_plan_id"
+            :options="planOptions"
+            :placeholder="t('keys.selectPlan')"
+            :searchable="true"
+            :search-placeholder="t('keys.searchPlan')"
+            data-tour="key-form-plan"
+          >
+            <template #selected="{ option }">
+              <span v-if="option" class="flex flex-col">
+                <span class="font-medium">{{ (option as unknown as PlanOption).label }}</span>
+                <span
+                  v-if="(option as unknown as PlanOption).description"
+                  class="text-xs text-gray-500 dark:text-gray-400"
+                >
+                  {{ (option as unknown as PlanOption).description }}
+                </span>
+              </span>
+              <span v-else class="text-gray-400">{{ t('keys.selectPlan') }}</span>
+            </template>
+            <template #option="{ option, selected }">
+              <div class="flex w-full items-center justify-between gap-2">
+                <div class="flex flex-col">
+                  <span class="font-medium">{{ (option as unknown as PlanOption).label }}</span>
+                  <span
+                    v-if="(option as unknown as PlanOption).description"
+                    class="text-xs text-gray-500 dark:text-gray-400"
+                  >
+                    {{ (option as unknown as PlanOption).description }}
+                  </span>
+                </div>
+                <Icon
+                  v-if="selected"
+                  name="check"
+                  size="sm"
+                  class="flex-shrink-0 text-primary-500"
+                  :stroke-width="2"
+                />
+              </div>
+            </template>
+          </Select>
+        </div>
+
         <!-- Custom Key Section (only for create) -->
         <div v-if="!showEditModal" class="space-y-3">
           <div class="flex items-center justify-between">
@@ -1206,7 +1253,7 @@
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
-import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
+import { keysAPI, authAPI, usageAPI, userGroupsAPI, pricingPlansAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
@@ -1222,7 +1269,7 @@ import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
-	import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform, UpdateApiKeyRequest } from '@/types'
+	import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform, PricingPlanOption, UpdateApiKeyRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
@@ -1254,6 +1301,12 @@ interface GroupOption {
   peakRateMultiplier: number
   subscriptionType: SubscriptionType
   platform: GroupPlatform
+}
+
+type PlanOption = {
+  value: number
+  label: string
+  description: string
 }
 
 const appStore = useAppStore()
@@ -1371,6 +1424,7 @@ const handleBulkUpdated = (succeededIds: number[]) => {
 }
 
 const groups = ref<Group[]>([])
+const pricingPlans = ref<PricingPlanOption[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 const now = ref(new Date())
@@ -1429,7 +1483,9 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 
 const formData = ref({
   name: '',
+  // 分组（套餐目录为空的旧模式必选；套餐模式下可选）——模板与重置逻辑均引用，须显式声明
   group_id: null as number | null,
+  pricing_plan_id: null as number | null,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1554,6 +1610,15 @@ watch([showCreateModal, createProviderOptions], ([isOpen, providers], [wasOpen])
   }
 })
 
+// Convert pricing plans to Select options (whitelisted fields only)
+const planOptions = computed<PlanOption[]>(() =>
+  pricingPlans.value.map((plan) => ({
+    value: plan.id,
+    label: plan.title || plan.name,
+    description: plan.description
+  }))
+)
+
 // Group dropdown search
 const groupSearchQuery = ref('')
 const filteredGroupOptions = computed(() => {
@@ -1644,6 +1709,14 @@ const loadGroups = async () => {
   }
 }
 
+const loadPricingPlans = async () => {
+  try {
+    pricingPlans.value = await pricingPlansAPI.getAvailable()
+  } catch (error) {
+    console.error('Failed to load pricing plans:', error)
+  }
+}
+
 const loadUserGroupRates = async () => {
   try {
     userGroupRates.value = await userGroupsAPI.getUserGroupRates()
@@ -1697,7 +1770,8 @@ const editKey = (key: ApiKey) => {
   const hasExpiration = !!key.expires_at
   formData.value = {
     name: key.name,
-    group_id: key.group_id,
+    group_id: key.group_id ?? null,
+    pricing_plan_id: key.pricing_plan_id,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1796,9 +1870,10 @@ const confirmDelete = (key: ApiKey) => {
 }
 
 const handleSubmit = async () => {
-  // Validate group_id is required
-  if (formData.value.group_id === null) {
-    appStore.showError(t('keys.groupRequired'))
+  // 套餐中心模型：目录非空 → 套餐必选（分组可选）；目录为空（旧部署）→ 允许
+  // 无绑定 key（定价套餐项目语义），上游的分组必选守卫由套餐必选取代。
+  if (pricingPlans.value.length > 0 && formData.value.pricing_plan_id === null) {
+    appStore.showError(t('keys.planRequired'))
     return
   }
 
@@ -1854,7 +1929,7 @@ const handleSubmit = async () => {
     if (showEditModal.value && selectedKey.value) {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
-        group_id: formData.value.group_id,
+        pricing_plan_id: formData.value.pricing_plan_id,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
@@ -1873,6 +1948,7 @@ const handleSubmit = async () => {
       await keysAPI.create(
         formData.value.name,
         formData.value.group_id,
+        formData.value.pricing_plan_id,
         customKey,
         ipWhitelist,
         ipBlacklist,
@@ -1924,6 +2000,7 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_id: null,
+    pricing_plan_id: null,
     status: 'active',
     use_custom_key: false,
     custom_key: '',
@@ -2095,6 +2172,7 @@ onMounted(() => {
   loadSavedColumns()
   loadApiKeys()
   loadGroups()
+  loadPricingPlans()
   loadUserGroupRates()
   loadPublicSettings()
   document.addEventListener('click', closeGroupSelector)

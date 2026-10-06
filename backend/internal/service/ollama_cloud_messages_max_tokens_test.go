@@ -158,7 +158,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsOllamaCloudDeepSeekMaxTokens(
 		require.NoError(t, err)
 		require.Equal(t, "https://ollama.com/v1/messages", targetURL)
 
-		req, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+		req, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 			context.Background(), c, account, body, "sk-test", targetURL,
 		)
 		require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsOllamaCloudDeepSeekMaxTokens(
 
 		targetURL, err := svc.nativeAnthropicTargetURL(account)
 		require.NoError(t, err)
-		req, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+		req, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 			context.Background(), c, account, body, "sk-test", targetURL,
 		)
 		require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsOllamaCloudDeepSeekMaxTokens(
 
 		targetURL, err := svc.nativeAnthropicTargetURL(account)
 		require.NoError(t, err)
-		req, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+		req, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 			context.Background(), c, account, body, "sk-test", targetURL,
 		)
 		require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsOllamaCloudDeepSeekMaxTokens(
 		}
 		targetURL, err := svc.nativeAnthropicTargetURL(account)
 		require.NoError(t, err)
-		_, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+		_, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 			context.Background(), c, account, body, "sk-test", targetURL,
 		)
 		require.NoError(t, err)
@@ -236,7 +236,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsOllamaCloudDeepSeekMaxTokens(
 		nonDeepSeek := messagesClampBody("glm-4.7", 256000)
 		targetURL, err := svc.nativeAnthropicTargetURL(account)
 		require.NoError(t, err)
-		_, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+		_, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 			context.Background(), c, account, nonDeepSeek, "sk-test", targetURL,
 		)
 		require.NoError(t, err)
@@ -283,7 +283,7 @@ func TestBuildNativeAnthropicUpstreamRequest_ClampsTrailingSlashOllamaBase(t *te
 	require.NoError(t, err)
 	require.Equal(t, "https://ollama.com/v1/messages", targetURL)
 
-	req, wireBody, err := svc.buildNativeAnthropicUpstreamRequest(
+	req, wireBody, _, err := svc.buildNativeAnthropicUpstreamRequest(
 		context.Background(), c, account, body, "sk-test", targetURL,
 	)
 	require.NoError(t, err)

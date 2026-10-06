@@ -798,6 +798,37 @@ func TestChatCompletionsChunkToAnthropicEvents_ImageInToolResult(t *testing.T) {
 	require.True(t, foundImage, "image from tool_result should appear in user message")
 }
 
+func TestAnthropicToChatCompletionsRequest_UserImageBlockBecomesDataURI(t *testing.T) {
+	// 票 #33 回归：user 消息里的 base64 image 块必须转成 image_url data URI part
+	// （tool_result 内图片由 TestChatCompletionsChunkToAnthropicEvents_ImageInToolResult
+	// 覆盖；这里补普通 user image 块的直接断言）。背景：智谱 chat completions 端点
+	// 对 glm-5.3 系静默忽略 image_url parts，只有先锁死中转侧确实产出了 data URI
+	// part，才能区分「中转丢图」与「上游丢图」。
+	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	req := &AnthropicRequest{
+		Model:     "glm-5.3",
+		MaxTokens: 64,
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"describe"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + imageData + `"}}]`)},
+		},
+	}
+
+	out, err := AnthropicToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 1)
+	require.Equal(t, "user", out.Messages[0].Role)
+
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[0].Content, &parts))
+	require.Len(t, parts, 2)
+	require.Equal(t, "text", parts[0].Type)
+	require.Equal(t, "describe", parts[0].Text)
+	require.Equal(t, "image_url", parts[1].Type)
+	require.NotNil(t, parts[1].ImageURL)
+	// data URI 前缀 + base64 数据完整保留（不截断、不重编码）。
+	require.Equal(t, "data:image/png;base64,"+imageData, parts[1].ImageURL.URL)
+}
+
 func TestChatCompletionsToAnthropicStreamState_ToolCallNameArrivesLate(t *testing.T) {
 	// Some upstreams send the tool_call index + arguments before the name.
 	events := collectAnthropicStreamEvents(t, []string{

@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/zcodesign"
 	"github.com/Wei-Shaw/sub2api/internal/platform/codebuddy"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -385,6 +386,7 @@ func ProvideAccountUsageService(
 		NewUpstreamBalanceFetcher(httpUpstream),
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.SetAccountRuntimeBlocker(openAIGatewayService)
 	// CodeBuddy 实时积分 fetcher（A2）：追加式 DI，不改既有构造签名。
 	service.SetCodeBuddyCreditsFetcher(NewCodeBuddyCreditsFetcher(httpUpstream))
 	return service
@@ -471,6 +473,17 @@ func ProvideCNProviderBalanceCheckService(
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
 	svc.Start()
 	return svc
+}
+
+// ProvideZhipuOAuthService 构造智谱登录编排服务（design M1）：授权 URL、兑换、
+// api_key 解析、建号凭据、重登。会话存储为进程内 10 分钟 TTL（Redis 化见 P4）。
+func ProvideZhipuOAuthService(
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	accountRepo AccountRepository,
+	cfg *config.Config,
+) *ZhipuOAuthService {
+	return NewZhipuOAuthService(proxyRepo, httpUpstream, accountRepo, cfg)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -634,6 +647,7 @@ func ProvideRateLimitService(
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
 	ollamaCloudUsage *OllamaCloudUsageService,
+	httpUpstream HTTPUpstream,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
@@ -644,6 +658,7 @@ func ProvideRateLimitService(
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
 	svc.SetOllamaCloudUsageProbeScheduler(ollamaCloudUsage)
+	svc.SetOpenCodeUsageFetcher(NewOpenCodeUsageFetcher(httpUpstream))
 	return svc
 }
 
@@ -676,6 +691,9 @@ func ProvideOpsAggregationService(
 }
 
 // ProvideOpsAlertEvaluatorService creates and starts OpsAlertEvaluatorService.
+// zhipuSignAlerts 注入智谱签名内置指标源（design M3.1(d) / 票 25）：评估周期据此计算
+// zhipu_sign_fail_window 与 zhipu_sign_effective_rate 两个内置指标；为 nil（未接线）时
+// 两个指标「不可计算」，其余规则评估不受影响。
 func ProvideOpsAlertEvaluatorService(
 	opsService *OpsService,
 	opsRepo OpsRepository,
@@ -683,8 +701,10 @@ func ProvideOpsAlertEvaluatorService(
 	redisClient *redis.Client,
 	cfg *config.Config,
 	proxyRepo ProxyRepository,
+	zhipuSignAlerts *ZhipuSignAlerts,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg, proxyRepo)
+	svc.SetZhipuSignMetrics(zhipuSignAlerts)
 	svc.Start()
 	return svc
 }
@@ -960,10 +980,175 @@ func ProvideAPIKeyService(
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
 	concurrencyService *ConcurrencyService,
+	pricingPlanRepo PricingPlanRepository,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
 	svc.SetConcurrencyService(concurrencyService)
+	svc.SetPricingPlanRepository(pricingPlanRepo)
+	// 把 APIKeyService 的认证缓存失效能力反向注入套餐仓储（可选接口）：
+	// 套餐内容/删除变更时按 planID 批量失效绑定 Key 的快照（L2 + 跨实例
+	// L1 广播）。走接口断言而非仓储构造参数，避免仓储与 APIKeyService
+	// 形成构造环（APIKeyService 构造时又依赖 PricingPlanRepository）。
+	if settable, ok := pricingPlanRepo.(interface {
+		SetAuthCacheInvalidator(APIKeyAuthCacheInvalidator)
+	}); ok {
+		settable.SetAuthCacheInvalidator(svc)
+	}
+	return svc
+}
+
+// ProvideZhipuClientSigner 构造智谱数据面签名器（design M3 / 票 22）：握手 origin 固定为
+// 数据面域名（open.bigmodel.cn），客户端版本与私钥 TTL 取 gateway.zhipu 配置，握手复用
+// 网关共享 HTTP 上游栈。票 28 通过 Signer.SetOptions 做配置热更新。
+func ProvideZhipuClientSigner(cfg *config.Config, httpUpstream HTTPUpstream) zhipuClientSigner {
+	clientVersion := ""
+	keyTTL := time.Duration(0)
+	if cfg != nil {
+		clientVersion = cfg.Gateway.Zhipu.SignClientVersion
+		keyTTL = time.Duration(cfg.Gateway.Zhipu.SignKeyTTLMinutes) * time.Minute
+	}
+	return zcodesign.NewSigner(zhipuSignOrigin, clientVersion, keyTTL, zhipuSignHTTPDoer{upstream: httpUpstream})
+}
+
+// ProvideZhipuSignAlerts 构造智谱签名 L1 指标 / fail 策略 / 账号级熔断引擎（design
+// M3.1 / 票 24），并把只读熔断状态接回管理端状态投影（票 28 的状态接口里
+// circuit_break_* 与 runtime_state_available 两个字段）。counterCache 为 nil
+// （未配置 Redis / 未装配实现）时计数器退化为进程内存并只告警一次，不影响数据面。
+func ProvideZhipuSignAlerts(
+	cfg *config.Config,
+	counterCache ZhipuSignCounterCache,
+	signConfig *ZhipuSignConfigService,
+) *ZhipuSignAlerts {
+	alerts := NewZhipuSignAlerts(cfg, counterCache, signConfig, time.Now)
+	signConfig.SetCircuitBreakReader(alerts)
+	return alerts
+}
+
+// ProvideZhipuAccountMonitorService 构造智谱登录态监控服务（design M4 / 票 11），
+// 并在同一装配点完成 L2 费率对账器的注入（票 27 接线）：构造对账器、接 #28 的
+// 生效配置面（运行层覆盖热生效）、挂到监控服务的周期入口与快照合并口。
+// zhipuSignAlerts / signConfig 为 nil 时对账器退化为未接线（等价回滚）。
+func ProvideZhipuAccountMonitorService(
+	accountRepo AccountRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	zhipuSignAlerts *ZhipuSignAlerts,
+	signConfig *ZhipuSignConfigService,
+) *ZhipuAccountMonitorService {
+	monitor := NewZhipuAccountMonitorService(accountRepo, httpUpstream, cfg)
+	if zhipuSignAlerts != nil && signConfig != nil {
+		reconciler := NewZhipuSignReconciler(cfg, accountRepo, monitor, zhipuSignAlerts, nil)
+		reconciler.SetConfigSource(signConfig)
+		monitor.SetSignReconciler(reconciler)
+	}
+	return monitor
+}
+
+// ProvideZhipuCredentialKeeper 构造并启动智谱登录凭据周期探测（design M2 / 票 09）：
+// 探针 = 监控服务；L2 对账的周期入口挂在每轮探测末尾（票 27 接线）；管理员邮件
+// 通知复用既有邮箱服务与设置仓储。interval <= 0 时 Start 空转（构造仍成功），
+// 便于配置回滚。
+func ProvideZhipuCredentialKeeper(
+	accountRepo AccountRepository,
+	monitor *ZhipuAccountMonitorService,
+	emailService *EmailService,
+	settingRepo SettingRepository,
+	cfg *config.Config,
+) *ZhipuCredentialKeeper {
+	notifier := NewZhipuCredentialAlertNotifier(emailService, settingRepo)
+	keeper := NewZhipuCredentialKeeper(accountRepo, monitor, notifier, cfg)
+	if monitor != nil {
+		keeper.SetSignReconcileHook(monitor.RunDueSignReconcile)
+	}
+	keeper.Start()
+	return keeper
+}
+
+// ProvideOpenAIGatewayService 构造 OpenAI 网关并注入智谱签名器与 L1 指标引擎。
+//
+// 与 NewOpenAIGatewayService 分开是为了不动既有构造函数签名：大量测试直接调用它，
+// 未注入签名器时签名整体关闭（零行为变化），wire 装配路径才接上真实 Signer。
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	zhipuSigner zhipuClientSigner,
+	zhipuSignAlerts *ZhipuSignAlerts,
+) *OpenAIGatewayService {
+	svc := NewOpenAIGatewayService(
+		accountRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo,
+		cache, cfg, schedulerSnapshot, concurrencyService, billingService, rateLimitService,
+		billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider,
+		resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo,
+	)
+	svc.zhipuSigner = zhipuSigner
+	svc.zhipuSignAlerts = zhipuSignAlerts
+	return svc
+}
+
+// ProvideGatewayService wires GatewayService and connects the pricing plan
+// repository (used for plan-aware layer resolution; hot path reads the
+// auth-cache plan snapshot instead of the repository).
+func ProvideGatewayService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	identityService *IdentityService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	claudeTokenProvider *ClaudeTokenProvider,
+	sessionLimitCache SessionLimitCache,
+	rpmCache RPMCache,
+	digestStore *DigestSessionStore,
+	settingService *SettingService,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	channelService *ChannelService,
+	resolver *ModelPricingResolver,
+	compositeResolver *CompositeRouteResolver,
+	balanceNotifyService *BalanceNotifyService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	pricingPlanRepo PricingPlanRepository,
+) *GatewayService {
+	svc := NewGatewayService(
+		accountRepo, groupRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo,
+		userGroupRateRepo, cache, cfg, schedulerSnapshot, concurrencyService, billingService,
+		rateLimitService, billingCacheService, identityService, httpUpstream, deferredService,
+		claudeTokenProvider, sessionLimitCache, rpmCache, digestStore, settingService,
+		tlsFPProfileService, channelService, resolver, compositeResolver, balanceNotifyService,
+		userPlatformQuotaRepo,
+	)
+	svc.SetPricingPlanRepository(pricingPlanRepo)
 	return svc
 }
 
@@ -989,8 +1174,13 @@ var ProviderSet = wire.NewSet(
 	ProvideBillingCacheService,
 	NewAnnouncementService,
 	NewAdminService,
-	NewGatewayService,
-	NewOpenAIGatewayService,
+	ProvideGatewayService,
+	ProvideOpenAIGatewayService,
+	ProvideZhipuClientSigner,
+	ProvideZhipuSignAlerts,
+	ProvideZhipuSignRuntime,
+	ProvideZhipuAccountMonitorService,
+	ProvideZhipuCredentialKeeper,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,
@@ -1024,6 +1214,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCNProviderQuotaService,
 	ProvideCNProviderBalanceService,
 	ProvideCNProviderBalanceCheckService,
+	ProvideZhipuOAuthService,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
@@ -1100,6 +1291,7 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
+	NewPricingPlanService, // 定价套餐管理端服务（CRUD 含模型协议条目与路由层）
 )
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。

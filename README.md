@@ -27,9 +27,6 @@ Please read the following carefully before using this project:
 - **📖 Disclaimer**: This project is provided for technical learning and research purposes only. The authors assume no liability for account bans, service interruptions, data loss, or any other direct or indirect damages resulting from the use of this project.
 - **🚫 No Commercial Authorization**: The developers of this project have never authorized any individual or organization to conduct any form of commercial operation based on this project. Any commercial activity conducted in the name of or based on this project is unrelated to this project and its developers, and all resulting disputes, losses, and legal liabilities shall be borne solely by the party conducting such activity.
 
-<<<<<<< card
-
-=======
 ## ❤️ Sponsors
 
 > [Want to appear here?](mailto:support@sub2api.org)
@@ -172,7 +169,6 @@ Please read the following carefully before using this project:
 </tr>
 
 </table>
->>>>>>> upstream
 
 ## Overview
 

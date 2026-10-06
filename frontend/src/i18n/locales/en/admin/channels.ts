@@ -224,8 +224,76 @@ export default {
          syncModelsSuccess: 'Synced {count} new model(s)',
          syncModelsAlreadyUpToDate: 'Models already up to date',
          syncModelsError: 'Failed to sync models'
-       }
-     },
+       },
+
+      // Sign V4 (ticket 29): every value comes from /admin/zhipu/sign/config — no UI defaults.
+      signV4: {
+        title: 'Sign V4',
+        subtitle: 'Zhipu (bigmodel) upstream request signing. Changes take effect immediately and are written to the admin audit log.',
+        loading: 'Loading sign configuration...',
+        effective: 'Effective',
+        effectiveOn: 'Enabled',
+        effectiveOff: 'Disabled',
+        inherited: 'Value inherits the deployment config (no admin override)',
+        overridden: 'Value is overridden by the admin setting (wins over the deployment config)',
+        scope: 'Scope: signing requires both the global gateway flag (sign_v4_enabled) and the account-level marker (zcode_client_sign)',
+        toggleLabel: 'Enable Sign V4',
+        toggleHint: 'When off, no Zhipu request carries the signature headers; upstream may bill those requests at the degraded 1.0 rate.',
+        auditHint: 'Saving pushes the value to the signer immediately (no restart) and records an audit log entry.',
+        saving: 'Saving...',
+        policy: {
+          label: 'Signing failure policy',
+          hint: 'How to handle a signing failure (handshake failure or an upstream VERIFY-class rejection).',
+          confirmTitle: 'Switch signing failure policy',
+          confirmMessage: 'Switch the signing failure policy to "{policy}"? {impact}',
+          confirm: 'Switch',
+          cancel: 'Cancel',
+          open: {
+            title: 'fail-open (degrade and continue)',
+            desc: 'Strip the signature headers and continue the request: availability first, but the request is billed unsigned.',
+            impact: 'Rate impact: a degraded request has an effective rate of 1.0, about ×1.5 the signed cost (0.67), and raises an L1 degradation alert.'
+          },
+          closed: {
+            title: 'fail-closed (never degrade)',
+            desc: 'Return a failover-able error so the scheduler can pick another account: rather fail than accept degraded billing.',
+            impact: 'Rate impact: refuses to send requests at the 1.0 rate (×1.5 cost); the account is skipped by the scheduler and fewer accounts look available.'
+          }
+        },
+        status: {
+          title: 'Handshake key status',
+          hint: 'Lists only Zhipu accounts with signing enabled (login-managed plus the account-level marker).',
+          loading: 'Loading status...',
+          error: 'Failed to load status',
+          retry: 'Retry',
+          empty: 'No Zhipu account has signing enabled yet (nothing handshaken)',
+          keyCached: 'Key cache',
+          keyCachedYes: 'hit',
+          keyCachedNo: 'miss',
+          lastHandshake: 'Last handshake',
+          neverHandshake: 'never',
+          keyExpires: 'Key expires',
+          notAvailable: '—',
+          consecutiveFailures: 'Consecutive failures',
+          circuitBreakTripped: 'Circuit broken (signing removed)',
+          circuitBreakNone: 'Not broken',
+          circuitBreakUnknown: 'Unknown',
+          reasonLabel: 'Reason code'
+        },
+        save: {
+          success: 'Sign configuration saved and hot-applied',
+          policySuccess: 'Signing failure policy switched and hot-applied'
+        },
+        errors: {
+          saveFailed: 'Failed to save the sign configuration',
+          configFailed: 'Failed to load the sign configuration',
+          forbidden: 'No permission to change the sign configuration (admin role required)',
+          unknown: 'Failed to save the sign configuration',
+          ZHIPU_SIGN_CONFIG_INVALID: 'Invalid value, the backend rejected the write (configuration unchanged)',
+          ZHIPU_SIGN_CONFIG_EMPTY: 'No sign configuration key was supplied',
+          ZHIPU_SIGN_CONFIG_UNAVAILABLE: 'Settings storage unavailable, nothing was written'
+        }
+      }
+    },
 
     riskControl: {
       title: 'Risk Control',
