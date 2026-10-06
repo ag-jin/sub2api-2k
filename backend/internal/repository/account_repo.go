@@ -1287,6 +1287,65 @@ func (r *accountRepository) ListOAuthRefreshCandidatePage(ctx context.Context, o
 	return page, nil
 }
 
+// ListAccountsByCredentialFlow 返回 credentials->>'auth_flow' = flow 且未软删的账号。
+// 与 ListOAuthRefreshCandidatePage 完全分开、不共用 SQL：那边是通用 token 刷新候选集
+// （附加 schedulable/status/type/refresh_token 条件），这里是「登录态凭据流账号全集」，
+// 不做调度状态过滤——被停调的账号同样需要凭据健康判定。
+func (r *accountRepository) ListAccountsByCredentialFlow(ctx context.Context, flow string) ([]service.Account, error) {
+	if r.sql == nil {
+		return nil, errors.New("account repository SQL executor not configured")
+	}
+	if strings.TrimSpace(flow) == "" {
+		return nil, errors.New("credential flow cannot be empty")
+	}
+
+	const query = `
+		SELECT id
+		FROM accounts
+		WHERE deleted_at IS NULL
+			AND credentials->>'auth_flow' = $1
+		ORDER BY id ASC`
+
+	rows, err := r.sql.QueryContext(ctx, query, flow)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []service.Account{}, nil
+	}
+
+	accounts, err := r.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	accountsByID := make(map[int64]*service.Account, len(accounts))
+	for _, account := range accounts {
+		if account != nil {
+			accountsByID[account.ID] = account
+		}
+	}
+	out := make([]service.Account, 0, len(accounts))
+	for _, id := range ids {
+		if account := accountsByID[id]; account != nil {
+			out = append(out, *account)
+		}
+	}
+	return out, nil
+}
+
 func (r *accountRepository) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(
