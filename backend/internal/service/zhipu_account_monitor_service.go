@@ -20,6 +20,10 @@ import (
 
 // 智谱登录态账号的管理面探针服务（design M4）。
 //
+// R0：仅观测，永不使用。本服务对重置卡只做只读读取（reset/status → 快照字段），
+// 不封装使用端点、不暴露写操作；任何「使用重置卡」的改动都是对 R0 的推翻，
+// 需先经用户显式决策（校验：scripts/check_r0_invariant.sh，票 13）。
+//
 // 独立于 CNProviderQuotaService：credit-usage 走 bigmodel access_token
 // （Authorization 直传，无 Bearer），与 api_key 探针的鉴权组合不同，
 // 因此自成一个数据源，不做 cn_quota 分支。

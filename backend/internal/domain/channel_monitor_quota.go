@@ -93,6 +93,10 @@ type MonitorQuotaModelCredit struct {
 
 // MonitorResetCard 登录态智谱账号的一张可用重置卡（只读，design M4 / 决策 B4）。
 //
+// R0：仅观测，永不使用。本类型是重置卡在本系统的**全部**形态——只承载展示数据，
+// 不提供卡片 id、不提供消耗/兑换字段，也不允许出现任何「使用重置卡」的写路径
+// （校验：scripts/check_r0_invariant.sh，票 13）。
+//
 // Type 取值 "five_hour"（5 小时窗口重置）或 "week"（周窗口重置）；
 // ExpireAt 是上游 expire_at 的原样字符串（RFC3339，缺失时留空）。
 // 本类型只描述快照内的只读展示数据：系统不提供任何「使用重置卡」路径（R0）。
