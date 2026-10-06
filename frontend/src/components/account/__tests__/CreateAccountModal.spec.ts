@@ -908,7 +908,8 @@ describe('CreateAccountModal zhipu login mode', () => {
       access_token: 'at-token',
       zcodejwttoken: 'jwt-token',
       account_mode: 'coding',
-      api_protocol: 'adaptive'
+      api_protocol: 'adaptive',
+      zcode_client_sign: 'v4'
     })
   })
 

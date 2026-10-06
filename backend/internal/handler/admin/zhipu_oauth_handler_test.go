@@ -469,13 +469,14 @@ func TestZhipuOAuthHandlerCreateAccountFromLogin(t *testing.T) {
 
 	// 03 冻结白名单：请求里额外的键（含敏感明文）一律不得落库。
 	frozenCredentials := map[string]any{
-		"auth_flow":     "bigmodel_oauth",
-		"api_key":       "key-1.secret-1",
-		"access_token":  "at-token",
-		"zcodejwttoken": "jwt-token",
-		"refresh_token": "rt-token",
-		"account_mode":  "coding",
-		"api_protocol":  "anthropic",
+		"auth_flow":         "bigmodel_oauth",
+		"api_key":           "key-1.secret-1",
+		"access_token":      "at-token",
+		"zcodejwttoken":     "jwt-token",
+		"refresh_token":     "rt-token",
+		"account_mode":      "coding",
+		"api_protocol":      "anthropic",
+		"zcode_client_sign": "v4",
 	}
 
 	t.Run("creates a zhipu apikey account with the frozen credential whitelist", func(t *testing.T) {
