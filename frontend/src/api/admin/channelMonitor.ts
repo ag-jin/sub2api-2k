@@ -82,6 +82,20 @@ export interface MonitorQuotaSnapshot {
   reset_cards?: MonitorResetCard[]
   /** 管理面登录态失效（需管理员重登；缺省即 false） */
   needs_relogin?: boolean
+  /**
+   * 签名 L2 费率对账的最近一次有效系数（实际积分 ÷ 期望积分，票 27）。
+   * 0.67 = 签名按签名渠道系数结算；≈1.0 = 签名被静默按无签名计费。
+   * 缺省 = 未启用签名 / 未接线 / 从未成功对账 → 前端渲染「暂无对账数据」，不得按 0 处理。
+   */
+  sign_effective_rate?: number
+  /** 对账时刻的时段系数（0.5 闲时 / 1.0 高峰）；缺省 = 未对账过。 */
+  sign_peak_factor?: number
+  /** 有效系数对应的已结算窗口末端（数据截止时刻）；缺省 = 未对账过。 */
+  sign_reconciled_at?: string | null
+  /** 最近一轮对账失败、保留了旧值：前端必须标注「数据可能已过期」。 */
+  sign_reconcile_stale?: boolean
+  /** 有效系数超过生效阈值（`sign_reconcile_deviation_threshold`，默认 0.70）的后端口径判定。 */
+  sign_reconcile_deviation?: boolean
   error?: string
   fetched_at: string
 }

@@ -9,6 +9,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { opsAPI, type AlertEventsQuery } from '@/api/admin/ops'
 import type { AlertEvent } from '../types'
 import { formatDateTime } from '../utils/opsFormatters'
+import ZhipuSignAlertDetail from './ZhipuSignAlertDetail.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -79,6 +80,14 @@ const emailSentOptions = computed(() => [
   { value: 'false', label: t('admin.ops.alertEvents.table.emailIgnored') }
 ])
 
+// 平台筛选（票 30 验收项 2）：智谱签名告警靠 dimensions.platform=zhipu 识别，
+// 这里按同一维度过滤既有事件流，不新造通道。
+const platform = ref<string>('')
+const platformOptions = computed(() => [
+  { value: '', label: t('common.all') },
+  { value: 'zhipu', label: t('admin.ops.alertEvents.filters.platformZhipu') }
+])
+
 function buildQuery(overrides: Partial<AlertEventsQuery> = {}): AlertEventsQuery {
   const q: AlertEventsQuery = {
     limit: PAGE_SIZE,
@@ -88,6 +97,7 @@ function buildQuery(overrides: Partial<AlertEventsQuery> = {}): AlertEventsQuery
   if (status.value) q.status = status.value
   if (emailSent.value === 'true') q.email_sent = true
   if (emailSent.value === 'false') q.email_sent = false
+  if (platform.value) q.platform = platform.value
   return { ...q, ...overrides }
 }
 
@@ -319,7 +329,7 @@ onMounted(() => {
   loadFirstPage()
 })
 
-watch([timeRange, severity, status, emailSent], () => {
+watch([timeRange, severity, status, emailSent, platform], () => {
   events.value = []
   hasMore.value = true
   loadFirstPage()
@@ -368,6 +378,7 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
 
       <div class="flex flex-wrap items-center gap-2">
         <Select :model-value="timeRange" :options="timeRangeOptions" class="w-[120px]" @change="timeRange = String($event || '24h')" />
+        <Select :model-value="platform" :options="platformOptions" class="w-[130px]" @change="platform = String($event || '')" />
         <Select :model-value="severity" :options="severityOptions" class="w-[88px]" @change="severity = String($event || '')" />
         <Select :model-value="status" :options="statusOptions" class="w-[110px]" @change="status = String($event || '')" />
         <Select :model-value="emailSent" :options="emailSentOptions" class="w-[110px]" @change="emailSent = String($event || '')" />
@@ -420,6 +431,8 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
             <div v-if="row.description" class="line-clamp-2 text-[11px] text-gray-500 dark:text-gray-400">
               {{ row.description }}
             </div>
+            <!-- 智谱签名告警补充明细（票 30）：类别/数值/账号/建议动作；非签名事件不渲染 -->
+            <ZhipuSignAlertDetail :event="row" />
             <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500 dark:text-gray-400">
               <span><span class="font-mono">#{{ row.rule_id }}</span> · {{ formatDurationLabel(row) }}</span>
               <span class="inline-flex items-center gap-1">
@@ -502,6 +515,8 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
                 <div v-if="row.description" class="mt-0.5 line-clamp-2 text-[11px] text-gray-500 dark:text-gray-400">
                   {{ row.description }}
                 </div>
+                <!-- 智谱签名告警补充明细（票 30）：类别/数值/账号/建议动作；非签名事件不渲染 -->
+                <ZhipuSignAlertDetail :event="row" />
               </td>
               <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
                 {{ formatDurationLabel(row) }}

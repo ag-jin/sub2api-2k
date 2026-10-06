@@ -326,6 +326,62 @@ describe('MonitorQuotaView model credits panel', () => {
   })
 })
 
+// 票 30：有效系数健康卡挂载在配额条之后、积分明细之前（ui-panels §1.4）。
+describe('MonitorQuotaView sign health card mount', () => {
+  it('mounts the health card between the quota rows and the credits panel', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          tiers: [{ window: '5h', used_percent: 10 }],
+          sign_effective_rate: 0.71,
+          sign_reconciled_at: '2026-10-06T00:00:00Z',
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+        }),
+      },
+    })
+
+    const html = wrapper.get('[data-testid="monitor-quota-view"]').html()
+    const healthIndex = html.indexOf('zhipu-sign-health-card')
+    expect(healthIndex).toBeGreaterThan(-1)
+    expect(html.indexOf('monitor-quota-view') < healthIndex).toBe(true)
+    expect(healthIndex < html.indexOf('zhipu-model-credits-panel')).toBe(true)
+
+    const card = wrapper.get('[data-testid="zhipu-sign-health-card"]')
+    expect(card.attributes('data-state')).toBe('alert')
+    expect(card.get('[data-testid="zhipu-sign-health-value"]').text()).toBe('0.71')
+  })
+
+  it('keeps the health card out of snapshots without any sign field', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+        }),
+      },
+    })
+    expect(wrapper.find('[data-testid="zhipu-sign-health-card"]').exists()).toBe(false)
+
+    // 无有效样本但有对账字段：面板渲染为未知态，而不是隐藏或显示 0.00
+    const unknown = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          sign_reconcile_stale: true,
+        }),
+      },
+    })
+    const card = unknown.get('[data-testid="zhipu-sign-health-card"]')
+    expect(card.attributes('data-state')).toBe('unknown')
+    expect(card.text()).not.toContain('0.00')
+  })
+})
+
 // 智谱登录托管账号：重置卡只读卡片（design M4 `reset_cards`，R0 严格只读）。
 describe('MonitorQuotaView reset cards panel', () => {
   it('shows per-type counts and the nearest expiry state', () => {

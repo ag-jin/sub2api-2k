@@ -539,6 +539,28 @@ export default {
       needsRelogin: '登录状态已失效，无法更新重置卡信息',
       failed: '无法读取重置卡信息'
     },
+    // 智谱签名「有效系数」健康卡（design M5 费率对账，票 27/30）
+    signHealth: {
+      title: '有效系数',
+      current: '当前',
+      target: '目标',
+      variance: '偏差',
+      peakFactor: '当前时段系数 {factor}',
+      peakFactorTooltip: '快照字段 sign_peak_factor：0.5 = 闲时，1.0 = 高峰',
+      reconciledAt: '对账于 {time}',
+      reconciledAtTooltip: '快照字段 sign_reconciled_at：该有效系数对应的已结算窗口末端',
+      effectiveRateTooltip: '快照字段 sign_effective_rate：实际积分 ÷ 期望积分。0.67 = 签名生效；≈1.0 = 签名被静默按无签名计费',
+      states: {
+        onTarget: '达到目标',
+        aboveTarget: '高于目标',
+        alert: '系数告警',
+        unknown: '暂无对账数据'
+      },
+      stale: '数据可能已过期',
+      failed: '无法读取有效系数',
+      reasonAboveAlertThreshold: '高于告警阈值 {threshold}（默认 0.70）',
+      reasonDeviationFlag: 'L2 对账判定偏离（sign_reconcile_deviation）'
+    },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',
     latencyEmpty: '-',

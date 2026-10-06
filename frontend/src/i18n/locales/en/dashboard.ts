@@ -534,6 +534,28 @@ export default {
       needsRelogin: 'Login has expired; reset card information cannot be updated.',
       failed: 'Unable to load reset card information'
     },
+    // Zhipu signing "effective rate" health card (design M5 reconciliation, tickets 27/30)
+    signHealth: {
+      title: 'Effective rate',
+      current: 'Current',
+      target: 'Target',
+      variance: 'Variance',
+      peakFactor: 'Current period factor {factor}',
+      peakFactorTooltip: 'Snapshot field sign_peak_factor: 0.5 = off-peak, 1.0 = peak',
+      reconciledAt: 'Reconciled {time}',
+      reconciledAtTooltip: 'Snapshot field sign_reconciled_at: end of the settled window this effective rate belongs to',
+      effectiveRateTooltip: 'Snapshot field sign_effective_rate: actual credits / expected credits. 0.67 = signing in effect; approx. 1.0 = requests silently billed as unsigned',
+      states: {
+        onTarget: 'On target',
+        aboveTarget: 'Above target',
+        alert: 'Rate alert',
+        unknown: 'No reconciliation data'
+      },
+      stale: 'Data may be outdated',
+      failed: 'Unable to load effective rate',
+      reasonAboveAlertThreshold: 'Above the alert threshold {threshold} (default 0.70)',
+      reasonDeviationFlag: 'L2 reconciliation flagged a deviation (sign_reconcile_deviation)'
+    },
     extraModelsHeader: 'Extra Models',
     extraModelsEmpty: 'No extra models',
     latencyEmpty: '-',

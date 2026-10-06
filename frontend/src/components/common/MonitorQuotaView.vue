@@ -44,6 +44,9 @@
       {{ truncatedError }}
     </div>
 
+    <!-- 智谱签名「有效系数」健康卡（design M5 / 票 27 的对账结果；无签名字段时自行隐藏） -->
+    <ZhipuEffectiveRateHealthCard :snapshot="snapshot" />
+
     <!-- 智谱登录托管账号：近 7 日逐模型积分明细（design M4 model_credits） -->
     <section
       v-if="creditsPanelVisible"
@@ -316,6 +319,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/common/DataTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import ZhipuEffectiveRateHealthCard from '@/components/common/ZhipuEffectiveRateHealthCard.vue'
 import Icon from '@/components/icons/Icon.vue'
 import type { Column } from '@/components/common/types'
 import { formatCompactNumber } from '@/utils/format'

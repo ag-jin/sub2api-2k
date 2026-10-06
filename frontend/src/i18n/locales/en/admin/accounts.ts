@@ -164,6 +164,11 @@ export default {
           reloginSubmit: 'Complete re-authentication',
           reloginSucceeded: 'Re-authenticated. Credentials updated.',
         },
+        // Signing degradation / circuit-break badge (design M6 / ui-panels §6.3, tickets 24/30)
+        zhipuSign: {
+          degraded: 'Signing degraded',
+          degradedTooltip: 'Signing requests are degraded. View alert details.',
+        },
         balance: 'Balance --',
         window5h: '5-hour window',
         windowWeekly: 'Weekly window',

@@ -1,10 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CNProviderQuotaCell from '../CNProviderQuotaCell.vue'
+import { resetZhipuSignStatusCache } from '@/composables/useZhipuSignStatus'
 import type { Account } from '@/types'
 
-const { queryQuota } = vi.hoisted(() => ({
-  queryQuota: vi.fn()
+const { queryQuota, getSignStatus } = vi.hoisted(() => ({
+  queryQuota: vi.fn(),
+  getSignStatus: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -12,6 +14,9 @@ vi.mock('@/api/admin', () => ({
     cnProviders: { queryQuota }
   }
 }))
+
+// 票 30 的签名降级徽标读取签名状态（票 28 的 GET /admin/zhipu/sign/status）。
+vi.mock('@/api/admin/zhipu', () => ({ getSignStatus }))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -36,6 +41,10 @@ const account = {
 describe('CNProviderQuotaCell', () => {
   beforeEach(() => {
     queryQuota.mockReset()
+    getSignStatus.mockReset()
+    // 默认未启用签名：既有用例不因降级徽标的数据源变化而改变断言
+    getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
+    resetZhipuSignStatusCache()
   })
 
   it('keeps the compact quota stack readable inside the account table cell', async () => {
@@ -97,6 +106,10 @@ describe('CNProviderQuotaCell', () => {
 describe('CNProviderQuotaCell needs-relogin badge', () => {
   beforeEach(() => {
     queryQuota.mockReset()
+    getSignStatus.mockReset()
+    // 默认未启用签名：既有用例不因降级徽标的数据源变化而改变断言
+    getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
+    resetZhipuSignStatusCache()
   })
 
   it('flags the cell when the managed sign-in expired, without exposing credential details', () => {
@@ -128,5 +141,135 @@ describe('CNProviderQuotaCell needs-relogin badge', () => {
       expect(wrapper.find('[data-test="cn-provider-quota-needs-relogin"]').exists()).toBe(false)
       wrapper.unmount()
     }
+  })
+})
+
+// 票 30 / ui-panels §6.3：VERIFY_* 降级 + 账号级熔断徽标（有 / 无 / 字段缺失三态）。
+describe('CNProviderQuotaCell sign-degraded badge', () => {
+  beforeEach(() => {
+    queryQuota.mockReset()
+    getSignStatus.mockReset()
+    resetZhipuSignStatusCache()
+  })
+
+  function makeStatus(overrides: Record<string, unknown> = {}) {
+    return {
+      sign_v4_enabled: true,
+      sign_fail_policy: 'open',
+      accounts: [
+        {
+          account_id: account.id,
+          account_name: 'zhipu-managed',
+          key_cached: true,
+          last_handshake_at: '2026-10-06T00:00:00Z',
+          key_expires_at: '2026-10-06T06:00:00Z',
+          consecutive_failures: 12,
+          circuit_break_tripped: true,
+          circuit_break_reason: 'verify_invalid > 10 in 5m',
+          runtime_state_available: true
+        }
+      ],
+      ...overrides
+    }
+  }
+
+  it('shows an amber non-interactive badge when the account signing is circuit-broken', async () => {
+    getSignStatus.mockResolvedValue(makeStatus())
+    const wrapper = mount(CNProviderQuotaCell, { props: { account } })
+    await flushPromises()
+
+    const badge = wrapper.get('[data-test="cn-provider-quota-sign-degraded"]')
+    expect(badge.text()).toBe('admin.accounts.cnProviders.zhipuSign.degraded')
+    expect(badge.html()).toContain('text-amber')
+    // tooltip = 本地化文案 + 后端熔断原因（可定位到具体 VERIFY_* 类别）
+    expect(badge.attributes('title')).toBe(
+      'admin.accounts.cnProviders.zhipuSign.degradedTooltip · verify_invalid > 10 in 5m'
+    )
+    // 列表徽标只提示，不伪装成可点击（无对应告警详情链接时不提供入口）
+    expect(badge.find('button').exists()).toBe(false)
+    expect(badge.element.tagName).toBe('SPAN')
+    expect(getSignStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders both zhipu badges in order: re-login first, signing degraded second', async () => {
+    getSignStatus.mockResolvedValue(makeStatus())
+    const flagged = {
+      ...account,
+      extra: { ...account.extra, zhipu_needs_relogin: true }
+    } as Account
+    const wrapper = mount(CNProviderQuotaCell, { props: { account: flagged } })
+    await flushPromises()
+
+    const row = wrapper.get('[data-test="cn-provider-quota-needs-relogin"]').element.parentElement as HTMLElement
+    const order = Array.from(row.querySelectorAll('[data-test$="-needs-relogin"], [data-test$="-sign-degraded"]')).map(
+      (el) => el.getAttribute('data-test')
+    )
+    expect(order).toEqual([
+      'cn-provider-quota-needs-relogin',
+      'cn-provider-quota-sign-degraded',
+    ])
+  })
+
+  it('omits the badge when the account is not circuit-broken, unknown, or absent from the status', async () => {
+    const variants: Array<Record<string, unknown>> = [
+      // 已接线且未熔断
+      { accounts: [{ ...makeStatus().accounts[0], circuit_break_tripped: false }] },
+      // 运行时状态源未接线：渲染「未知」而不是「未熔断」
+      { accounts: [{ ...makeStatus().accounts[0], runtime_state_available: false }] },
+      // 账号不在签名状态列表里（未启用签名/未托管）
+      { accounts: [] },
+      // 全局签名开关关闭
+      { sign_v4_enabled: false },
+    ]
+
+    for (const [index, overrides] of variants.entries()) {
+      getSignStatus.mockResolvedValue(makeStatus(overrides))
+      resetZhipuSignStatusCache()
+      const wrapper = mount(CNProviderQuotaCell, { props: { account } })
+      await flushPromises()
+      expect(`${index}: ${wrapper.find('[data-test="cn-provider-quota-sign-degraded"]').exists()}`).toBe(
+        `${index}: false`
+      )
+      wrapper.unmount()
+    }
+  })
+
+  it('stays quiet when the sign status read fails, and never calls it without signing enabled', async () => {
+    getSignStatus.mockRejectedValue(new Error('forbidden'))
+    const wrapper = mount(CNProviderQuotaCell, { props: { account } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
+    // 配额单元格照常渲染
+    expect(wrapper.get('[data-test="cn-provider-quota"]').text()).toContain('27%')
+
+    // kimi 之类的非智谱 coding 账号不读签名状态
+    resetZhipuSignStatusCache()
+    getSignStatus.mockClear()
+    const kimi = {
+      ...account,
+      platform: 'kimi',
+      extra: { kimi_5h_used_percent: 10, kimi_usage_updated_at: new Date().toISOString() }
+    } as unknown as Account
+    const kimiWrapper = mount(CNProviderQuotaCell, { props: { account: kimi } })
+    await flushPromises()
+    expect(getSignStatus).not.toHaveBeenCalled()
+    expect(kimiWrapper.find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
+  })
+
+  it('fetches the sign status once for many cells (module-level cache)', async () => {
+    getSignStatus.mockResolvedValue(makeStatus())
+    const cells = [0, 1, 2].map((offset) =>
+      mount(CNProviderQuotaCell, {
+        props: { account: { ...account, id: account.id + offset } as Account }
+      })
+    )
+    await flushPromises()
+
+    expect(getSignStatus).toHaveBeenCalledTimes(1)
+    // 只有列表里真正熔断的那个账号（id=7）带徽标
+    expect(cells[0].find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(true)
+    expect(cells[1].find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
+    expect(cells[2].find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
+    for (const cell of cells) cell.unmount()
   })
 })

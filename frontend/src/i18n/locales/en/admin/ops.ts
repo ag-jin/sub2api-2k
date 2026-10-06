@@ -468,6 +468,23 @@ export default {
           email: 'Email Sent',
           emailSent: 'Sent',
           emailIgnored: 'Ignored'
+        },
+        // Platform filter: zhipu signing alerts are identified by dimensions.platform=zhipu (ticket 30)
+        filters: {
+          platformZhipu: 'Zhipu (zhipu)'
+        },
+        // Zhipu signing detail lines on the existing alert rows (ticket 30 / ui-panels §6.2)
+        zhipuSign: {
+          kind: {
+            fail_window: 'L1 live fail window (zhipu_sign_fail_window)',
+            effective_rate: 'L2 rate reconciliation (zhipu_sign_effective_rate)'
+          },
+          l1Title: 'Zhipu signing is degraded',
+          l2Title: 'Zhipu effective rate is above {threshold}',
+          windowCount: 'Window count {value} / threshold {threshold}',
+          effectiveRate: 'Current {value} · target 0.67 · threshold {threshold}',
+          accounts: 'Accounts:',
+          suggestedAction: 'Suggested action:'
         }
       },
       alertRules: {

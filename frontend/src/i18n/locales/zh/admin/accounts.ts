@@ -367,6 +367,11 @@ export default {
           reloginSubmit: '完成重登',
           reloginSucceeded: '重新登录成功，凭据已更新。',
         },
+        // 签名降级/熔断徽标（design M6 / ui-panels §6.3，票 24/30）
+        zhipuSign: {
+          degraded: '签名已降级',
+          degradedTooltip: '签名请求已降级，请查看告警详情',
+        },
         balance: '余额 --',
         window5h: '5 小时窗口',
         windowWeekly: '每周窗口',
