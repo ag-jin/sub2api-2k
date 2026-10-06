@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/zcodesign"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -327,6 +328,17 @@ func ProvideCNProviderBalanceCheckService(
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
 	svc.Start()
 	return svc
+}
+
+// ProvideZhipuOAuthService 构造智谱登录编排服务（design M1）：授权 URL、兑换、
+// api_key 解析、建号凭据、重登。会话存储为进程内 10 分钟 TTL（Redis 化见 P4）。
+func ProvideZhipuOAuthService(
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	accountRepo AccountRepository,
+	cfg *config.Config,
+) *ZhipuOAuthService {
+	return NewZhipuOAuthService(proxyRepo, httpUpstream, accountRepo, cfg)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -834,6 +846,58 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+// ProvideZhipuClientSigner 构造智谱数据面签名器（design M3 / 票 22）：握手 origin 固定为
+// 数据面域名（open.bigmodel.cn），客户端版本与私钥 TTL 取 gateway.zhipu 配置，握手复用
+// 网关共享 HTTP 上游栈。票 28 通过 Signer.SetOptions 做配置热更新。
+func ProvideZhipuClientSigner(cfg *config.Config, httpUpstream HTTPUpstream) zhipuClientSigner {
+	clientVersion := ""
+	keyTTL := time.Duration(0)
+	if cfg != nil {
+		clientVersion = cfg.Gateway.Zhipu.SignClientVersion
+		keyTTL = time.Duration(cfg.Gateway.Zhipu.SignKeyTTLMinutes) * time.Minute
+	}
+	return zcodesign.NewSigner(zhipuSignOrigin, clientVersion, keyTTL, zhipuSignHTTPDoer{upstream: httpUpstream})
+}
+
+// ProvideOpenAIGatewayService 构造 OpenAI 网关并注入智谱签名器。
+//
+// 与 NewOpenAIGatewayService 分开是为了不动既有构造函数签名：大量测试直接调用它，
+// 未注入签名器时签名整体关闭（零行为变化），wire 装配路径才接上真实 Signer。
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	zhipuSigner zhipuClientSigner,
+) *OpenAIGatewayService {
+	svc := NewOpenAIGatewayService(
+		accountRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo,
+		cache, cfg, schedulerSnapshot, concurrencyService, billingService, rateLimitService,
+		billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider,
+		resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo,
+	)
+	svc.zhipuSigner = zhipuSigner
+	return svc
+}
+
 // ProvideGatewayService wires GatewayService and connects the pricing plan
 // repository (used for plan-aware layer resolution; hot path reads the
 // auth-cache plan snapshot instead of the repository).
@@ -903,7 +967,8 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	ProvideGatewayService,
-	NewOpenAIGatewayService,
+	ProvideOpenAIGatewayService,
+	ProvideZhipuClientSigner,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,
@@ -933,6 +998,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCNProviderQuotaService,
 	ProvideCNProviderBalanceService,
 	ProvideCNProviderBalanceCheckService,
+	ProvideZhipuOAuthService,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,

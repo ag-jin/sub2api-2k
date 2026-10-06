@@ -281,6 +281,17 @@ func (a *Account) IsZhipu() bool {
 	return a.Platform == PlatformZhipu
 }
 
+// IsZhipuLoginManaged 报告账号是否为「登录托管」的智谱账号（design B1 / 票 03）：
+// platform=zhipu 且 type=apikey 且凭据带 auth_flow=bigmodel_oauth 标记。
+// type 仍为 apikey（复用既有转发链，不新增 enum），登录态只由该标记表达；
+// 本判定是 11（监控扩展）、22（签名注入门控）、26（调度成本因子）共用的只读接缝。
+func (a *Account) IsZhipuLoginManaged() bool {
+	return a != nil &&
+		a.Platform == PlatformZhipu &&
+		a.Type == AccountTypeAPIKey &&
+		a.GetCredential(zhipuCredentialAuthFlow) == ZhipuLoginAuthFlow
+}
+
 func (a *Account) IsDeepseek() bool {
 	return a.Platform == PlatformDeepseek
 }
@@ -1556,6 +1567,25 @@ func (a *Account) GetCNAPIKey() string {
 		return ""
 	}
 	return a.GetCredential("api_key")
+}
+
+// GetZhipuAccessToken 返回登录托管智谱账号的 bigmodel access_token（design M2/M4
+// 的管理面凭据：积分明细探针、重置卡只读查询）。非托管账号一律返回空串：
+// access_token 只对登录态有意义，手填 api_key 账号没有它。
+func (a *Account) GetZhipuAccessToken() string {
+	if a == nil || !a.IsZhipuLoginManaged() {
+		return ""
+	}
+	return a.GetCredential(zhipuCredentialAccessToken)
+}
+
+// GetZhipuZCodeJWTToken 返回登录托管智谱账号的 zcode.z.ai JWT（重置卡只读查询用，
+// design M4）。非托管账号或缺键返回空串，调用方无需先判空。
+func (a *Account) GetZhipuZCodeJWTToken() string {
+	if a == nil || !a.IsZhipuLoginManaged() {
+		return ""
+	}
+	return a.GetCredential(zhipuCredentialZCodeJWT)
 }
 
 // GetCodingPlanProvider 根据 base_url 识别 Coding Plan 供应商（kimi / zhipu），

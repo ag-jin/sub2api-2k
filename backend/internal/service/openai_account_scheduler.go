@@ -2804,19 +2804,7 @@ func openAISchedulingRateEligible(account *Account) bool {
 	if account.IsOpenAIApiKey() || account.IsOpenAIOAuthLike() {
 		return true
 	}
-	return openAIZhipuLoginManagedAccount(account)
-}
-
-// openAIZhipuLoginManagedAccount 判定 #03 的 Account.IsZhipuLoginManaged()
-// （platform=zhipu && type=apikey && credentials["auth_flow"]=="bigmodel_oauth"）。
-//
-// TODO(#03): 该 getter 合入后本函数改为直接调用 account.IsZhipuLoginManaged() 并删除，
-// 判定语义逐字一致。此处内联等价实现是为了不让本票卡在跨票编译依赖上。
-func openAIZhipuLoginManagedAccount(account *Account) bool {
-	return account != nil &&
-		account.Platform == PlatformZhipu &&
-		account.Type == AccountTypeAPIKey &&
-		account.GetCredential("auth_flow") == "bigmodel_oauth"
+	return account.IsZhipuLoginManaged()
 }
 
 // 智谱调度成本倍率的输入键（design M5；键名冻结，下游 27/30 同源）。
@@ -2955,7 +2943,7 @@ func openAISchedulingRate(account *Account, now time.Time, oauthSchedulingRateMu
 	// 登录态智谱账号走 zhipu 分支（时段 × 渠道 × 基准倍率），不参与 oauth 参考倍率。
 	// 门控由调用方 openAISchedulingRateEligible 执行；此处再判一次是为了让直接调用
 	// 也不会把智谱公式套到别的平台账号上。
-	if openAIZhipuLoginManagedAccount(account) {
+	if account.IsZhipuLoginManaged() {
 		return zhipuSchedulingRate(account, now), true
 	}
 	if account.IsOpenAIOAuthLike() {
