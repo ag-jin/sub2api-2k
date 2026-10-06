@@ -83,10 +83,15 @@ type Signer struct {
 	keys             map[string]cachedSigningKey
 	generations      map[string]uint64
 	handshakeBlocked map[string]time.Time
-	clientVersion    string
-	keyTTL           time.Duration
-	powBits          int
-	handshakeBackoff time.Duration
+	// lastHandshake and handshakeFailures feed the read-only admin projection
+	// (KeyStatus, ticket 28): when this process last handshaked a key and how
+	// many handshakes failed in a row since. Process-local, like the key cache.
+	lastHandshake     map[string]time.Time
+	handshakeFailures map[string]int
+	clientVersion     string
+	keyTTL            time.Duration
+	powBits           int
+	handshakeBackoff  time.Duration
 
 	// flight collapses concurrent handshakes of the same apiKeyID into one.
 	flight singleflight.Group
@@ -98,12 +103,14 @@ type Signer struct {
 // is the transport used for handshakes.
 func NewSigner(origin, clientVersion string, keyTTL time.Duration, doer HTTPDoer) *Signer {
 	signer := &Signer{
-		origin:           origin,
-		doer:             doer,
-		now:              time.Now,
-		keys:             make(map[string]cachedSigningKey),
-		generations:      make(map[string]uint64),
-		handshakeBlocked: make(map[string]time.Time),
+		origin:            origin,
+		doer:              doer,
+		now:               time.Now,
+		keys:              make(map[string]cachedSigningKey),
+		generations:       make(map[string]uint64),
+		handshakeBlocked:  make(map[string]time.Time),
+		lastHandshake:     make(map[string]time.Time),
+		handshakeFailures: make(map[string]int),
 	}
 	signer.SetOptions(SignerOptions{ClientVersion: clientVersion, KeyTTL: keyTTL, PowBits: -1})
 	return signer
@@ -253,6 +260,8 @@ func (s *Signer) storeKey(apiKeyID string, generation uint64, privateKey ed25519
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.lastHandshake[apiKeyID] = s.now()
+	s.handshakeFailures[apiKeyID] = 0
 	if s.generations[apiKeyID] != generation {
 		return
 	}
@@ -279,11 +288,13 @@ func (s *Signer) handshakeBlockedUntil(apiKeyID string) (time.Time, bool) {
 	return blockedUntil, true
 }
 
-// recordHandshakeFailure starts (or restarts) the per-key backoff window.
+// recordHandshakeFailure starts (or restarts) the per-key backoff window and
+// counts the failure for the admin status projection (ticket 28).
 func (s *Signer) recordHandshakeFailure(apiKeyID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handshakeBlocked[apiKeyID] = s.now().Add(s.handshakeBackoff)
+	s.handshakeFailures[apiKeyID]++
 }
 
 // options snapshots the current signing knobs.
