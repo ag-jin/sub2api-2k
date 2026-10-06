@@ -440,8 +440,8 @@ func (r *zhipuHandlerAccountRepoStub) BindGroups(_ context.Context, accountID in
 // 全链路（默认分组解析 / 凭据净化 / 账号构造），只把落库接缝换成记录型桩。
 func zhipuHandlerTestAdminService(groupRepo *zhipuHandlerGroupRepoStub, accountRepo *zhipuHandlerAccountRepoStub) service.AdminService {
 	return service.NewAdminService(
-		nil, groupRepo, accountRepo, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, groupRepo, accountRepo, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 
