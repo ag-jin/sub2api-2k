@@ -344,7 +344,7 @@ func TestQuotaFetcher_ZhipuLoginManagedMergesCreditsAndRelogin(t *testing.T) {
 	require.Equal(t, 1, zhipuLogin.getCalls())
 	require.Same(t, managed, zhipuLogin.getLastAccount())
 	start, end := zhipuLogin.window()
-	require.WithinDuration(t, 6*24*time.Hour, end.Sub(start), time.Hour)
+	require.WithinDuration(t, start.Add(6*24*time.Hour), end, time.Hour)
 	require.WithinDuration(t, time.Now(), end, time.Minute)
 
 	// 快照进 TTL 缓存：第二次 Fetch 不再打监控数据源。
@@ -720,14 +720,14 @@ func TestQuotaFetcher_CNBalanceLowMarksDegraded(t *testing.T) {
 }
 
 func TestNewChannelMonitorQuotaFetcher_ThresholdFromConfig(t *testing.T) {
-	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, nil).balanceThreshold, 0.0001)
+	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, nil, nil).balanceThreshold, 0.0001)
 
 	cfg10 := &config.Config{Gateway: config.GatewayConfig{CNProviders: config.GatewayCNProvidersConfig{BalanceThreshold: 10}}}
-	require.InDelta(t, 10, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg10).balanceThreshold, 0.0001)
+	require.InDelta(t, 10, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg10, nil).balanceThreshold, 0.0001)
 
 	// 非正值（含显式 0）回退默认，避免 0 阈值下「余额=0 也不告警」。
 	cfg0 := &config.Config{Gateway: config.GatewayConfig{CNProviders: config.GatewayCNProvidersConfig{BalanceThreshold: 0}}}
-	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg0).balanceThreshold, 0.0001)
+	require.InDelta(t, 0.5, NewChannelMonitorQuotaFetcher(nil, nil, nil, nil, cfg0, nil).balanceThreshold, 0.0001)
 }
 
 func TestQuotaFetcher_NilDependenciesProduceErrorSnapshots(t *testing.T) {

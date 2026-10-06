@@ -84,6 +84,11 @@ type ZhipuCredentialKeeper struct {
 	now        func() time.Time
 	randInt64n func(n int64) int64
 
+	// runDueSignReconcile 是 L2 费率对账的周期挂载点（票 27 接线）：每轮账号
+	// 探测结束后调用一次，是否到期由 ZhipuSignReconciler 的窗口口径决定。
+	// nil = 未接线，等价回滚到无对账状态。
+	runDueSignReconcile func(ctx context.Context)
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -177,6 +182,18 @@ func (k *ZhipuCredentialKeeper) runOnce(ctx context.Context) {
 		}
 		k.CheckAccount(ctx, &accounts[i])
 	}
+	// L2 费率对账的周期入口（票 27）：挂在每轮探测末尾，不新建 goroutine。
+	if k.runDueSignReconcile != nil && ctx.Err() == nil {
+		k.runDueSignReconcile(ctx)
+	}
+}
+
+// SetSignReconcileHook 注入 L2 对账的周期入口（装配期调用一次；nil = 未接线）。
+func (k *ZhipuCredentialKeeper) SetSignReconcileHook(hook func(ctx context.Context)) {
+	if k == nil {
+		return
+	}
+	k.runDueSignReconcile = hook
 }
 
 // nextInterval 返回本轮之后的等待时长：间隔 ± 抖动（随机源可注入，测试不 sleep）。

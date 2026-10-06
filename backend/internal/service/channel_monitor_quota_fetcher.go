@@ -65,6 +65,13 @@ type monitorZhipuLoginSource interface {
 	FetchUsageDetailForAccount(ctx context.Context, account *Account, start, end time.Time) ([]domain.MonitorQuotaModelCredit, error)
 }
 
+// monitorSignReconcileSnapshotSink 是 L2 对账结果并入快照的口（票 27 接线）：
+// *ZhipuAccountMonitorService 天然满足。经 monitorZhipuLoginSource 动态下探获取，
+// 测试 fake 不实现该方法也不受影响。
+type monitorSignReconcileSnapshotSink interface {
+	ApplySignReconcileSnapshot(snapshot *domain.MonitorQuotaSnapshot)
+}
+
 // zhipuMonitorCreditUsageDays 是监控快照请求的积分明细窗口长度：含当日的近 7 个
 // 自然日（与前端面板口径一致；ZhipuAccountMonitorService 会归一为 +8 自然日窗口）。
 const zhipuMonitorCreditUsageDays = 7
@@ -94,17 +101,15 @@ type monitorQuotaCacheEntry struct {
 
 // NewChannelMonitorQuotaFetcher 构造配额抓取器。
 // 参数取具体服务类型以便 wire 直连；单元测试在同包内用 struct 字面量注入 stub。
-//
-// TODO(票 11 接线，由主会话统一执行): 在 wire.go/wire_gen.go 里注入第四数据源
-// （形参追加 *ZhipuAccountMonitorService → f.zhipuLogin = svc）。本票刻意不改
-// 构造签名，避免打断并行中的票 04（wire）与票 08（探针）；未接线时
-// zhipuLogin 为 nil，登录态账号的快照只缺 model_credits，Success 不变。
+// zhipuMonitor 为第四数据源（design M4 票 11 接线）：nil 时登录态账号的快照只带
+// NeedsRelogin，不产生积分明细与 L2 对账字段（回滚即回到三源现状）。
 func NewChannelMonitorQuotaFetcher(
 	usage *AccountUsageService,
 	cnQuota *CNProviderQuotaService,
 	cnBalance *CNProviderBalanceService,
 	accounts AccountRepository,
 	cfg *config.Config,
+	zhipuMonitor *ZhipuAccountMonitorService,
 ) *ChannelMonitorQuotaFetcher {
 	f := &ChannelMonitorQuotaFetcher{
 		cache:            make(map[int64]monitorQuotaCacheEntry),
@@ -121,6 +126,9 @@ func NewChannelMonitorQuotaFetcher(
 	}
 	if accounts != nil {
 		f.accounts = accounts
+	}
+	if zhipuMonitor != nil {
+		f.zhipuLogin = zhipuMonitor
 	}
 	return f
 }
@@ -384,6 +392,11 @@ func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context,
 	if f.zhipuLogin == nil {
 		// 未接线（或回滚）时静默跳过：快照形状与三源现状一致。
 		return
+	}
+	// L2 对账结果并入快照（票 27 接线）：与积分明细抓取独立，抓取失败不影响
+	// 对账字段的展示；fake 不实现 sink 口时同样静默跳过。
+	if sink, ok := f.zhipuLogin.(monitorSignReconcileSnapshotSink); ok {
+		sink.ApplySignReconcileSnapshot(snapshot)
 	}
 	start := now.AddDate(0, 0, -(zhipuMonitorCreditUsageDays - 1))
 	credits, err := f.zhipuLogin.FetchUsageDetailForAccount(ctx, account, start, now)

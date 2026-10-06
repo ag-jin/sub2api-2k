@@ -696,9 +696,11 @@ func TestZhipuSignReconcilerUpstreamFailureKeepsLastValueAndMarksStale(t *testin
 	require.True(t, display.Stale)
 	requireZhipuSignReconcileSameInstant(t, goodWindowEnd, display.WindowEnd, "保留值仍指向它自己的结算窗口")
 
-	// 基线未被失败轮推进：下一轮窗口仍从上一成功窗口末端接起。
+	// 基线未被失败轮推进：下一轮窗口仍从上一成功窗口末端接起。读数是累计口径，
+	// 重试轮必须超过基线（10000）才有增量——推 20000（tokens/credits 同比放大，
+	// 有效系数不变）。
 	clock.advance(time.Hour)
-	usage.push(2701, zhipuSignReconcileTestRows(10000, 0, 0, zhipuSignReconcileTestSignedCredits), nil)
+	usage.push(2701, zhipuSignReconcileTestRows(20000, 0, 0, zhipuSignReconcileTestSignedCredits*2), nil)
 	result, applied = zhipuSignReconcileTestRun(t, reconciler)
 	require.True(t, applied)
 	calls := usage.callLog()
@@ -812,8 +814,9 @@ func TestZhipuSignReconcilerFeedsOpsAlertMetricSource(t *testing.T) {
 // ---------------------------------------------------------------- 快照与 JSON 契约
 
 // zhipuSignReconcileTestRanReconciler 返回一个已跑完「基线 + 增量」的对账器
-// （0.67 命中，上报一次）。
-func zhipuSignReconcileTestRanReconciler(t *testing.T) (*ZhipuSignReconciler, *zhipuSignAlertClock, *zhipuSignReconcileFakeSink) {
+// （0.67 命中，上报一次）。usage 一并返回：调用方要驱动下一轮对账时需先 push
+// 超过基线的累计读数（读数为累计口径，不 push 新读数则窗口增量为 0、按 NoUsage 跳过）。
+func zhipuSignReconcileTestRanReconciler(t *testing.T) (*ZhipuSignReconciler, *zhipuSignAlertClock, *zhipuSignReconcileFakeSink, *zhipuSignReconcileFakeUsage) {
 	t.Helper()
 	clock := newZhipuSignAlertClock(zhipuSignReconcileTestT0)
 	accounts := &zhipuSignReconcileFakeAccounts{accounts: []Account{
@@ -829,7 +832,7 @@ func zhipuSignReconcileTestRanReconciler(t *testing.T) (*ZhipuSignReconciler, *z
 	result, applied := zhipuSignReconcileTestRun(t, reconciler)
 	require.True(t, applied)
 	require.InDelta(t, zhipuSignReconcileTestSignedRate, result.EffectiveRate, 1e-9)
-	return reconciler, clock, sink
+	return reconciler, clock, sink, usage
 }
 
 func TestZhipuAccountMonitorServiceRunDueSignReconcile(t *testing.T) {
@@ -839,20 +842,29 @@ func TestZhipuAccountMonitorServiceRunDueSignReconcile(t *testing.T) {
 	_, ok := service.SignReconcileResult()
 	require.False(t, ok)
 
-	reconciler, clock, sink := zhipuSignReconcileTestRanReconciler(t)
+	reconciler, clock, sink, usage := zhipuSignReconcileTestRanReconciler(t)
 	service.SetSignReconciler(reconciler)
 
 	// 跑完一轮「基线 + 增量」后立刻再调用（未到期）不得重复上报。
 	service.RunDueSignReconcile(context.Background())
 	require.Len(t, sink.values(), 1)
 
+	// 到期后由同一入口完成下一轮对账：先推超过基线的累计读数（同比放大）。
 	clock.advance(6 * time.Hour)
+	usage.push(2701, zhipuSignReconcileTestRows(20000, 0, 0, zhipuSignReconcileTestSignedCredits*2), nil)
 	service.RunDueSignReconcile(context.Background())
 	require.Len(t, sink.values(), 2, "到期后由同一入口完成下一轮对账")
 
 	result, ok := service.SignReconcileResult()
 	require.True(t, ok)
-	require.InDelta(t, zhipuSignReconcileTestSignedRate, result.EffectiveRate, 1e-9)
+	// 第二轮窗口 [T0+6h-11min, T0+12h-11min] 跨峰谷边界（周二 11:49→17:49 UTC+8，
+	// 逐分钟均值系数≈0.83），速率按口径低于首轮全谷窗口的 0.67（首轮已锚定精确值）；
+	// 这里用同一成本模型推导第二窗口的期望成本再断言，不引入第二套口径。
+	delta := zhipuSignReconcileDelta{model: ZhipuModelGLM53, input: 10000}
+	windowStart := zhipuSignReconcileTestT0.Add(6*time.Hour - zhipuSignReconcileSettlementDelay)
+	windowEnd := zhipuSignReconcileTestT0.Add(12*time.Hour - zhipuSignReconcileSettlementDelay)
+	expected2 := zhipuSignReconcileMeanEffectiveCost(delta, windowStart, windowEnd)
+	require.InDelta(t, zhipuSignReconcileTestSignedCredits/expected2, result.EffectiveRate, 1e-9)
 }
 
 func TestZhipuAccountMonitorServiceApplySignReconcileSnapshot(t *testing.T) {
@@ -867,7 +879,7 @@ func TestZhipuAccountMonitorServiceApplySignReconcileSnapshot(t *testing.T) {
 	require.False(t, untouched.SignReconcileStale)
 	require.False(t, untouched.SignReconcileDeviation)
 
-	reconciler, _, _ := zhipuSignReconcileTestRanReconciler(t)
+	reconciler, _, _, _ := zhipuSignReconcileTestRanReconciler(t)
 	service.SetSignReconciler(reconciler)
 
 	snapshot := &domain.MonitorQuotaSnapshot{Source: "cn_quota", Success: true}

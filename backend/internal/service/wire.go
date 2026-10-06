@@ -878,6 +878,46 @@ func ProvideZhipuSignAlerts(
 	return alerts
 }
 
+// ProvideZhipuAccountMonitorService 构造智谱登录态监控服务（design M4 / 票 11），
+// 并在同一装配点完成 L2 费率对账器的注入（票 27 接线）：构造对账器、接 #28 的
+// 生效配置面（运行层覆盖热生效）、挂到监控服务的周期入口与快照合并口。
+// zhipuSignAlerts / signConfig 为 nil 时对账器退化为未接线（等价回滚）。
+func ProvideZhipuAccountMonitorService(
+	accountRepo AccountRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	zhipuSignAlerts *ZhipuSignAlerts,
+	signConfig *ZhipuSignConfigService,
+) *ZhipuAccountMonitorService {
+	monitor := NewZhipuAccountMonitorService(accountRepo, httpUpstream, cfg)
+	if zhipuSignAlerts != nil && signConfig != nil {
+		reconciler := NewZhipuSignReconciler(cfg, accountRepo, monitor, zhipuSignAlerts, nil)
+		reconciler.SetConfigSource(signConfig)
+		monitor.SetSignReconciler(reconciler)
+	}
+	return monitor
+}
+
+// ProvideZhipuCredentialKeeper 构造并启动智谱登录凭据周期探测（design M2 / 票 09）：
+// 探针 = 监控服务；L2 对账的周期入口挂在每轮探测末尾（票 27 接线）；管理员邮件
+// 通知复用既有邮箱服务与设置仓储。interval <= 0 时 Start 空转（构造仍成功），
+// 便于配置回滚。
+func ProvideZhipuCredentialKeeper(
+	accountRepo AccountRepository,
+	monitor *ZhipuAccountMonitorService,
+	emailService *EmailService,
+	settingRepo SettingRepository,
+	cfg *config.Config,
+) *ZhipuCredentialKeeper {
+	notifier := NewZhipuCredentialAlertNotifier(emailService, settingRepo)
+	keeper := NewZhipuCredentialKeeper(accountRepo, monitor, notifier, cfg)
+	if monitor != nil {
+		keeper.SetSignReconcileHook(monitor.RunDueSignReconcile)
+	}
+	keeper.Start()
+	return keeper
+}
+
 // ProvideOpenAIGatewayService 构造 OpenAI 网关并注入智谱签名器与 L1 指标引擎。
 //
 // 与 NewOpenAIGatewayService 分开是为了不动既有构造函数签名：大量测试直接调用它，
@@ -991,6 +1031,9 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayService,
 	ProvideZhipuClientSigner,
 	ProvideZhipuSignAlerts,
+	ProvideZhipuSignRuntime,
+	ProvideZhipuAccountMonitorService,
+	ProvideZhipuCredentialKeeper,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,

@@ -538,7 +538,7 @@ func TestOpsAlertEvaluatorZhipuSignFiresOpsAlertEvent(t *testing.T) {
 		require.InDelta(t, 0.0, *event.ThresholdValue, 0.0001)
 		require.Equal(t, "zhipu", event.Dimensions["platform"])
 		require.Equal(t, []int64{zhipuSignAlertTestAccountID}, event.Dimensions["zhipu_sign_accounts"])
-		require.Equal(t, zhipuSignAlertMetricBucketID(zhipuSignAlertTestBase), event.Dimensions["zhipu_sign_window_bucket"])
+		require.Equal(t, zhipuSignMetricBucketID(zhipuSignAlertTestBase), event.Dimensions["zhipu_sign_window_bucket"])
 		require.Contains(t, event.Description, "over last 5m")
 		require.Contains(t, event.Description, "建议动作")
 		require.NotContains(t, event.Description, "api_key")

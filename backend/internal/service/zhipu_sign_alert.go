@@ -492,6 +492,13 @@ func (a *ZhipuSignAlerts) recordMemory(kind string, bucket int64, accountID int6
 		a.prunedAt = bucket
 	}
 	a.counts[zhipuSignCounterKey{kind: kind, bucket: bucket, accountID: accountID}]++
+	if accountID > 0 {
+		// 全局行（accountID=0）：Redis 可用时它只是降级兜底（CounterSnapshot 会用
+		// Redis 的跨实例值覆盖）；Redis 不可用时它是 L1 全局维度的唯一事实源，
+		// 不写这行会让降级期间全局告警全盲（票 24 降级验收：「计数必须继续落在
+		// 进程内存」）。
+		a.counts[zhipuSignCounterKey{kind: kind, bucket: bucket}]++
+	}
 }
 
 // evaluateCircuitBreak 在计数写入后判定熔断：同一窗口内重复达标只触发一次事件，

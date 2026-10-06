@@ -447,7 +447,9 @@ func TestZhipuCredentialKeeperRunOnceCoversAllCredentialFlowAccounts(t *testing.
 		*keeperManagedAccount(1, "zhipu-1", nil),
 		*keeperManagedAccount(2, "zhipu-2", map[string]any{ZhipuNeedsReloginExtraKey: true}),
 	}}
-	probe := &keeperFakeProbe{}
+	// 探针统一 401：账号 1 首跨 → 写标记 + 通知一次；账号 2 已标记 → 首跨语义跳过
+	// （不重复写库/通知）。这才支撑「恰好 1 条通知」的断言（健康探针不会产生任何通知）。
+	probe := &keeperFakeProbe{err: ErrZhipuCreditUsageUnauthorized}
 	notifier := &keeperFakeNotifier{}
 	k := keeperTestKeeper(repo, probe, notifier, keeperTestConfig(60), now)
 
