@@ -225,7 +225,7 @@ export default {
         effectiveOff: '停用',
         inherited: '当前值继承部署配置（未被管理端覆盖）',
         overridden: '当前值已被管理端覆盖（优先级高于部署配置）',
-        scope: '作用域：全局网关开关与账号级标记同时满足才签名',
+        scope: '作用域：全局网关开关（sign_v4_enabled）与账号级标记（zcode_client_sign）同时满足才签名',
         toggleLabel: '启用签名 V4',
         toggleHint: '关闭后所有智谱账号的请求不再注入签名头；上游可能按降级费率（1.0 系数）计费。',
         auditHint: '保存会立即推送到签名器（无需重启），并记录审计日志。',

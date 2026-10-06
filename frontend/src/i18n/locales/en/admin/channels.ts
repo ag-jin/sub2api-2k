@@ -225,7 +225,7 @@ export default {
         effectiveOff: 'Disabled',
         inherited: 'Value inherits the deployment config (no admin override)',
         overridden: 'Value is overridden by the admin setting (wins over the deployment config)',
-        scope: 'Scope: signing applies only when the global gateway flag and the account-level marker both match',
+        scope: 'Scope: signing requires both the global gateway flag (sign_v4_enabled) and the account-level marker (zcode_client_sign)',
         toggleLabel: 'Enable Sign V4',
         toggleHint: 'When off, no Zhipu request carries the signature headers; upstream may bill those requests at the degraded 1.0 rate.',
         auditHint: 'Saving pushes the value to the signer immediately (no restart) and records an audit log entry.',
