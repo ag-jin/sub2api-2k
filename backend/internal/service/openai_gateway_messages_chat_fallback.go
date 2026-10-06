@@ -92,12 +92,18 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	// so the converted Chat Completions body never contains one and the policy
 	// would always be a no-op on this path.
 
+	// 票 #33 C 项：桥接路径可观测性——出站 CC body 的 image_url part 计数。
+	// 仅计数不落内容（R0）：智谱 chat 端点对 glm-5.3 系会静默忽略图片，
+	// 事后排查「图是否已出站」依赖这个数字。
+	imageBlocksForwarded := countChatCompletionsImageParts(chatReq.Messages)
+
 	logger.L().Debug("openai messages: forwarding via raw chat completions",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
 		zap.String("billing_model", billingModel),
 		zap.String("upstream_model", upstreamModel),
 		zap.Bool("stream", clientStream),
+		zap.Int("image_blocks_forwarded", imageBlocksForwarded),
 	)
 
 	// 3. Build and send upstream request via the shared CC pipeline
@@ -127,6 +133,26 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		return s.streamChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
 	return s.bufferChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+}
+
+// countChatCompletionsImageParts 统计 Chat Completions 出站消息里的 image_url
+// part 数量。仅读取 part 的 type 字段做计数，绝不读取或记录图片内容
+// （票 #33 C 项 + R0 纪律）：智谱 chat 端点对 glm-5.3 系会静默忽略图片，
+// 该计数用于排查「图是否已出站」。
+func countChatCompletionsImageParts(messages []apicompat.ChatMessage) int {
+	count := 0
+	for _, msg := range messages {
+		var parts []apicompat.ChatContentPart
+		if err := json.Unmarshal(msg.Content, &parts); err != nil {
+			continue // content 为纯字符串（无 parts）→ 无图
+		}
+		for _, part := range parts {
+			if part.Type == "image_url" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
