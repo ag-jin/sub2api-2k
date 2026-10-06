@@ -59,10 +59,44 @@ type MonitorQuotaSnapshot struct {
 	CredentialInvalid bool      `json:"credential_invalid,omitempty"`
 	Error             string    `json:"error,omitempty"` // Success=false 时的错误摘要
 	FetchedAt         time.Time `json:"fetched_at"`
+	// ModelCredits 登录态智谱账号的逐模型逐日积分明细（design M4）。可选：
+	// 非托管账号、数据源失败或未接线时不出现；一期不参与状态判定。
+	ModelCredits []MonitorQuotaModelCredit `json:"model_credits,omitempty"`
+	// ResetCards 登录态智谱账号的可用重置卡（只读展示，R0）。可选：
+	// 采集失败/无卡时不出现，前端须静默降级。
+	ResetCards []MonitorResetCard `json:"reset_cards,omitempty"`
+	// NeedsRelogin 登录态凭据需重登（读 accounts.extra 的
+	// zhipu_needs_relogin，契约见票 09）。可选，不影响 Success/状态判定。
+	NeedsRelogin bool `json:"needs_relogin,omitempty"`
 }
 
 // MonitorBalance 单币种余额条目。
 type MonitorBalance struct {
 	Currency string  `json:"currency"`
 	Balance  float64 `json:"balance"`
+}
+
+// MonitorQuotaModelCredit 登录态智谱账号在某一自然日的单模型积分明细
+// （credit-usage/usage-detail 的 modelDataList 逐日展开；design M4）。
+//
+// Date 是上游响应 xTime 的日历日（Asia/Shanghai），与账号本地时区无关。
+// InputTokens 为未缓存输入（uncachedInputTokensUsage），与 CachedTokens、
+// OutputTokens 一起对应计费三项，Credits 取当日 totalCreditsUsage。
+type MonitorQuotaModelCredit struct {
+	Model        string  `json:"model"`
+	Date         string  `json:"date"`
+	InputTokens  float64 `json:"input_tokens"`
+	CachedTokens float64 `json:"cached_tokens"`
+	OutputTokens float64 `json:"output_tokens"`
+	Credits      float64 `json:"credits"`
+}
+
+// MonitorResetCard 登录态智谱账号的一张可用重置卡（只读，design M4 / 决策 B4）。
+//
+// Type 取值 "five_hour"（5 小时窗口重置）或 "week"（周窗口重置）；
+// ExpireAt 是上游 expire_at 的原样字符串（RFC3339，缺失时留空）。
+// 本类型只描述快照内的只读展示数据：系统不提供任何「使用重置卡」路径（R0）。
+type MonitorResetCard struct {
+	Type     string `json:"type"`
+	ExpireAt string `json:"expire_at"`
 }
