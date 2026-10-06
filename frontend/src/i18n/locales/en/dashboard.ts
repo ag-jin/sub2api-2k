@@ -524,10 +524,12 @@ export default {
       expiresAt: 'Expires: {time}',
       expiresIn: 'Expires in {time}',
       expiring: 'Expires on {time}',
+      expiringSoonNotice: 'Unused cards are void once expired',
       expired: 'Expired on {time}',
       unknownExpiry: 'Expiry unknown',
       empty: 'No reset card data',
       typeEmpty: 'No data for this card type',
+      observeOnly: 'This system only observes reset cards and never uses or consumes them',
       stale: 'Showing an earlier snapshot. Information may be outdated.',
       needsRelogin: 'Login has expired; reset card information cannot be updated.',
       failed: 'Unable to load reset card information'

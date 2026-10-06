@@ -529,10 +529,12 @@ export default {
       expiresAt: '到期：{time}',
       expiresIn: '{time} 后到期',
       expiring: '将于 {time} 到期',
+      expiringSoonNotice: '到期未使用将失效',
       expired: '已于 {time} 到期',
       unknownExpiry: '到期时间未知',
       empty: '暂无重置卡数据',
       typeEmpty: '暂无该类重置卡数据',
+      observeOnly: '本系统仅观测重置卡，不会使用或消耗',
       stale: '当前为较早快照，信息可能已过期',
       needsRelogin: '登录状态已失效，无法更新重置卡信息',
       failed: '无法读取重置卡信息'

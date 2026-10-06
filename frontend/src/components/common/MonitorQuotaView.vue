@@ -247,11 +247,24 @@
               <template v-else>
                 <p
                   class="mt-1 text-xs font-medium"
-                  :class="card.stateTextClass"
+                  :class="[
+                    card.stateTextClass,
+                    card.state === 'expiring_soon'
+                      ? 'inline-block rounded bg-amber-100 px-1 py-0.5 font-semibold dark:bg-amber-900/30'
+                      : '',
+                  ]"
                   data-testid="zhipu-reset-card-expiry"
                   :title="card.expireAt ?? undefined"
                 >
                   {{ card.stateText }}
+                </p>
+                <!-- 3 天档的信息性提醒：到期未使用将失效（纯文本，无任何操作） -->
+                <p
+                  v-if="card.state === 'expiring_soon'"
+                  class="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                  data-testid="zhipu-reset-card-void-notice"
+                >
+                  {{ t('monitorCommon.resetCards.expiringSoonNotice') }}
                 </p>
                 <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">
                   {{ t('monitorCommon.resetCards.expiresAt', { time: card.absExpireAt }) }}
@@ -281,6 +294,18 @@
             {{ note.text }}
           </p>
         </div>
+
+        <!--
+          R0 声明（票 17）：本系统仅观测重置卡、不消耗。任何面板状态下都必须存在，
+          以纯文本呈现，不构成操作入口。
+        -->
+        <p
+          class="text-xs text-gray-500 dark:text-dark-400"
+          :class="resetBodyHasContent ? 'mt-3 border-t border-gray-100 pt-2 dark:border-dark-700' : ''"
+          data-testid="zhipu-reset-cards-observe-only"
+        >
+          {{ t('monitorCommon.resetCards.observeOnly') }}
+        </p>
       </div>
     </section>
   </div>
@@ -547,10 +572,11 @@ const creditsDetailMissing = computed(
 const RESET_CARD_TYPES = ['five_hour', 'week'] as const
 type ResetCardType = (typeof RESET_CARD_TYPES)[number]
 
-/** 7 天内到期 = 注意档（design §5.3）；到期提醒细化属票 17。 */
+/** 7 天内到期 = 注意档（design §5.3）；3 天内到期 = 紧急档（票 17，强调但仍是提醒而非操作）。 */
 const RESET_CARD_SOON_MS = 7 * 24 * 60 * 60 * 1000
+const RESET_CARD_URGENT_MS = 3 * 24 * 60 * 60 * 1000
 
-type ResetCardState = 'ok' | 'expiring' | 'expired' | 'unknown'
+type ResetCardState = 'ok' | 'expiring' | 'expiring_soon' | 'expired' | 'unknown'
 
 interface ResetCardView {
   type: ResetCardType
@@ -649,6 +675,18 @@ function buildResetCardView(type: ResetCardType): ResetCardView {
     }
   }
 
+  if (remainingMs <= RESET_CARD_URGENT_MS) {
+    return {
+      ...base,
+      state: 'expiring_soon',
+      expireAt: nearest.raw,
+      absExpireAt,
+      stateText: t('monitorCommon.resetCards.expiring', { time: absExpireAt }),
+      // 3 天档：比 ≤7 天档更重的 amber（更深的文字 + 浅底），仍不进入 red（red 专属已过期）
+      stateTextClass: 'text-amber-700 dark:text-amber-300',
+    }
+  }
+
   if (remainingMs <= RESET_CARD_SOON_MS) {
     return {
       ...base,
@@ -704,7 +742,7 @@ const creditsNotes = computed<PanelNote[]>(() => {
   return notes
 })
 
-/** 重置卡面板状态提示：按严重度排列（登录失效 > 已过期 > 即将到期 > 陈旧 > 读取失败）。 */
+/** 重置卡面板状态提示：按严重度排列（登录失效 > 已过期 > 3 天内到期 > 7 天内到期 > 陈旧 > 读取失败）。 */
 const resetNotes = computed<PanelNote[]>(() => {
   const notes: PanelNote[] = []
   if (props.snapshot?.needs_relogin === true) {
@@ -716,12 +754,19 @@ const resetNotes = computed<PanelNote[]>(() => {
   }
   const cards = resetCardViews.value.filter((card) => card.count > 0)
   const expired = cards.find((card) => card.state === 'expired')
+  const expiringSoon = cards.find((card) => card.state === 'expiring_soon')
   const expiring = cards.find((card) => card.state === 'expiring')
   if (expired) {
     notes.push({
       testid: 'zhipu-reset-cards-expired',
       text: expired.stateText,
       className: 'text-red-600 dark:text-red-400',
+    })
+  } else if (expiringSoon) {
+    notes.push({
+      testid: 'zhipu-reset-cards-expiring-soon',
+      text: t('monitorCommon.resetCards.expiringSoonNotice'),
+      className: 'text-amber-700 dark:text-amber-300',
     })
   } else if (expiring) {
     notes.push({
@@ -746,6 +791,11 @@ const resetNotes = computed<PanelNote[]>(() => {
   }
   return notes
 })
+
+/** R0 声明的分隔线：面板内已有卡片或状态提示时才需要上分隔。 */
+const resetBodyHasContent = computed(
+  () => resetCardsPresent.value || resetCardsEmpty.value || resetNotes.value.length > 0
+)
 
 const utilizationColor = (pct: number) => {
   if (pct >= 90) return 'bg-red-500'

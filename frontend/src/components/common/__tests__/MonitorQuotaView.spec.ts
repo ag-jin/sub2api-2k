@@ -329,13 +329,13 @@ describe('MonitorQuotaView model credits panel', () => {
 // 智谱登录托管账号：重置卡只读卡片（design M4 `reset_cards`，R0 严格只读）。
 describe('MonitorQuotaView reset cards panel', () => {
   it('shows per-type counts and the nearest expiry state', () => {
-    const nearestFiveHour = daysFromNow(2)
+    const nearestFiveHour = daysFromNow(5)
     const wrapper = mount(MonitorQuotaView, {
       props: {
         snapshot: makeSnapshot({
           fetched_at: fetchedAtMinutesAgo(1),
           reset_cards: [
-            { type: 'five_hour', expire_at: daysFromNow(3) },
+            { type: 'five_hour', expire_at: daysFromNow(6) },
             { type: 'five_hour', expire_at: nearestFiveHour },
             { type: 'week', expire_at: daysFromNow(30) },
           ],
@@ -368,6 +368,70 @@ describe('MonitorQuotaView reset cards panel', () => {
 
     expect(panel.text()).not.toContain('NaN')
     expect(panel.text()).not.toContain('Invalid Date')
+  })
+
+  // 票 17：到期分档 有效(>7d) / 注意(≤7d) / 紧急(≤3d) / 已过期 / 未知。
+  const expiryTiers: Array<[number, string]> = [
+    [10, 'ok'],
+    [6, 'expiring'],
+    [2.5, 'expiring_soon'],
+    [-0.5, 'expired'],
+  ]
+
+  it.each(expiryTiers)(
+    'tiers a card expiring in %s days as %s',
+    (days: number, expectedState: string) => {
+      const wrapper = mount(MonitorQuotaView, {
+        props: {
+          snapshot: makeSnapshot({
+            fetched_at: fetchedAtMinutesAgo(1),
+            reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(days) }],
+          }),
+        },
+      })
+
+      const fiveHour = wrapper.get('[data-testid="zhipu-reset-card-five_hour"]')
+      expect(fiveHour.attributes('data-state')).toBe(expectedState)
+      // 张数与到期时间在任何分档下都必须仍然可见
+      expect(fiveHour.get('[data-testid="zhipu-reset-card-count"]').text()).toContain('{"count":1}')
+      expect(fiveHour.get('[data-testid="zhipu-reset-card-expiry"]').exists()).toBe(true)
+      expect(wrapper.text()).not.toContain('Invalid Date')
+    }
+  )
+
+  it('escalates cards expiring within 3 days and states the void-on-expiry reminder', () => {
+    const nearest = daysFromNow(2)
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [
+            { type: 'five_hour', expire_at: nearest },
+            { type: 'week', expire_at: daysFromNow(10) },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    const fiveHour = panel.get('[data-testid="zhipu-reset-card-five_hour"]')
+    expect(fiveHour.attributes('data-state')).toBe('expiring_soon')
+    const expiry = fiveHour.get('[data-testid="zhipu-reset-card-expiry"]')
+    expect(expiry.text()).toContain('monitorCommon.resetCards.expiring')
+    expect(expiry.attributes('title')).toBe(nearest)
+    // 3 天档是强调档：比 ≤7 天档更重的 amber（浅底 + 更深文字），但不与已过期的 red 混淆
+    expect(expiry.html()).toContain('text-amber-700')
+    expect(expiry.html()).toContain('bg-amber-100')
+    expect(expiry.html()).not.toContain('text-red-600')
+
+    // 信息性提醒：到期未使用将失效（不是操作引导）
+    const notice = fiveHour.get('[data-testid="zhipu-reset-card-void-notice"]')
+    expect(notice.text()).toBe('monitorCommon.resetCards.expiringSoonNotice')
+    expect(notice.html()).toContain('text-amber-700')
+
+    // ≤7 天但 >3 天的卡不受影响
+    expect(panel.get('[data-testid="zhipu-reset-card-week"]').attributes('data-state')).toBe('ok')
+    expect(panel.text()).not.toContain('NaN')
   })
 
   it('marks expired and unknown-expiry cards as unusable/unknown', () => {
@@ -432,6 +496,78 @@ describe('MonitorQuotaView reset cards panel', () => {
     expect(emptyPanel.find('[data-testid="zhipu-reset-card-five_hour"]').exists()).toBe(false)
   })
 
+  it('surfaces the most severe expiry hint in the panel footer', () => {
+    const urgent = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [
+            { type: 'five_hour', expire_at: daysFromNow(1) },
+            { type: 'week', expire_at: daysFromNow(20) },
+          ],
+        }),
+      },
+    })
+    const urgentNote = urgent.get('[data-testid="zhipu-reset-cards-expiring-soon"]')
+    expect(urgentNote.text()).toBe('monitorCommon.resetCards.expiringSoonNotice')
+    expect(urgentNote.html()).toContain('text-amber-700')
+
+    // 已过期优先于紧急档
+    const expired = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [
+            { type: 'five_hour', expire_at: daysFromNow(2) },
+            { type: 'week', expire_at: daysFromNow(-1) },
+          ],
+        }),
+      },
+    })
+    expect(expired.get('[data-testid="zhipu-reset-cards-expired"]').exists()).toBe(true)
+    expect(expired.find('[data-testid="zhipu-reset-cards-expiring-soon"]').exists()).toBe(false)
+
+    // 仅「注意档」（>3 天）时不得升级为紧急提醒
+    const soon = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(6) }],
+        }),
+      },
+    })
+    expect(soon.get('[data-testid="zhipu-reset-cards-expiring"]').exists()).toBe(true)
+    expect(soon.find('[data-testid="zhipu-reset-cards-expiring-soon"]').exists()).toBe(false)
+  })
+
+  it('always states the observe-only R0 copy inside the panel', () => {
+    const cases: Array<[string, Partial<MonitorQuotaSnapshot>]> = [
+      ['ok', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(10) }] }],
+      ['expiring', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(6) }] }],
+      ['expiring_soon', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(1) }] }],
+      ['expired', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(-1) }] }],
+      ['unknown', { reset_cards: [{ type: 'five_hour', expire_at: 'not-a-date' }] }],
+      ['week-only', { reset_cards: [{ type: 'week', expire_at: daysFromNow(20) }] }],
+      ['panel-empty', { reset_cards: [] }],
+      ['needs-relogin', { needs_relogin: true }],
+      ['failed-with-old-values', { success: false, reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(10) }] }],
+    ]
+
+    for (const [label, overrides] of cases) {
+      const wrapper = mount(MonitorQuotaView, {
+        props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1), ...overrides }) },
+      })
+      const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+      const statement = panel.get('[data-testid="zhipu-reset-cards-observe-only"]')
+      expect(`${label}: ${statement.text()}`).toBe(
+        `${label}: monitorCommon.resetCards.observeOnly`
+      )
+      // 说明性文本，不是操作入口
+      const kind = `${label}: ${statement.element.tagName}/${statement.attributes('role') ?? '-'}/${statement.attributes('tabindex') ?? '-'}`
+      expect(kind).toBe(`${label}: P/-/-`)
+    }
+  })
+
   it('renders needs_relogin as read-only text with no affordance at all (R0)', () => {
     const wrapper = mount(MonitorQuotaView, {
       props: {
@@ -455,6 +591,62 @@ describe('MonitorQuotaView reset cards panel', () => {
     expect(panel.html()).not.toContain('<a ')
     expect(panel.html()).not.toContain('cursor-pointer')
     expect(panel.html()).not.toContain('reset/use')
+  })
+
+  it('offers no use/consume affordance in any reset card state (R0)', () => {
+    const states: Array<[string, Partial<MonitorQuotaSnapshot>]> = [
+      ['ok', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(10) }] }],
+      ['expiring', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(6) }] }],
+      ['expiring_soon', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(1) }] }],
+      ['expired', { reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(-1) }] }],
+      ['unknown', { reset_cards: [{ type: 'five_hour', expire_at: 'not-a-date' }] }],
+      ['panel-empty', { reset_cards: [] }],
+      ['needs-relogin', { needs_relogin: true }],
+      ['failed', { success: false, error: 'boom', reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(10) }] }],
+    ]
+    const interactive = [
+      'button',
+      'a',
+      'input',
+      'select',
+      'textarea',
+      'label',
+      '[role="button"]',
+      '[role="link"]',
+      '[tabindex]',
+      '[contenteditable="true"]',
+    ].join(', ')
+    const forbidden = [
+      '<button',
+      '<a ',
+      'cursor-pointer',
+      'reset/use',
+      'use-reset',
+      'resetcarduse',
+      'onclick',
+      '@click',
+      '使用重置卡',
+      '消耗重置卡',
+    ]
+
+    for (const [label, overrides] of states) {
+      const wrapper = mount(MonitorQuotaView, {
+        props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1), ...overrides }) },
+      })
+      const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+      const html = panel.html().toLowerCase()
+
+      expect(`${label}: ${panel.findAll(interactive).length}`).toBe(`${label}: 0`)
+      for (const needle of forbidden) {
+        expect(`${label}: ${html.includes(needle)}`).toBe(`${label}: false`)
+      }
+      // 使用/消耗/领取类 DOM 名称 0 命中
+      expect(
+        `${label}: ${panel.findAll('[data-testid*="use"], [data-testid*="consume"], [data-testid*="redeem"], [data-testid*="apply"]').length}`
+      ).toBe(`${label}: 0`)
+      // 组件被嵌进运行结果弹窗/账号列表单元格时同样不得出现入口
+      expect(`${label}: ${wrapper.findAll('button, a, [role="button"]').length}`).toBe(`${label}: 0`)
+    }
   })
 
   it('shows the relogin notice alone when reset_cards is absent (no fabricated cards)', () => {
@@ -577,10 +769,12 @@ describe('MonitorQuotaView zhipu panel i18n keys', () => {
     'monitorCommon.resetCards.expiresAt',
     'monitorCommon.resetCards.expiresIn',
     'monitorCommon.resetCards.expiring',
+    'monitorCommon.resetCards.expiringSoonNotice',
     'monitorCommon.resetCards.expired',
     'monitorCommon.resetCards.unknownExpiry',
     'monitorCommon.resetCards.empty',
     'monitorCommon.resetCards.typeEmpty',
+    'monitorCommon.resetCards.observeOnly',
     'monitorCommon.resetCards.stale',
     'monitorCommon.resetCards.needsRelogin',
     'monitorCommon.resetCards.failed',
@@ -601,5 +795,22 @@ describe('MonitorQuotaView zhipu panel i18n keys', () => {
     const resetZh = flattenKeys(zhDashboard.monitorCommon.resetCards).sort()
     const resetEn = flattenKeys(enDashboard.monitorCommon.resetCards).sort()
     expect(resetZh).toEqual(resetEn)
+  })
+
+  // 票 17：R0 文案与 3 天档提醒必须在两种语言下都表达「仅观测/不消耗」与「到期未使用将失效」。
+  it('states the observe-only and void-on-expiry copy in both locales', () => {
+    const zhReset = zhDashboard.monitorCommon.resetCards
+    const enReset = enDashboard.monitorCommon.resetCards
+
+    expect(zhReset.observeOnly).toContain('仅观测重置卡')
+    expect(zhReset.observeOnly).toContain('不会使用或消耗')
+    expect(zhReset.expiringSoonNotice).toBe('到期未使用将失效')
+
+    expect(enReset.observeOnly.toLowerCase()).toContain('never uses or consumes')
+    expect(enReset.expiringSoonNotice.toLowerCase()).toContain('unused cards are void')
+
+    // 两语言不得同时给出「可使用」的正向措辞
+    expect(`${zhReset.observeOnly} ${zhReset.expiringSoonNotice}`).not.toContain('可使用')
+    expect(`${enReset.observeOnly} ${enReset.expiringSoonNotice}`.toLowerCase()).not.toContain('you can use')
   })
 })
