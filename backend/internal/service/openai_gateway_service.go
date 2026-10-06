@@ -451,9 +451,13 @@ type OpenAIGatewayService struct {
 	// zhipuSigner 是智谱签名 V4 的注入接缝（design M3 / 票 22；wire 注入
 	// *zcodesign.Signer）。为 nil 时签名整体关闭：未接线部署与其它平台零行为变化。
 	zhipuSigner zhipuClientSigner
-	// zhipuSignFailureHook 是签名失败 fail-open 降级的回调接缝：本票保证每条失败
-	// 路径恰好回调一次，L1 计数与 fail 策略本体属票 24。
+	// zhipuSignFailureHook 是签名失败的降级回调接缝（票 22 起）：签名失败路径恰好
+	// 回调一次，与生效的 fail 策略无关。L1 计数与策略裁决本体属票 24。
 	zhipuSignFailureHook func(accountID int64, err error)
+	// zhipuSignAlerts 是 L1 指标 / fail 策略 / 账号级熔断引擎（design M3.1 / 票 24；
+	// wire 注入 *ZhipuSignAlerts）。为 nil 时计数与熔断整体关闭、策略退回部署层配置
+	// （默认 open），即未接线部署与既有测试的零行为变化。
+	zhipuSignAlerts *ZhipuSignAlerts
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once

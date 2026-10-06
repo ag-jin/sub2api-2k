@@ -859,7 +859,21 @@ func ProvideZhipuClientSigner(cfg *config.Config, httpUpstream HTTPUpstream) zhi
 	return zcodesign.NewSigner(zhipuSignOrigin, clientVersion, keyTTL, zhipuSignHTTPDoer{upstream: httpUpstream})
 }
 
-// ProvideOpenAIGatewayService 构造 OpenAI 网关并注入智谱签名器。
+// ProvideZhipuSignAlerts 构造智谱签名 L1 指标 / fail 策略 / 账号级熔断引擎（design
+// M3.1 / 票 24），并把只读熔断状态接回管理端状态投影（票 28 的状态接口里
+// circuit_break_* 与 runtime_state_available 两个字段）。counterCache 为 nil
+// （未配置 Redis / 未装配实现）时计数器退化为进程内存并只告警一次，不影响数据面。
+func ProvideZhipuSignAlerts(
+	cfg *config.Config,
+	counterCache ZhipuSignCounterCache,
+	signConfig *ZhipuSignConfigService,
+) *ZhipuSignAlerts {
+	alerts := NewZhipuSignAlerts(cfg, counterCache, signConfig, time.Now)
+	signConfig.SetCircuitBreakReader(alerts)
+	return alerts
+}
+
+// ProvideOpenAIGatewayService 构造 OpenAI 网关并注入智谱签名器与 L1 指标引擎。
 //
 // 与 NewOpenAIGatewayService 分开是为了不动既有构造函数签名：大量测试直接调用它，
 // 未注入签名器时签名整体关闭（零行为变化），wire 装配路径才接上真实 Signer。
@@ -887,6 +901,7 @@ func ProvideOpenAIGatewayService(
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	zhipuSigner zhipuClientSigner,
+	zhipuSignAlerts *ZhipuSignAlerts,
 ) *OpenAIGatewayService {
 	svc := NewOpenAIGatewayService(
 		accountRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo,
@@ -895,6 +910,7 @@ func ProvideOpenAIGatewayService(
 		resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo,
 	)
 	svc.zhipuSigner = zhipuSigner
+	svc.zhipuSignAlerts = zhipuSignAlerts
 	return svc
 }
 
@@ -969,6 +985,7 @@ var ProviderSet = wire.NewSet(
 	ProvideGatewayService,
 	ProvideOpenAIGatewayService,
 	ProvideZhipuClientSigner,
+	ProvideZhipuSignAlerts,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,

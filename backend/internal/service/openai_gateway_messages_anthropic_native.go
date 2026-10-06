@@ -120,10 +120,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 // 签名挂点只有一个（buildNativeAnthropicUpstreamRequest），自愈也必须同层，否则
 // 未改的入口会在 VERIFY_* 后带着作废私钥一直失败到私钥 TTL 到期。
 //
-// 错误语义与既有内联实现一致：构建失败原样返回（尚未发出请求）；传输失败（含重放
-// 阶段的传输失败）经 handleOpenAIUpstreamTransportError 归一为既有 failover 语义。
-//
-// TODO(票 24): 重放仍失败的分支在 zhipuSignSelfHealVerifyFailure 内（fail 策略接入点）。
+// 错误语义与既有内联实现一致：构建失败原样返回（尚未发出请求，含票 24 的 closed
+// 策略可 failover 错误）；传输失败（含重放阶段的传输失败）经
+// handleOpenAIUpstreamTransportError 归一为既有 failover 语义；重放仍失败且策略为
+// closed 时交回自愈编排给出的可 failover 错误（换账号/渠道，不下发该响应）。
 func (s *OpenAIGatewayService) sendNativeAnthropicUpstreamRequest(
 	ctx context.Context,
 	c *gin.Context,
@@ -156,7 +156,7 @@ func (s *OpenAIGatewayService) sendNativeAnthropicUpstreamRequest(
 
 	// 检测点唯一：复用错误体接缝（body 读后回卷，调用方仍可重读）。
 	errorBody, _ := s.readOpenAIUpstreamError(resp)
-	outcome := s.zhipuSignSelfHealVerifyFailure(account, signed, resp, errorBody, func() (*http.Response, error) {
+	outcome := s.zhipuSignSelfHealVerifyFailure(ctx, account, signed, resp, errorBody, func() (*http.Response, error) {
 		replayReq, _, replayErr := build()
 		if replayErr != nil {
 			return nil, replayErr
@@ -165,6 +165,13 @@ func (s *OpenAIGatewayService) sendNativeAnthropicUpstreamRequest(
 	})
 	if !outcome.Replayed {
 		return resp, nil
+	}
+	if outcome.FailoverErr != nil {
+		// fail 策略 closed（票 24）：重放仍失败，不下发该响应，换账号/渠道重试。
+		if outcome.Resp != nil && outcome.Resp.Body != nil {
+			_ = outcome.Resp.Body.Close()
+		}
+		return nil, outcome.FailoverErr
 	}
 	if outcome.ReplayErr != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, outcome.ReplayErr, true)
@@ -249,7 +256,13 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 
 	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
 	// 与 session 必须同源一致。zhipu 数据面挂点仅此两处，另一处是 sendCCUpstreamRequest。
-	signed := s.applyZhipuClientSign(req.Context(), c, account, body, req.Header)
+	//
+	// 返回的 signErr 只在 fail 策略 closed（票 24）时非 nil：请求不发出，
+	// 交回可 failover 错误给调度器换账号/渠道。
+	signed, signErr := s.applyZhipuClientSign(req.Context(), c, account, body, req.Header)
+	if signErr != nil {
+		return nil, nil, false, signErr
+	}
 
 	return req, body, signed, nil
 }

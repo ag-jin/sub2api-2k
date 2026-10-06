@@ -147,6 +147,9 @@ type ZhipuSignConfigService struct {
 	settingRepo SettingRepository
 	accountRepo zhipuSignAccountLister
 	runtime     zhipuSignRuntime
+	// circuitBreak 是账号级熔断运行时状态的只读来源（票 24 的 *ZhipuSignAlerts；
+	// 装配期经 SetCircuitBreakReader 注入）。为 nil 时状态投影报「未知」。
+	circuitBreak zhipuSignCircuitBreakReader
 	// now 是时钟接缝：测试用它跨过缓存 TTL，生产用 time.Now。
 	now func() time.Time
 
@@ -179,6 +182,16 @@ func NewZhipuSignConfigService(
 		runtime:     runtime,
 		now:         time.Now,
 	}
+}
+
+// SetCircuitBreakReader 注入账号级熔断运行时状态的只读来源（票 24 的
+// *ZhipuSignAlerts；装配期由 wire 调用一次）。传入 nil 等价于未接线：状态投影按
+// runtime_state_available=false 渲染为「未知」。装配完成后运行期只读该字段。
+func (s *ZhipuSignConfigService) SetCircuitBreakReader(reader zhipuSignCircuitBreakReader) {
+	if s == nil {
+		return
+	}
+	s.circuitBreak = reader
 }
 
 // zhipuSignSettingKeys 是全部可热更新的键（一次 GetMultiple 读完）。

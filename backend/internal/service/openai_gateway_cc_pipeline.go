@@ -204,7 +204,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 检测点唯一：复用错误体接缝（body 读后回卷，调用方仍可重读）。
 	errorBody, _ := s.readOpenAIUpstreamError(resp)
 	var replayGuard *openAIFirstOutputHeaderGuard
-	outcome := s.zhipuSignSelfHealVerifyFailure(account, signed, resp, errorBody, func() (*http.Response, error) {
+	outcome := s.zhipuSignSelfHealVerifyFailure(ctx, account, signed, resp, errorBody, func() (*http.Response, error) {
 		// 重放走「单次发送」入口，绝不再进入本自愈包装 —— 单次重放由结构保证。
 		replayResp, replayFirstTokenGuard, _, replayErr := s.sendCCUpstreamRequestOnce(
 			ctx, c, account, targetURL, body, stream, bearerToken, userAgent, grokCacheIdentity, firstTokenTimeout,
@@ -215,9 +215,19 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	if !outcome.Replayed {
 		return resp, guard, nil
 	}
+	if outcome.FailoverErr != nil {
+		// fail 策略 closed（票 24）：重放仍失败，不下发该响应，换账号/渠道重试。
+		// 响应体与首 token 守卫都必须释放（调用方拿到的是错误而不是响应）。
+		if outcome.Resp != nil && outcome.Resp.Body != nil {
+			_ = outcome.Resp.Body.Close()
+		}
+		if replayGuard != nil {
+			replayGuard.close()
+		}
+		return nil, nil, outcome.FailoverErr
+	}
 	if outcome.ReplayErr != nil {
 		// 重放的传输层失败：与首次发送的传输失败同处置（failover 语义）。
-		// TODO(票 24): fail 策略 closed 分支的接入点在 zhipuSignSelfHealVerifyFailure。
 		return nil, replayGuard, outcome.ReplayErr
 	}
 	return outcome.Resp, replayGuard, nil
@@ -307,7 +317,16 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
 	// 与 session 必须同源一致，任何在其之后的覆写都会把签名拆散。zhipu 数据面挂点
 	// 仅此两处，另一处是 buildNativeAnthropicUpstreamRequest。
-	signed := s.applyZhipuClientSign(upstreamReq.Context(), c, account, body, upstreamReq.Header)
+	//
+	// 返回的 signErr 只在 fail 策略 closed（票 24）时非 nil：请求不发出，交回可
+	// failover 错误给调度器换账号/渠道。
+	signed, signErr := s.applyZhipuClientSign(upstreamReq.Context(), c, account, body, upstreamReq.Header)
+	if signErr != nil {
+		if firstTokenGuard != nil {
+			firstTokenGuard.close()
+		}
+		return nil, nil, false, signErr
+	}
 
 	proxyURL := ""
 	if account.Proxy != nil {

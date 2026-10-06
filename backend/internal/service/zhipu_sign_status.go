@@ -19,6 +19,13 @@ type zhipuSignAccountLister interface {
 	ListByPlatform(ctx context.Context, platform string) ([]Account, error)
 }
 
+// zhipuSignCircuitBreakReader 是账号级熔断状态的只读来源（票 24 的 *ZhipuSignAlerts
+// 即满足）。未接线（nil）时状态投影按 runtime_state_available=false 渲染为「未知」，
+// 绝不让前端把「没接线」误读成「未熔断」。
+type zhipuSignCircuitBreakReader interface {
+	CircuitBreakState(accountID int64) ZhipuSignCircuitBreakState
+}
+
 // ZhipuSignAccountStatus 是单个账号的握手私钥状态。
 type ZhipuSignAccountStatus struct {
 	AccountID int64 `json:"account_id"`
@@ -33,13 +40,15 @@ type ZhipuSignAccountStatus struct {
 	// ConsecutiveFailures 是自上次成功握手以来的连续握手失败次数。
 	ConsecutiveFailures int `json:"consecutive_failures"`
 
-	// TODO(#24)：账号级熔断（5 分钟窗口 verify_invalid 超阈值 → 内存摘除生效位）
-	// 由 #24 的 zhipu_sign_alert.go 落地。本票只固定响应结构：在 #24 合入前，
-	// runtime_state_available 恒为 false，circuit_break_* 恒为零值；前端必须按
-	// runtime_state_available=false 渲染为「未知」，不得据此显示「未熔断」。
-	CircuitBreakTripped   bool   `json:"circuit_break_tripped"`
-	CircuitBreakReason    string `json:"circuit_break_reason"`
-	RuntimeStateAvailable bool   `json:"runtime_state_available"`
+	// CircuitBreakTripped / CircuitBreakReason 是账号级熔断运行时状态（票 24）：
+	// 5 分钟窗口内验签失效超阈值时，签名生效位被内存摘除（credentials 未被修改）。
+	// CircuitBreakReason 是稳定原因码（如 verify_invalid_over_threshold），不含自然语言。
+	// 该状态不进 DB：进程重启即恢复，窗口滚动后自动恢复，管理员确认版本后可显式恢复。
+	CircuitBreakTripped bool   `json:"circuit_break_tripped"`
+	CircuitBreakReason  string `json:"circuit_break_reason"`
+	// RuntimeStateAvailable 表示上面两个字段是否来自真实的运行时状态源：
+	// false（未接线）时前端必须渲染为「未知」，不得显示「未熔断」。
+	RuntimeStateAvailable bool `json:"runtime_state_available"`
 }
 
 // ZhipuSignStatus 是状态读取接口的响应体。
@@ -84,11 +93,19 @@ func (s *ZhipuSignConfigService) Status(ctx context.Context) (*ZhipuSignStatus, 
 	return status, nil
 }
 
-// accountSignStatus 读取一个账号的私钥缓存状态（runtime 未接线时退化为「未缓存」）。
+// accountSignStatus 读取一个账号的私钥缓存状态与熔断运行时状态（对应 runtime 未接线
+// 时分别退化为「未缓存」与「未知」）。
 func (s *ZhipuSignConfigService) accountSignStatus(account *Account) ZhipuSignAccountStatus {
 	entry := ZhipuSignAccountStatus{
 		AccountID:   account.ID,
 		AccountName: account.Name,
+	}
+	// 熔断状态：只有接入了票 24 的运行时状态源才声称「已知」。
+	if s.circuitBreak != nil {
+		state := s.circuitBreak.CircuitBreakState(account.ID)
+		entry.CircuitBreakTripped = state.Tripped
+		entry.CircuitBreakReason = state.Reason
+		entry.RuntimeStateAvailable = true
 	}
 	if s.runtime == nil {
 		return entry
