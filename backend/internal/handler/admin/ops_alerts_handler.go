@@ -33,6 +33,10 @@ var validOpsAlertMetricTypes = []string{
 	"overload_account_count",
 	"proxy_expired_count",
 	"proxy_expiring_soon_count",
+	// 智谱签名内置指标（票 25 / design M3.1(d)）：L1 失效窗口 + L2 费率对账有效系数。
+	// 名字是跨票契约，统一取 service 侧常量，避免两处字面量漂移。
+	service.OpsMetricTypeZhipuSignFailWindow,
+	service.OpsMetricTypeZhipuSignEffectiveRate,
 }
 
 var validOpsAlertMetricTypeSet = func() map[string]struct{} {
@@ -95,7 +99,9 @@ func isPercentOrRateMetric(metricType string) bool {
 		"memory_usage_percent",
 		"group_available_ratio",
 		"group_rate_limit_ratio",
-		"account_error_ratio":
+		"account_error_ratio",
+		// 有效系数是 0–1 的比率（0.67 = 签名生效），阈值按百分比口径校验（0–100）。
+		service.OpsMetricTypeZhipuSignEffectiveRate:
 		return true
 	default:
 		return false

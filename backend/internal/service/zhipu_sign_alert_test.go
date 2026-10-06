@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"testing"
@@ -147,6 +148,12 @@ func (s *zhipuSignAlertConfigStub) setThreshold(threshold int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config.SignAccountCircuitBreakThreshold = threshold
+}
+
+func (s *zhipuSignAlertConfigStub) setSignAlertEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config.SignAlertEnabled = enabled
 }
 
 // zhipuSignAlertHarness 是票 24 用例的公共装配：注入时钟的引擎 + 假计数器 +
@@ -830,4 +837,93 @@ func TestZhipuSignAlertCircuitBreakDoesNotTouchCredentials(t *testing.T) {
 
 	require.Equal(t, before, account.Credentials, "熔断绝不修改账号凭据")
 	require.Equal(t, zhipuSignCredentialV4, account.GetCredential(zhipuSignCredentialKey))
+}
+
+// TestZhipuSignAlertsAlertEnabled 覆盖 sign_alert_enabled 的生效值口径（票 25 的评估
+// 短路开关）：运行层覆盖 > 部署层 > 协议默认（true）；「整段配置缺失」按协议默认处理，
+// 不会因为零值结构体而静默变成「关闭告警」。
+func TestZhipuSignAlertsAlertEnabled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("未接线（nil 引擎 / 无配置源与部署配置）按协议默认 true", func(t *testing.T) {
+		t.Parallel()
+		var nilAlerts *ZhipuSignAlerts
+		require.True(t, nilAlerts.AlertEnabled(ctx))
+		require.True(t, NewZhipuSignAlerts(nil, nil, nil, nil).AlertEnabled(ctx))
+		require.True(t, NewZhipuSignAlerts(&config.Config{}, nil, nil, nil).AlertEnabled(ctx))
+	})
+
+	t.Run("部署层显式取值", func(t *testing.T) {
+		t.Parallel()
+		alertCfg := &config.Config{}
+		alertCfg.Gateway.Zhipu.SignFailPolicy = ZhipuSignFailPolicyOpen
+
+		alertCfg.Gateway.Zhipu.SignAlertEnabled = false
+		require.False(t, NewZhipuSignAlerts(alertCfg, nil, nil, nil).AlertEnabled(ctx))
+
+		alertCfg.Gateway.Zhipu.SignAlertEnabled = true
+		require.True(t, NewZhipuSignAlerts(alertCfg, nil, nil, nil).AlertEnabled(ctx))
+	})
+
+	t.Run("运行层覆盖热生效", func(t *testing.T) {
+		t.Parallel()
+		source := newZhipuSignAlertConfigStub()
+		source.setSignAlertEnabled(false)
+		alerts := NewZhipuSignAlerts(nil, nil, source, nil)
+		require.False(t, alerts.AlertEnabled(ctx))
+
+		source.setSignAlertEnabled(true)
+		require.True(t, alerts.AlertEnabled(ctx))
+	})
+}
+
+// TestZhipuSignAlertsEffectiveRateGauge 覆盖 L2 有效系数接缝（票 27 上报 / 票 25 读取）。
+func TestZhipuSignAlertsEffectiveRateGauge(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("nil 引擎与未上报都返回 ok=false（不用 0 冒充）", func(t *testing.T) {
+		t.Parallel()
+		var nilAlerts *ZhipuSignAlerts
+		_, ok := nilAlerts.EffectiveRate(ctx)
+		require.False(t, ok)
+
+		alerts := NewZhipuSignAlerts(nil, nil, nil, nil)
+		_, ok = alerts.EffectiveRate(ctx)
+		require.False(t, ok)
+	})
+
+	t.Run("上报后读取最近一次值（0.67 基准 / 1.0 无签名）", func(t *testing.T) {
+		t.Parallel()
+		alerts := NewZhipuSignAlerts(nil, nil, nil, nil)
+
+		alerts.RecordEffectiveRate(ctx, 0.67)
+		rate, ok := alerts.EffectiveRate(ctx)
+		require.True(t, ok)
+		require.InDelta(t, 0.67, rate, 1e-9)
+
+		alerts.RecordEffectiveRate(ctx, 1.0)
+		rate, ok = alerts.EffectiveRate(ctx)
+		require.True(t, ok)
+		require.InDelta(t, 1.0, rate, 1e-9)
+	})
+
+	t.Run("非法上报被忽略，保留上一次有效值", func(t *testing.T) {
+		t.Parallel()
+		alerts := NewZhipuSignAlerts(nil, nil, nil, nil)
+		alerts.RecordEffectiveRate(ctx, 0.9)
+		for _, invalid := range []float64{0, -0.5, math.NaN(), math.Inf(1)} {
+			alerts.RecordEffectiveRate(ctx, invalid)
+		}
+		rate, ok := alerts.EffectiveRate(ctx)
+		require.True(t, ok)
+		require.InDelta(t, 0.9, rate, 1e-9)
+	})
+
+	t.Run("nil 引擎的写入是空操作", func(t *testing.T) {
+		t.Parallel()
+		var nilAlerts *ZhipuSignAlerts
+		require.NotPanics(t, func() { nilAlerts.RecordEffectiveRate(ctx, 1.0) })
+	})
 }

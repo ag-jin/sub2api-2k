@@ -544,6 +544,9 @@ func ProvideOpsAggregationService(
 }
 
 // ProvideOpsAlertEvaluatorService creates and starts OpsAlertEvaluatorService.
+// zhipuSignAlerts 注入智谱签名内置指标源（design M3.1(d) / 票 25）：评估周期据此计算
+// zhipu_sign_fail_window 与 zhipu_sign_effective_rate 两个内置指标；为 nil（未接线）时
+// 两个指标「不可计算」，其余规则评估不受影响。
 func ProvideOpsAlertEvaluatorService(
 	opsService *OpsService,
 	opsRepo OpsRepository,
@@ -551,8 +554,10 @@ func ProvideOpsAlertEvaluatorService(
 	redisClient *redis.Client,
 	cfg *config.Config,
 	proxyRepo ProxyRepository,
+	zhipuSignAlerts *ZhipuSignAlerts,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg, proxyRepo)
+	svc.SetZhipuSignMetrics(zhipuSignAlerts)
 	svc.Start()
 	return svc
 }

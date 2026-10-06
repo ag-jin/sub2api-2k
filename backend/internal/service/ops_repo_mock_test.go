@@ -13,6 +13,14 @@ type opsRepoMock struct {
 	ListSystemLogsFn              func(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
 	DeleteSystemLogsFn            func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
 	InsertSystemLogCleanupAuditFn func(ctx context.Context, input *OpsSystemLogCleanupAudit) error
+
+	// 告警规则/事件的钩子（票 25 的评估周期端到端用例用；nil 时保持原有默认返回值）。
+	ListAlertRulesFn         func(ctx context.Context) ([]*OpsAlertRule, error)
+	GetActiveAlertEventFn    func(ctx context.Context, ruleID int64) (*OpsAlertEvent, error)
+	GetLatestAlertEventFn    func(ctx context.Context, ruleID int64) (*OpsAlertEvent, error)
+	CreateAlertEventFn       func(ctx context.Context, event *OpsAlertEvent) (*OpsAlertEvent, error)
+	UpdateAlertEventStatusFn func(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error
+	IsAlertSilencedFn        func(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error)
 }
 
 func (m *opsRepoMock) InsertErrorLog(ctx context.Context, input *OpsInsertErrorLogInput) (int64, error) {
@@ -122,6 +130,9 @@ func (m *opsRepoMock) ListJobHeartbeats(ctx context.Context) ([]*OpsJobHeartbeat
 }
 
 func (m *opsRepoMock) ListAlertRules(ctx context.Context) ([]*OpsAlertRule, error) {
+	if m.ListAlertRulesFn != nil {
+		return m.ListAlertRulesFn(ctx)
+	}
 	return []*OpsAlertRule{}, nil
 }
 
@@ -146,18 +157,30 @@ func (m *opsRepoMock) GetAlertEventByID(ctx context.Context, eventID int64) (*Op
 }
 
 func (m *opsRepoMock) GetActiveAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error) {
+	if m.GetActiveAlertEventFn != nil {
+		return m.GetActiveAlertEventFn(ctx, ruleID)
+	}
 	return nil, nil
 }
 
 func (m *opsRepoMock) GetLatestAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error) {
+	if m.GetLatestAlertEventFn != nil {
+		return m.GetLatestAlertEventFn(ctx, ruleID)
+	}
 	return nil, nil
 }
 
 func (m *opsRepoMock) CreateAlertEvent(ctx context.Context, event *OpsAlertEvent) (*OpsAlertEvent, error) {
+	if m.CreateAlertEventFn != nil {
+		return m.CreateAlertEventFn(ctx, event)
+	}
 	return event, nil
 }
 
 func (m *opsRepoMock) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
+	if m.UpdateAlertEventStatusFn != nil {
+		return m.UpdateAlertEventStatusFn(ctx, eventID, status, resolvedAt)
+	}
 	return nil
 }
 
@@ -170,6 +193,9 @@ func (m *opsRepoMock) CreateAlertSilence(ctx context.Context, input *OpsAlertSil
 }
 
 func (m *opsRepoMock) IsAlertSilenced(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error) {
+	if m.IsAlertSilencedFn != nil {
+		return m.IsAlertSilencedFn(ctx, ruleID, platform, groupID, region, now)
+	}
 	return false, nil
 }
 

@@ -211,6 +211,60 @@ func TestOpsAlertRuleValidation(t *testing.T) {
 	require.False(t, isPercentOrRateMetric("concurrency_queue_depth"))
 }
 
+// TestOpsAlertRuleValidationAcceptsZhipuSignMetricTypes 覆盖票 25 的内置指标注册面：
+// 管理端（既有规则界面）必须能创建/调整两个智谱签名内置指标规则，且默认规则参数自身
+// 就能通过校验（否则「按默认规则建规则」会被自己的校验挡住）。
+func TestOpsAlertRuleValidationAcceptsZhipuSignMetricTypes(t *testing.T) {
+	require.Contains(t, validOpsAlertMetricTypes, service.OpsMetricTypeZhipuSignFailWindow)
+	require.Contains(t, validOpsAlertMetricTypes, service.OpsMetricTypeZhipuSignEffectiveRate)
+
+	// L1 是计数（阈值 >= 0），L2 是比率（0–100 口径）。
+	require.False(t, isPercentOrRateMetric(service.OpsMetricTypeZhipuSignFailWindow))
+	require.True(t, isPercentOrRateMetric(service.OpsMetricTypeZhipuSignEffectiveRate))
+
+	templates := service.OpsBuiltinAlertRules()
+	require.Len(t, templates, 2)
+	for _, template := range templates {
+		raw, err := opsAlertRuleRawMessages(map[string]any{
+			"name":        template.Name,
+			"metric_type": template.MetricType,
+			"operator":    template.Operator,
+			"threshold":   template.Threshold,
+		})
+		require.NoError(t, err)
+
+		validated, err := validateOpsAlertRulePayload(raw)
+		require.NoErrorf(t, err, "默认规则 %s 必须能通过管理端校验", template.MetricType)
+		require.Equal(t, template.MetricType, validated.MetricType)
+		require.Equal(t, template.Operator, validated.Operator)
+		require.Equal(t, template.Threshold, validated.Threshold)
+	}
+
+	// 白名单没有放宽阈值口径：超过 100 的比率阈值仍被拒绝。
+	raw, err := opsAlertRuleRawMessages(map[string]any{
+		"name":        "effective rate out of range",
+		"metric_type": service.OpsMetricTypeZhipuSignEffectiveRate,
+		"operator":    ">",
+		"threshold":   101,
+	})
+	require.NoError(t, err)
+	_, err = validateOpsAlertRulePayload(raw)
+	require.Error(t, err)
+}
+
+// opsAlertRuleRawMessages 把规则字段编码成校验入口要求的 json.RawMessage 形态。
+func opsAlertRuleRawMessages(payload map[string]any) (map[string]json.RawMessage, error) {
+	raw := make(map[string]json.RawMessage, len(payload))
+	for key, value := range payload {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		raw[key] = json.RawMessage(encoded)
+	}
+	return raw, nil
+}
+
 func TestOpsWSHelpers(t *testing.T) {
 	prefixes, invalid := parseTrustedProxyList("10.0.0.0/8,invalid")
 	require.Len(t, prefixes, 1)

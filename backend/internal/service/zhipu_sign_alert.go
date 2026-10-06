@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,20 @@ const (
 // ZhipuSignCircuitBreakReasonVerifyInvalid 是账号级熔断的唯一原因码（窗口内验签失效
 // 超阈值）。前端 29/30 按原因码做本地化，不解析任何自然语言。
 const ZhipuSignCircuitBreakReasonVerifyInvalid = "verify_invalid_over_threshold"
+
+// ZhipuSignL1AlertKinds 返回 L1「失效窗口」指标覆盖的计数种类（design M3.1(b) 的三类
+// 告警项）：验签失效 + 握手失败 + 降级无签名发送。replay_ok/replay_fail 是自愈观测值，
+// 不计入失效窗口 —— 自愈成功本身不是失效，不该拉响「签名失效」告警。
+//
+// 票 25 的评估器用它把三个计数器合成 zhipu_sign_fail_window 指标值；票 30/31 复用同一
+// 口径，避免各处重复枚举。
+func ZhipuSignL1AlertKinds() []string {
+	return []string{
+		ZhipuSignMetricVerifyInvalid,
+		ZhipuSignMetricHandshakeFail,
+		ZhipuSignMetricFailOpen,
+	}
+}
 
 // ZhipuSignCounterCache 是 L1 桶计数器的存储接缝。生产实现是 internal/repository 的
 // Redis 实现（service 包不得直接依赖 redis，depguard）；为 nil 或出错时退化为进程内存
@@ -173,6 +188,12 @@ type ZhipuSignAlerts struct {
 	sink       ZhipuSignEventSink
 	degraded   bool
 	degradeOne sync.Once
+
+	// effectiveRate/effectiveRateSet 是 L2 费率对账有效系数的最近一次上报（票 27 写入，
+	// 票 25 的评估器读取）。只保留最近一次：对账周期（默认 6h）远长于评估周期（60s），
+	// 历史序列由票 27 自己的快照负责；进程重启后 #27 的下一次对账会重新上报。
+	effectiveRate    float64
+	effectiveRateSet bool
 }
 
 // NewZhipuSignAlerts 构造 L1 引擎。cache 为 nil（无 Redis / 构造失败）时计数器退化为
@@ -261,6 +282,21 @@ func (a *ZhipuSignAlerts) CounterDegraded() bool {
 	return a.degraded
 }
 
+// AlertEnabled 返回签名告警总开关（design M3.1(e) 的 sign_alert_enabled，默认 true）。
+//
+// 关闭时票 25 的评估器对两个内置指标类型短路（不产生 OpsAlertEvent、不发邮件），但指标
+// 本身（L1 计数器与 L2 有效系数）仍照常采集 —— 告警开关只影响通知，不改变观测能力，
+// 这也是回滚口径（design M3.1(d) 风险与回滚）。
+func (a *ZhipuSignAlerts) AlertEnabled(ctx context.Context) bool {
+	if a == nil {
+		return zhipuSignProtocolDefaults().SignAlertEnabled
+	}
+	if a.source != nil {
+		return a.source.Effective(ctx).SignAlertEnabled
+	}
+	return zhipuSignAlertEnabledFromConfig(a.cfg)
+}
+
 // RecordSignFailure 记录一次「签不出来」。命中每 key 退避窗口的错误不是新的握手失败
 // （与 zcodesign.KeyStatus.ConsecutiveFailures 的口径一致）；其余失败计 handshake_fail
 // ——签名热路径上唯一的 I/O 就是握手，故这是保守且可解释的分类。
@@ -336,6 +372,38 @@ func (a *ZhipuSignAlerts) CounterSnapshot(ctx context.Context, kind string) Zhip
 		snapshot.Global = value
 	}
 	return snapshot
+}
+
+// RecordEffectiveRate 记录一次 L2 费率对账的有效系数（design M3.1(d) 第二个内置指标：
+// 票 27 的对账 job 每次算完调用它上报 gauge）。
+//
+// 非正数与非有限值一律忽略（保留上一次有效上报）：对账口径的 bug 不应该变成生产告警。
+// 只存最近一次值，不落库 —— 指标是旁路，重启后由下一次对账重新填充。
+func (a *ZhipuSignAlerts) RecordEffectiveRate(_ context.Context, rate float64) {
+	if a == nil {
+		return
+	}
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 {
+		return
+	}
+	a.mu.Lock()
+	a.effectiveRate = rate
+	a.effectiveRateSet = true
+	a.mu.Unlock()
+}
+
+// EffectiveRate 返回最近一次 L2 对账的有效系数（ticket 27 上报；票 25 的评估器读取）。
+// 从未上报（或引擎未接线）时 ok=false —— 评估器据此跳过规则，绝不用 0 冒充「无签名」。
+func (a *ZhipuSignAlerts) EffectiveRate(_ context.Context) (float64, bool) {
+	if a == nil {
+		return 0, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.effectiveRateSet {
+		return 0, false
+	}
+	return a.effectiveRate, true
 }
 
 // CircuitBreakState 返回账号的熔断只读状态；窗口已滚动（标记属于旧桶）时惰性清除标记
@@ -520,6 +588,15 @@ func zhipuSignFailPolicyFromConfig(cfg *config.Config) string {
 		return zhipuSignProtocolDefaults().SignFailPolicy
 	}
 	return zhipuSignNormalizeFailPolicy(cfg.Gateway.Zhipu.SignFailPolicy)
+}
+
+// zhipuSignAlertEnabledFromConfig 是引擎未接线时的告警开关读取：整个 gateway.zhipu 段
+// 缺失（cfg 为 nil 或零值）时按协议默认（true），与票 28 的 defaults() 同口径。
+func zhipuSignAlertEnabledFromConfig(cfg *config.Config) bool {
+	if cfg == nil || cfg.Gateway.Zhipu == (config.GatewayZhipuConfig{}) {
+		return zhipuSignProtocolDefaults().SignAlertEnabled
+	}
+	return cfg.Gateway.Zhipu.SignAlertEnabled
 }
 
 // zhipuSignSanitizeCircuitBreakThreshold 收敛阈值：越界（<1 或 >上限）回落默认值，
