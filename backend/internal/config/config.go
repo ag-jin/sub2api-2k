@@ -1102,6 +1102,9 @@ type GatewayConfig struct {
 	// CNProviders: 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
+
+	// Zhipu: 智谱账号化渠道配置（zcode 登录链路 + 网关签名 V4）。
+	Zhipu GatewayZhipuConfig `mapstructure:"zhipu"`
 }
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
@@ -1144,6 +1147,38 @@ type GatewayCNProvidersConfig struct {
 	BalanceCheckEnabled         bool    `mapstructure:"balance_check_enabled"`
 	BalanceThreshold            float64 `mapstructure:"balance_threshold"`
 	BalanceCheckIntervalMinutes int     `mapstructure:"balance_check_interval_minutes"`
+}
+
+// GatewayZhipuConfig 智谱账号化渠道（zcode 登录链路 + 网关签名 V4）配置。
+//
+//   - sign_v4_enabled: 全局 X-Client-* 签名开关（与账号级 zcode_client_sign=v4 双开关 AND；
+//     默认 false = 零行为变化，需显式开启）
+//   - sign_client_version: X-Client-Version 头，协议漂移时人工更新（默认 "0.16.9"）
+//   - sign_key_ttl_minutes: 握手私钥内存缓存 TTL（默认 1440 = 24h）
+//   - credential_check_interval_minutes: 登录态凭据（access_token）低频健康探针周期（默认 60）
+//   - zcode_min_call_interval_seconds: zcode.z.ai 风控端点全局最小调用间隔（默认 30；0 = 禁用）
+//   - reset_status_cache_minutes: 重置卡状态只读查询缓存 TTL（默认 10）
+//   - sign_fail_policy: 签名失败策略，"open" = 剥离签名头降级，"closed" = 返回可 failover 错误（默认 "open"）
+//   - sign_alert_enabled: 签名失效/降级告警开关（默认 true）
+//   - sign_reconcile_interval_hours: 费率对账周期（默认 6）
+//   - sign_reconcile_deviation_threshold: 有效系数对账偏差告警阈值（默认 0.70）
+//   - sign_pow_bits: X-Client-Pow 工作量证明位数（默认 8）
+//   - sign_handshake_backoff_seconds: 每 key 重握手最小间隔，防握手风暴（默认 30）
+//   - sign_account_circuit_break_threshold: 单账号 5 分钟窗口内验签失效次数熔断阈值（默认 10）
+type GatewayZhipuConfig struct {
+	SignV4Enabled                    bool    `mapstructure:"sign_v4_enabled"`
+	SignClientVersion                string  `mapstructure:"sign_client_version"`
+	SignKeyTTLMinutes                int     `mapstructure:"sign_key_ttl_minutes"`
+	CredentialCheckIntervalMinutes   int     `mapstructure:"credential_check_interval_minutes"`
+	ZCodeMinCallIntervalSeconds      int     `mapstructure:"zcode_min_call_interval_seconds"`
+	ResetStatusCacheMinutes          int     `mapstructure:"reset_status_cache_minutes"`
+	SignFailPolicy                   string  `mapstructure:"sign_fail_policy"`
+	SignAlertEnabled                 bool    `mapstructure:"sign_alert_enabled"`
+	SignReconcileIntervalHours       int     `mapstructure:"sign_reconcile_interval_hours"`
+	SignReconcileDeviationThreshold  float64 `mapstructure:"sign_reconcile_deviation_threshold"`
+	SignPowBits                      int     `mapstructure:"sign_pow_bits"`
+	SignHandshakeBackoffSeconds      int     `mapstructure:"sign_handshake_backoff_seconds"`
+	SignAccountCircuitBreakThreshold int     `mapstructure:"sign_account_circuit_break_threshold"`
 }
 
 type GatewayLiveConfig struct {
@@ -2462,6 +2497,23 @@ func setDefaults() {
 	viper.SetDefault("gateway.cn_providers.balance_check_enabled", true)
 	viper.SetDefault("gateway.cn_providers.balance_threshold", 0.5)
 	viper.SetDefault("gateway.cn_providers.balance_check_interval_minutes", 10)
+	// 智谱账号化渠道（zcode 登录链路 + 网关签名 V4）。
+	// sign_v4_enabled 默认 true：用户硬性要求 0.67 稳定收益（裁决见 issues/00-dependency-map.md）；
+	// fail-open + 三级告警兜底，灰度期间可按渠道/账号关闭。
+	// sign_client_version 是协议漂移人工确认项（M3.1 e），升级必须改配置而非自动跟随。
+	viper.SetDefault("gateway.zhipu.sign_v4_enabled", true)
+	viper.SetDefault("gateway.zhipu.sign_client_version", "0.16.9")
+	viper.SetDefault("gateway.zhipu.sign_key_ttl_minutes", 1440)
+	viper.SetDefault("gateway.zhipu.credential_check_interval_minutes", 60)
+	viper.SetDefault("gateway.zhipu.zcode_min_call_interval_seconds", 30)
+	viper.SetDefault("gateway.zhipu.reset_status_cache_minutes", 10)
+	viper.SetDefault("gateway.zhipu.sign_fail_policy", "open")
+	viper.SetDefault("gateway.zhipu.sign_alert_enabled", true)
+	viper.SetDefault("gateway.zhipu.sign_reconcile_interval_hours", 6)
+	viper.SetDefault("gateway.zhipu.sign_reconcile_deviation_threshold", 0.70)
+	viper.SetDefault("gateway.zhipu.sign_pow_bits", 8)
+	viper.SetDefault("gateway.zhipu.sign_handshake_backoff_seconds", 30)
+	viper.SetDefault("gateway.zhipu.sign_account_circuit_break_threshold", 10)
 	viper.SetDefault("gateway.image_concurrency.enabled", false)
 	viper.SetDefault("gateway.image_concurrency.max_concurrent_requests", 0)
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
