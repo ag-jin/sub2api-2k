@@ -604,7 +604,8 @@ describe('buildZhipuLoginCredentials', () => {
       access_token: 'at-token',
       zcodejwttoken: 'jwt-token',
       account_mode: 'coding',
-      api_protocol: 'anthropic'
+      api_protocol: 'anthropic',
+      zcode_client_sign: 'v4'
     })
   })
 

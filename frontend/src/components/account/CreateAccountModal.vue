@@ -560,27 +560,22 @@
         </div>
       </div>
 
-      <!-- 智谱登录方式：登录账号（推荐）/ 手动 API Key -->
+      <!-- 智谱登录方式：仅「登录账号」（票 34 收口，手动 API Key 入口已下线） -->
       <div v-if="form.platform === 'zhipu'">
         <label class="input-label">{{ t('admin.accounts.cnProviders.zhipuLogin.title') }}</label>
-        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-zhipu-login-mode">
-          <button
-            type="button"
+        <div class="mt-2" data-tour="account-form-zhipu-login-mode">
+          <!-- 唯一选项，不再呈现为二选一切换：固定高亮态的展示块（非交互控件） -->
+          <div
             data-testid="zhipu-create-mode-login"
-            @click="zhipuCreateMode = 'login'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              zhipuCreateMode === 'login'
-                ? cnAccentActiveClass
-                : 'border-gray-200 hover:border-gray-400 dark:border-dark-600 dark:hover:border-gray-600'
+              cnAccentActiveClass
             ]"
           >
             <div
               :class="[
                 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                zhipuCreateMode === 'login'
-                  ? cnAccentIconClass
-                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+                cnAccentIconClass
               ]"
             >
               <Icon name="user" size="sm" />
@@ -589,35 +584,9 @@
               <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.zhipuLogin.login') }}</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.zhipuLogin.loginDesc') }}</span>
             </div>
-          </button>
-          <button
-            type="button"
-            data-testid="zhipu-create-mode-manual"
-            @click="zhipuCreateMode = 'manual'"
-            :class="[
-              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              zhipuCreateMode === 'manual'
-                ? cnAccentActiveClass
-                : 'border-gray-200 hover:border-gray-400 dark:border-dark-600 dark:hover:border-gray-600'
-            ]"
-          >
-            <div
-              :class="[
-                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                zhipuCreateMode === 'manual'
-                  ? cnAccentIconClass
-                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
-              ]"
-            >
-              <Icon name="key" size="sm" />
-            </div>
-            <div>
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.zhipuLogin.manual') }}</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.zhipuLogin.manualDesc') }}</span>
-            </div>
-          </button>
+          </div>
         </div>
-        <p v-if="isZhipuLoginMode" class="input-hint">
+        <p class="input-hint">
           {{ t('admin.accounts.cnProviders.zhipuLogin.loginHint') }}
         </p>
       </div>
@@ -1448,9 +1417,9 @@
       </div>
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <!-- 智谱登录模式：全程对 key 零感知，api key / base url / 请求头覆写整块不渲染 -->
+      <!-- 智谱（票 34 收口）：建号恒走登录授权，api key / base url / 请求头覆写整块不渲染 -->
       <div
-        v-if="form.type === 'apikey' && form.platform !== 'antigravity' && !isZhipuLoginMode"
+        v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'zhipu'"
         class="space-y-4"
       >
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
@@ -4590,13 +4559,10 @@ const isMultiProtocolPlatform = computed(() => isCNPlatform.value || isOpenCodeG
 function currentOpenCodeOrCNMode(): CnAccountMode | OpenCodeAccountMode {
   return isOpenCodeGoPlatform.value ? openCodeAccountMode.value : accountMode.value
 }
-// ── 智谱登录方式：登录账号（推荐）/ 手动 API Key ──
-// 登录账号仍以 type=apikey 落库（03：IsZhipuLoginManaged = platform/type=apikey/auth_flow），
+// 智谱（票 34）：建号只走登录授权，不再有手动 API Key 模式。登录账号仍以
+// type=apikey 落库（03：IsZhipuLoginManaged = platform/type=apikey/auth_flow），
 // 因此不复用 accountCategory —— 它会把 form.type 推成 oauth 并触发错误的取键门控。
-const zhipuCreateMode = ref<'login' | 'manual'>('login')
-const isZhipuLoginMode = computed(
-  () => form.platform === 'zhipu' && zhipuCreateMode.value === 'login'
-)
+
 // CnBaseUrlPresets 的 platform prop 是平台字面量联合类型，模板里不能写
 // `as` 断言（其中的 `|` 会被 eslint 误判为 Vue2 filter 语法），经此 computed 传递。
 const cnPresetPlatform = computed<CnProviderPlatform>(() => {
@@ -4676,10 +4642,6 @@ function selectCNPlatform(platform: CnProviderPlatform) {
   form.type = 'apikey'
   accountCategory.value = 'apikey'
   apiProtocol.value = 'adaptive'
-  if (platform === 'zhipu') {
-    // 每次进入智谱卡片都回到推荐项（登录账号），避免残留上次的手动选择。
-    zhipuCreateMode.value = 'login'
-  }
   if (platform === 'deepseek') {
     accountMode.value = 'payg'
   }
@@ -5157,8 +5119,9 @@ const form = reactive({
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
-  // 智谱登录模式：生成登录链接 → 粘贴 authCode → 兑换 → 建号（form.type 仍为 apikey）
-  if (isZhipuLoginMode.value) {
+  // 智谱（票 34）：建号只有登录授权一条路，生成登录链接 → 粘贴 authCode → 兑换 → 建号
+  // （form.type 仍为 apikey，不复用 accountCategory）
+  if (form.platform === 'zhipu') {
     return true
   }
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -5743,7 +5706,6 @@ const resetForm = () => {
   form.expires_at = null
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
-  zhipuCreateMode.value = 'login'
   zhipuOAuth.reset()
   accountMode.value = 'payg'
   openCodeAccountMode.value = 'zen'

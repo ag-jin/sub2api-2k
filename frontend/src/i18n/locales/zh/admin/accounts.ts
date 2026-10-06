@@ -460,10 +460,8 @@ export default {
         zhipuLogin: {
           title: '登录方式',
           login: '登录账号',
-          loginDesc: '推荐。浏览器授权智谱账号，系统自动解析 API Key，全程无需手填密钥。',
-          manual: '手动 API Key',
-          manualDesc: '沿用现有方式：手填 Base URL 与 API Key。',
-          loginHint: '下一步生成智谱登录链接，登录后粘贴授权码即可自动建号。',
+          loginDesc: '浏览器授权智谱账号，系统自动解析 API Key，全程无需手填密钥。',
+          loginHint: '下一步生成智谱登录链接；登录后把浏览器地址栏的完整回调链接（含 authCode）粘贴回来即可自动建号。',
           managedTitle: '登录托管账号',
           tokenStatusTitle: '登录凭据状态',
           tokenAccessToken: 'Access Token',

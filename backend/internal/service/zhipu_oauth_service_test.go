@@ -204,7 +204,8 @@ func TestAccountZhipuLoginTokenGetters(t *testing.T) {
 
 // zhipuLoginCredentialKeyWhitelist 是本票冻结的凭据键契约（design M1）：
 // auth_flow / api_key / access_token / zcodejwttoken / account_mode / api_protocol，
-// refresh_token 仅在兑换返回非空值时出现。05/06/07 前端按同一集合构造凭据，
+// refresh_token 仅在兑换返回非空值时出现；zcode_client_sign=v4 是 B 裁决的默认签名章
+// （150% 验证实测教训：缺章 → fail-open 静默无签名 → 0.67 折扣失效）。05/06/07 前端按同一集合构造凭据，
 // 键名漂移会静默产生「登录了但转发取不到 key」，故此处逐键锁死。
 var zhipuLoginCredentialKeyWhitelist = []string{
 	"auth_flow",
@@ -213,7 +214,7 @@ var zhipuLoginCredentialKeyWhitelist = []string{
 	"zcodejwttoken",
 	"account_mode",
 	"api_protocol",
-}
+	"zcode_client_sign"}
 
 func TestZhipuOAuthServiceBuildAccountCredentialsFrozenKeySet(t *testing.T) {
 	fullCredential := &ZhipuLoginCredential{
@@ -235,6 +236,8 @@ func TestZhipuOAuthServiceBuildAccountCredentialsFrozenKeySet(t *testing.T) {
 			"refresh_token": "rt-token",
 			"account_mode":  AccountModeCoding,
 			"api_protocol":  APIProtocolAnthropic,
+			// B 裁决：登录账号默认启用签名 V4（缺章 = fail-open 静默无签名，0.67 失效）
+			"zcode_client_sign": "v4",
 		}, credentials)
 		require.ElementsMatch(t,
 			append(append([]string{}, zhipuLoginCredentialKeyWhitelist...), "refresh_token"),
@@ -250,12 +253,13 @@ func TestZhipuOAuthServiceBuildAccountCredentialsFrozenKeySet(t *testing.T) {
 		credentials := (&ZhipuOAuthService{}).BuildAccountCredentials(&credential, APIProtocolChatCompletions)
 
 		require.Equal(t, map[string]any{
-			"auth_flow":     ZhipuLoginAuthFlow,
-			"api_key":       "12345.secret",
-			"access_token":  "at-token",
-			"zcodejwttoken": "jwt-token",
-			"account_mode":  AccountModeCoding,
-			"api_protocol":  APIProtocolChatCompletions,
+			"auth_flow":         ZhipuLoginAuthFlow,
+			"api_key":           "12345.secret",
+			"access_token":      "at-token",
+			"zcodejwttoken":     "jwt-token",
+			"account_mode":      AccountModeCoding,
+			"api_protocol":      APIProtocolChatCompletions,
+			"zcode_client_sign": "v4",
 		}, credentials)
 		require.ElementsMatch(t, zhipuLoginCredentialKeyWhitelist, keysOf(credentials))
 	})
@@ -301,7 +305,7 @@ func expectedZhipuLoginURL(redirectURI, state string) string {
 }
 
 func TestZhipuOAuthServiceGenerateLoginURL(t *testing.T) {
-	const redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+	const redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 	proxy := &Proxy{ID: 7, Protocol: "http", Host: "127.0.0.1", Port: 3128}
 
 	t.Run("binds state and session id into the session store", func(t *testing.T) {
@@ -332,12 +336,13 @@ func TestZhipuOAuthServiceGenerateLoginURL(t *testing.T) {
 		result, err := svc.GenerateLoginURL(context.Background(), nil, "   ")
 
 		require.NoError(t, err)
+		// 53699：刻意避开 ZCode 客户端占用的 53633 回调口（票 34，实测 2007 的根因）。
 		require.Contains(t, result.LoginURL,
-			"redirect="+url.QueryEscape("http://127.0.0.1:53633/oauth/callback/bigmodel"))
+			"redirect="+url.QueryEscape("http://127.0.0.1:53699/oauth/callback/bigmodel"))
 
 		session, ok := store.Get(result.SessionID)
 		require.True(t, ok)
-		require.Equal(t, "http://127.0.0.1:53633/oauth/callback/bigmodel", session.RedirectURI)
+		require.Equal(t, "http://127.0.0.1:53699/oauth/callback/bigmodel", session.RedirectURI)
 		require.Empty(t, session.ProxyURL, "无 proxy_id 时不走代理")
 	})
 
@@ -423,7 +428,7 @@ const (
 		`"organizationName":"默认机构","projects":[{"projectId":"proj-1","projectName":"默认项目"}]}]}}`
 	zhipuOAuthTestAPIKeysBody = `{"code":0,"data":[{"name":"zcode-api-key","apiKey":"key-1"}]}`
 	zhipuOAuthTestCopyBody    = `{"code":0,"data":{"secretKey":"secret-1"}}`
-	zhipuOAuthTestRedirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+	zhipuOAuthTestRedirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 )
 
 func zhipuOAuthTestJSONResponse(status int, body string) *http.Response {

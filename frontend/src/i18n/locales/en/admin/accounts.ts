@@ -257,10 +257,8 @@ export default {
         zhipuLogin: {
           title: 'Login Method',
           login: 'Sign in with account',
-          loginDesc: 'Recommended. Authorize your Zhipu account in the browser; the API key is resolved automatically — nothing to paste.',
-          manual: 'Manual API Key',
-          manualDesc: 'Keep the current flow: fill in the Base URL and API Key yourself.',
-          loginHint: 'Continue to generate the Zhipu login link, then paste the authorization code to create the account automatically.',
+          loginDesc: 'Authorize your Zhipu account in the browser; the API key is resolved automatically — nothing to paste.',
+          loginHint: 'Continue to generate the Zhipu login link; after signing in, paste the full callback URL from the browser (it carries authCode) to create the account automatically.',
           managedTitle: 'Login-managed account',
           tokenStatusTitle: 'Sign-in credential status',
           tokenAccessToken: 'Access Token',

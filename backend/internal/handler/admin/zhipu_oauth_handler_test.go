@@ -155,7 +155,7 @@ type zhipuLoginURLPayload struct {
 }
 
 func TestZhipuOAuthHandlerGenerateLoginURL(t *testing.T) {
-	const redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+	const redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 
 	t.Run("returns the frozen login-url payload and registers the session", func(t *testing.T) {
 		store := bigmodel.NewSessionStore()
@@ -213,7 +213,7 @@ func TestZhipuOAuthHandlerExchange(t *testing.T) {
 	const (
 		state      = "state-abcdef0123456789abcdef0123456789"
 		sessionID  = "session-abcdef0123456789abcdef01234567"
-		redirect   = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirect   = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		postTarget = "/admin/zhipu/oauth/exchange"
 	)
 	liveSession := func(store *bigmodel.SessionStore) {
@@ -606,7 +606,7 @@ func (r *zhipuHandlerAccountStoreStub) UpdateExtra(_ context.Context, _ int64, u
 func TestZhipuOAuthHandlerReloginAccount(t *testing.T) {
 	const (
 		state    = "state-abcdef0123456789abcdef0123456789"
-		redirect = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirect = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 	)
 	newHandler := func(t *testing.T, upstream service.HTTPUpstream, repo service.AccountRepository) (*ZhipuOAuthHandler, *bigmodel.SessionStore) {
 		t.Helper()

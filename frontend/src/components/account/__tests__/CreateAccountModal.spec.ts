@@ -827,7 +827,7 @@ async function selectZhipuPlatform(wrapper: ReturnType<typeof mountModal>) {
   await selectButtonByText(wrapper, 'Zhipu GLM')
 }
 
-// 登录模式为默认：智谱卡片出现「登录账号 / 手动 API Key」二选一。
+// 票 34：智谱建号收口为「仅登录授权」——卡片只剩「登录账号」，手动 API Key 入口不存在。
 describe('CreateAccountModal zhipu login mode', () => {
   beforeEach(() => {
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'zhipu', type: 'apikey' })
@@ -837,21 +837,29 @@ describe('CreateAccountModal zhipu login mode', () => {
     zhipuCreateFromLoginMock.mockReset()
   })
 
-  it('defaults to login mode and does not render the api key input', async () => {
+  it('renders only the login option and never the manual api key input', async () => {
     const wrapper = mountModal()
     await selectZhipuPlatform(wrapper)
 
     expect(wrapper.find('[data-testid="zhipu-create-mode-login"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="zhipu-create-mode-manual"]').exists()).toBe(true)
+    // 反向守卫：手动 API Key 卡片与 api key 输入区都不存在
+    expect(wrapper.find('[data-testid="zhipu-create-mode-manual"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid^="zhipu-create-mode-"]')).toHaveLength(1)
     expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('admin.accounts.cnProviders.zhipuLogin.manual')
   })
 
-  it('reveals the api key input when the operator switches to manual mode', async () => {
+  it('routes the step-1 submit into the login flow, never to the manual create endpoint', async () => {
     const wrapper = mountModal()
     await selectZhipuPlatform(wrapper)
-    await wrapper.get('[data-testid="zhipu-create-mode-manual"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('zhipu login only')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
 
-    expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(true)
+    // 手动建号端点在智谱创建路径上已不可达（提交只会进入授权码步骤）
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(zhipuCreateFromLoginMock).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(OAuthAuthorizationFlowStub).exists()).toBe(true)
   })
 
   it('creates the account from the login exchange with exactly the frozen credential keys', async () => {
@@ -904,46 +912,7 @@ describe('CreateAccountModal zhipu login mode', () => {
     })
   })
 
-  it('manual mode keeps the existing api key submission untouched', async () => {
-    const wrapper = mountModal()
-    await selectZhipuPlatform(wrapper)
-    await wrapper.get('[data-testid="zhipu-create-mode-manual"]').trigger('click')
-    await wrapper.get('form#create-account-form input[type="text"]').setValue('zhipu manual')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('12345.secret')
-    await wrapper.get('form#create-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(zhipuCreateFromLoginMock).not.toHaveBeenCalled()
-    expect(createAccountMock).toHaveBeenCalledTimes(1)
-    const payload = createAccountMock.mock.calls[0]?.[0]
-    expect(payload?.platform).toBe('zhipu')
-    expect(payload?.type).toBe('apikey')
-    expect(payload?.credentials).toMatchObject({
-      api_key: '12345.secret',
-      account_mode: 'payg',
-      api_protocol: 'adaptive',
-      base_url: 'https://open.bigmodel.cn/api/paas/v4',
-      api_base_urls: {
-        chat_completions: 'https://open.bigmodel.cn/api/paas/v4',
-        anthropic: 'https://open.bigmodel.cn/api/anthropic'
-      }
-    })
-    expect(payload?.credentials?.auth_flow).toBeUndefined()
-  })
-
-  it('manual mode still rejects a submission without an api key', async () => {
-    const wrapper = mountModal()
-    await selectZhipuPlatform(wrapper)
-    await wrapper.get('[data-testid="zhipu-create-mode-manual"]').trigger('click')
-    await wrapper.get('form#create-account-form input[type="text"]').setValue('zhipu manual')
-    await wrapper.get('form#create-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(createAccountMock).not.toHaveBeenCalled()
-    expect(zhipuCreateFromLoginMock).not.toHaveBeenCalled()
-  })
-
-  it('keeps the coding plan and protocol selectors in both modes, and honors the protocol on login', async () => {
+  it('keeps the coding plan and protocol selectors, and honors the protocol on login', async () => {
     zhipuGenerateLoginUrlMock.mockResolvedValue({
       login_url: 'https://bigmodel.cn/login?appId=zcode',
       session_id: 'sess-1',
@@ -959,13 +928,9 @@ describe('CreateAccountModal zhipu login mode', () => {
     const wrapper = mountModal()
     await selectZhipuPlatform(wrapper)
 
-    for (const mode of ['login', 'manual'] as const) {
-      await wrapper.get(`[data-testid="zhipu-create-mode-${mode}"]`).trigger('click')
-      expect(wrapper.text()).toContain('admin.accounts.cnProviders.accountMode.coding')
-      expect(wrapper.text()).toContain('admin.accounts.cnProviders.apiProtocol.anthropic')
-    }
+    expect(wrapper.text()).toContain('admin.accounts.cnProviders.accountMode.coding')
+    expect(wrapper.text()).toContain('admin.accounts.cnProviders.apiProtocol.anthropic')
 
-    await wrapper.get('[data-testid="zhipu-create-mode-login"]').trigger('click')
     await selectButtonByText(wrapper, 'admin.accounts.cnProviders.apiProtocol.anthropic')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('zhipu anthropic')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')

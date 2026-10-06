@@ -122,7 +122,7 @@ func TestExchangeCodeSuccess(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -166,7 +166,7 @@ func TestExchangeCodeRejectsBadInputAndBadConfig(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -261,7 +261,7 @@ func TestExchangeCodeGoesThroughRiskClient(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -306,7 +306,7 @@ func TestExchangeCodeRateLimited429OpensBackoff(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -339,7 +339,7 @@ func TestExchangeCodeFailureClassification(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -439,6 +439,62 @@ func TestExchangeCodeFailureClassification(t *testing.T) {
 	}
 }
 
+// TestExchangeCodeHTTPStatusErrorCarriesUpstreamBody 票 34：非 200 的兑换失败必须把
+// 上游响应体（截断）并进错误信息——上游对一切被拒兑换统一回
+// 500 {"code":2007,"msg":"http error","logid":...}，只有 logid 能向智谱侧定位；
+// 请求入参（authCode/state/redirect_uri）不得出现在错误里。
+func TestExchangeCodeHTTPStatusErrorCarriesUpstreamBody(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authCode    = "auth-code-1"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
+		state       = "0123456789abcdef0123456789abcdef"
+	)
+
+	t.Run("embeds the upstream body so the logid stays actionable", func(t *testing.T) {
+		t.Parallel()
+
+		stub := newStubUpstream(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"code":2007,"msg":"http error","logid":"logid-abc-123"}`)
+		})
+		risk := newRiskClient(stub, 0, newFakeClock().Now)
+
+		_, err := ExchangeCode(context.Background(), risk, "", authCode, redirectURI, state)
+		require.Error(t, err)
+
+		var classified *Error
+		require.ErrorAs(t, err, &classified)
+		require.Equal(t, ErrorKindHTTPStatus, classified.Kind)
+		require.Equal(t, http.StatusInternalServerError, classified.Status)
+		require.Contains(t, classified.Message, `logid-abc-123`)
+		require.Contains(t, err.Error(), `logid-abc-123`)
+
+		// 只带响应体：请求入参（尤其是授权码）不得回显
+		require.NotContains(t, err.Error(), authCode)
+		require.NotContains(t, err.Error(), state)
+		require.NotContains(t, err.Error(), redirectURI)
+	})
+
+	t.Run("bounds the embedded body to 200 bytes", func(t *testing.T) {
+		t.Parallel()
+
+		stub := newStubUpstream(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, strings.Repeat("x", 500))
+		})
+		risk := newRiskClient(stub, 0, newFakeClock().Now)
+
+		_, err := ExchangeCode(context.Background(), risk, "", authCode, redirectURI, state)
+		require.Error(t, err)
+
+		var classified *Error
+		require.ErrorAs(t, err, &classified)
+		require.Equal(t, strings.Repeat("x", 200)+"...", classified.Message)
+	})
+}
+
 // rewriteTransport points every request at a local test server while the code
 // under test keeps building the production URL; the original URL is handed to
 // the callback so the assertion still sees what the caller asked for.
@@ -468,7 +524,7 @@ func TestExchangeCodeRefreshTokenTolerance(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -551,7 +607,7 @@ func TestExchangeCodeOverRealHTTP(t *testing.T) {
 
 	const (
 		authCode    = "auth-code-1"
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 
@@ -656,7 +712,7 @@ func TestBuildLoginURLShape(t *testing.T) {
 	t.Parallel()
 
 	const (
-		redirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+		redirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 		state       = "0123456789abcdef0123456789abcdef"
 	)
 

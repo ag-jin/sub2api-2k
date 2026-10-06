@@ -60,8 +60,11 @@ type ZhipuLoginCredential struct {
 // zhipuLoginDefaultRedirectURI 是管理员未提供 redirect_uri 时的回调地址。
 // 登录姿势是「打开链接 → 粘贴 authCode」（design M1），redirect 只需在登录页与
 // 兑换请求之间往返一致：会话里存的就是这个生效值，兑换时原样重放。
-// 取值对齐 research FINAL-REPORT §六 观测到的本机回调。
-const zhipuLoginDefaultRedirectURI = "http://127.0.0.1:53633/oauth/callback/bigmodel"
+//
+// 端口刻意避开 53633：那是 ZCode 官方客户端的固定回调口，管理员本机跑着客户端时
+// 浏览器重定向的瞬间授权码就被客户端消费掉，站点侧兑换必失败（实测 2007）。
+// 53699 无人监听，本流也不需要监听——重定向后的地址栏 URL 由管理员手工回贴。
+const zhipuLoginDefaultRedirectURI = "http://127.0.0.1:53699/oauth/callback/bigmodel"
 
 // ZhipuOAuthService 编排智谱登录全流程（design M1）：授权 URL、兑换、API key
 // 自动解析、建号凭据构造、重登。不负责运行期健康（M2）与转发（既有网关）。
@@ -131,6 +134,9 @@ func (s *ZhipuOAuthService) BuildAccountCredentials(cred *ZhipuLoginCredential, 
 		zhipuCredentialZCodeJWT:    "",
 		zhipuCredentialAccountMode: AccountModeCoding,
 		zhipuCredentialAPIProtocol: protocol,
+		// 登录托管账号默认启用签名 V4（design B 裁决）：缺此章则签名三道门的
+		// 账号级门恒假，请求以 fail-open 静默降级为无签名 → 0.67 折扣失效。
+		zhipuSignCredentialKey: zhipuSignCredentialV4,
 	}
 	if cred != nil {
 		credentials[zhipuCredentialAPIKey] = cred.APIKey

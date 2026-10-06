@@ -497,7 +497,9 @@ export function buildZhipuLoginCredentials(
     access_token: cred.access_token,
     zcodejwttoken: cred.zcodejwttoken,
     account_mode: 'coding',
-    api_protocol: protocol
+    api_protocol: protocol,
+    // 登录账号默认启用签名 V4（0.67 折扣的账号级开关；后端 BuildAccountCredentials 同源兜底）
+    zcode_client_sign: 'v4'
   }
   // 03 白名单：refresh_token 仅在非空时落键（实测该字段可能为空串）。
   if (cred.refresh_token) {

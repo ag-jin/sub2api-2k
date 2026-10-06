@@ -1129,20 +1129,32 @@ watch(inputMethod, (newVal) => {
   emit('update:inputMethod', newVal)
 })
 
-// Auto-extract code from callback URL (OpenAI/Gemini/Antigravity/Grok)
-// e.g., http://localhost:8085/callback?code=xxx...&state=...
+// Auto-extract the auth code from a pasted callback URL.
+// e.g., http://localhost:8085/callback?code=xxx...&state=...（OpenAI/Gemini/Antigravity/Grok）
+// 智谱（bigmodel）的回调参数名是 authCode=：http://127.0.0.1:53699/oauth/callback/bigmodel?authCode=xxx&state=yyy
+const CALLBACK_AUTH_CODE_PARAM: Partial<Record<AccountPlatform, string>> = {
+  openai: 'code',
+  gemini: 'code',
+  antigravity: 'code',
+  grok: 'code',
+  zhipu: 'authCode'
+}
+
 watch(authCodeInput, (newVal) => {
-  if (props.platform !== 'openai' && props.platform !== 'gemini' && props.platform !== 'antigravity' && props.platform !== 'grok') return
+  const codeParam = CALLBACK_AUTH_CODE_PARAM[props.platform]
+  if (!codeParam) return
 
   const trimmed = newVal.trim()
-  // Check if it looks like a URL with code parameter
-  if (trimmed.includes('code=')) {
+  // Check if it looks like a URL (or query string) carrying the auth code parameter
+  if (trimmed.includes(`${codeParam}=`)) {
+    // 智谱的 state 由 useZhipuOAuth 会话持有（兑换只用 session_id + 会话 state），不回填。
+    const fillState = codeParam === 'code'
     try {
       // Try to parse as URL
       const url = trimmed.includes('?') ? new URL(trimmed) : new URL(`http://localhost/callback?${trimmed.replace(/^\?/, '')}`)
-      const code = url.searchParams.get('code')
+      const code = url.searchParams.get(codeParam)
       const stateParam = url.searchParams.get('state')
-      if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateParam) {
+      if (fillState && stateParam) {
         oauthState.value = stateParam
       }
       if (code && code !== trimmed) {
@@ -1151,9 +1163,9 @@ watch(authCodeInput, (newVal) => {
       }
     } catch {
       // If URL parsing fails, try regex extraction
-      const match = trimmed.match(/[?&]code=([^&]+)/)
+      const match = trimmed.match(new RegExp(`[?&]${codeParam}=([^&]+)`))
       const stateMatch = trimmed.match(/[?&]state=([^&]+)/)
-      if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateMatch && stateMatch[1]) {
+      if (fillState && stateMatch && stateMatch[1]) {
         oauthState.value = stateMatch[1]
       }
       if (match && match[1] && match[1] !== trimmed) {

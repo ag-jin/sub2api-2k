@@ -138,8 +138,9 @@ const (
 const maxErrorMessageBytes = 200
 
 // Error is the classified failure of one bigmodel protocol call. It carries no
-// credentials: upstream text is bounded by maxErrorMessageBytes and upstream
-// bodies are never embedded.
+// credentials: upstream text is bounded by maxErrorMessageBytes and only the
+// upstream response body (never the request payload) may be embedded, so an
+// error can name the upstream logid without echoing the authorization code.
 type Error struct {
 	// Op names the call: "exchange_code" or "resolve_api_key".
 	Op string
@@ -328,7 +329,15 @@ func ExchangeCode(ctx context.Context, doer *RiskClient, proxyURL, code, redirec
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &Error{Op: opExchangeCode, Kind: ErrorKindHTTPStatus, Status: resp.StatusCode}
+		// 带上上游响应体（截断）：上游对一切被拒兑换统一回 500
+		// {"code":2007,"msg":"http error","logid":...}，logid 是向智谱侧定位的唯一线索。
+		// 只带响应体，不带请求入参（授权码/state/redirect_uri 都不回显）。
+		return nil, &Error{
+			Op:      opExchangeCode,
+			Kind:    ErrorKindHTTPStatus,
+			Status:  resp.StatusCode,
+			Message: truncateMessage(strings.TrimSpace(string(raw))),
+		}
 	}
 
 	var parsed tokenExchangeResponse

@@ -998,6 +998,12 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// 票 34：智谱建号只走登录授权（专用端点），通用建号接口拒绝手动 API Key 形态。
+	// 编辑接口不校验：存量手动智谱账号继续可编辑可运行。
+	if err := zhipuLoginOnlyCreateError(req.Platform, req.Credentials); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	if err := service.ValidateOpenAILongContextBillingExtra(req.Platform, req.Extra); err != nil {
 		response.ErrorFrom(c, err)
 		return
