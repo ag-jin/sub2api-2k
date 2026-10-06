@@ -499,6 +499,44 @@ export default {
         flash: 'Flash'
       }
     },
+    // 智谱登录托管账号：近 7 日逐模型积分明细（MonitorQuotaView）
+    credits: {
+      title: '近 7 日模型积分明细',
+      range: '近 7 日',
+      updatedAt: '更新于 {time}',
+      columns: {
+        date: '日期',
+        model: '模型',
+        inputTokens: '输入 Tokens',
+        cachedTokens: '缓存 Tokens',
+        outputTokens: '输出 Tokens',
+        credits: '积分'
+      },
+      empty: '暂无近 7 日模型积分记录',
+      unavailable: '积分明细暂不可用',
+      stale: '当前为较早快照，积分结算可能延迟 4–11 分钟',
+      failed: '无法读取积分明细'
+    },
+    // 智谱登录托管账号：重置卡只读展示（R0：永不提供使用/消耗入口）
+    resetCards: {
+      title: '重置卡',
+      readOnly: '只读',
+      types: {
+        five_hour: '5 小时卡',
+        week: '周卡'
+      },
+      count: '{count} 张',
+      expiresAt: '到期：{time}',
+      expiresIn: '{time} 后到期',
+      expiring: '将于 {time} 到期',
+      expired: '已于 {time} 到期',
+      unknownExpiry: '到期时间未知',
+      empty: '暂无重置卡数据',
+      typeEmpty: '暂无该类重置卡数据',
+      stale: '当前为较早快照，信息可能已过期',
+      needsRelogin: '登录状态已失效，无法更新重置卡信息',
+      failed: '无法读取重置卡信息'
+    },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',
     latencyEmpty: '-',

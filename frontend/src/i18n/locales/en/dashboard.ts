@@ -494,6 +494,44 @@ export default {
         flash: 'Flash'
       }
     },
+    // Zhipu login-managed accounts: per-model credit details for the last 7 days (MonitorQuotaView)
+    credits: {
+      title: 'Model credit details, last 7 days',
+      range: 'Last 7 days',
+      updatedAt: 'Updated {time}',
+      columns: {
+        date: 'Date',
+        model: 'Model',
+        inputTokens: 'Input tokens',
+        cachedTokens: 'Cached tokens',
+        outputTokens: 'Output tokens',
+        credits: 'Credits'
+      },
+      empty: 'No model credit records in the last 7 days',
+      unavailable: 'Model credit details are unavailable',
+      stale: 'Showing an earlier snapshot. Credit settlement may be delayed by 4–11 minutes.',
+      failed: 'Unable to load model credit details'
+    },
+    // Zhipu login-managed accounts: read-only reset card display (R0: never offers a use/consume action)
+    resetCards: {
+      title: 'Reset cards',
+      readOnly: 'Read-only',
+      types: {
+        five_hour: '5-hour cards',
+        week: 'Weekly cards'
+      },
+      count: '{count} cards',
+      expiresAt: 'Expires: {time}',
+      expiresIn: 'Expires in {time}',
+      expiring: 'Expires on {time}',
+      expired: 'Expired on {time}',
+      unknownExpiry: 'Expiry unknown',
+      empty: 'No reset card data',
+      typeEmpty: 'No data for this card type',
+      stale: 'Showing an earlier snapshot. Information may be outdated.',
+      needsRelogin: 'Login has expired; reset card information cannot be updated.',
+      failed: 'Unable to load reset card information'
+    },
     extraModelsHeader: 'Extra Models',
     extraModelsEmpty: 'No extra models',
     latencyEmpty: '-',

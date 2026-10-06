@@ -2,6 +2,8 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { MonitorQuotaSnapshot } from '@/api/admin/channelMonitor'
+import enDashboard from '@/i18n/locales/en/dashboard'
+import zhDashboard from '@/i18n/locales/zh/dashboard'
 import MonitorQuotaView from '../MonitorQuotaView.vue'
 
 vi.mock('vue-i18n', async () => {
@@ -9,7 +11,12 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     // te() 恒真：已知 token 直接返回 i18n key，便于断言 window/label 映射。
-    useI18n: () => ({ t: (key: string) => key, te: () => true }),
+    // 带插值的调用把参数一并透出（`key|{"count":2}`），便于断言张数等数值确实传给了 i18n。
+    useI18n: () => ({
+      t: (key: string, params?: Record<string, unknown>) =>
+        params ? `${key}|${JSON.stringify(params)}` : key,
+      te: () => true,
+    }),
   }
 })
 
@@ -20,6 +27,16 @@ function makeSnapshot(overrides: Partial<MonitorQuotaSnapshot> = {}): MonitorQuo
     fetched_at: '2026-08-18T00:00:00Z',
     ...overrides,
   }
+}
+
+/** 快照新鲜度以 fetched_at 相对当前时间判定，测试用相对时间构造。 */
+function fetchedAtMinutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString()
+}
+
+/** 重置卡到期时间：以「距今 N 天」构造，避免测试与实现用同一套日期算术。 */
+function daysFromNow(days: number): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
 }
 
 describe('MonitorQuotaView', () => {
@@ -124,5 +141,465 @@ describe('MonitorQuotaView', () => {
       },
     })
     expect(wrapper.text()).not.toContain('10%')
+  })
+})
+
+// 智谱登录托管账号：逐模型积分明细（design M4 `model_credits`）。
+describe('MonitorQuotaView model credits panel', () => {
+  it('renders credits sorted by date then credits, with compact numbers and exact titles', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.5', date: '2026-10-04', input_tokens: 300, cached_tokens: 0, output_tokens: 5, credits: 9 },
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 300, output_tokens: 45, credits: 0.5 },
+            { model: 'glm-4.6-flash', date: '2026-10-05', input_tokens: 2000, cached_tokens: 100, output_tokens: 10, credits: 2.5 },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-model-credits-panel"]')
+    // 日期降序；同日按积分降序（2.5 在 0.5 之前）
+    const models = panel.findAll('[data-testid="zhipu-model-credits-model"]')
+    expect(models.map((el) => el.attributes('title'))).toEqual([
+      'glm-4.6-flash',
+      'glm-4.6',
+      'glm-4.5',
+    ])
+
+    // Tokens 按项目 K/M 格式缩写，精确值放 title
+    const inputs = panel.findAll('[data-testid="zhipu-model-credits-input_tokens"]')
+    expect(inputs.map((el) => el.text())).toEqual(['2.0K', '1.2K', '300'])
+    expect(inputs[1].attributes('title')).toBe('1200')
+
+    const credits = panel.findAll('[data-testid="zhipu-model-credits-credits"]')
+    expect(credits.map((el) => el.text())).toEqual(['2.5', '0.5', '9'])
+
+    expect(panel.text()).not.toContain('NaN')
+    expect(panel.text()).toContain('monitorCommon.credits.title')
+  })
+
+  it('truncates long model names but keeps the full name and raw date accessible', () => {
+    const longModel = `glm-4.6-${'x'.repeat(80)}`
+    const invalidDate = '2026-13-45'
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: longModel, date: invalidDate, input_tokens: 10, cached_tokens: 0, output_tokens: 0, credits: 1 },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-model-credits-panel"]')
+    const model = panel.get('[data-testid="zhipu-model-credits-model"]')
+    expect(model.classes()).toContain('truncate')
+    expect(model.classes()).toContain('max-w-[280px]')
+    expect(model.attributes('title')).toBe(longModel)
+
+    // 非法日期不得被 Date 静默进位成另一个日期：原样展示 + title 保留原始字段
+    const date = panel.get('[data-testid="zhipu-model-credits-date"]')
+    expect(date.text()).toBe(invalidDate)
+    expect(date.attributes('title')).toBe(invalidDate)
+    expect(panel.text()).not.toContain('Invalid Date')
+  })
+
+  it('hides the credits panel for legacy snapshots without model_credits', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1) }) },
+    })
+    expect(wrapper.find('[data-testid="zhipu-model-credits-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="zhipu-reset-cards-panel"]').exists()).toBe(false)
+  })
+
+  it('renders the credits empty state for an empty list and keeps partial rows with "-"', () => {
+    const empty = mount(MonitorQuotaView, {
+      props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1), model_credits: [] }) },
+    })
+    expect(empty.get('[data-testid="zhipu-model-credits-empty"]').text()).toContain(
+      'monitorCommon.credits.empty'
+    )
+
+    // 部分字段缺失：保留行与其余字段，缺失值为 "-"，不与 0 混淆
+    const partial = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1500, credits: 1 },
+          ],
+        }),
+      },
+    })
+    const panel = partial.get('[data-testid="zhipu-model-credits-panel"]')
+    expect(panel.get('[data-testid="zhipu-model-credits-cached_tokens"]').text()).toBe('-')
+    expect(panel.get('[data-testid="zhipu-model-credits-output_tokens"]').text()).toBe('-')
+    expect(panel.get('[data-testid="zhipu-model-credits-input_tokens"]').text()).toBe('1.5K')
+    expect(panel.text()).not.toContain('NaN')
+    expect(panel.text()).not.toContain('undefined')
+  })
+
+  it('renders field cards instead of a desktop table on a narrow viewport', () => {
+    const previousMatchMedia = window.matchMedia
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+
+    try {
+      const wrapper = mount(MonitorQuotaView, {
+        props: {
+          snapshot: makeSnapshot({
+            fetched_at: fetchedAtMinutesAgo(1),
+            model_credits: [
+              { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+              { model: 'glm-4.5', date: '2026-10-04', input_tokens: 300, cached_tokens: 0, output_tokens: 1, credits: 2 },
+            ],
+          }),
+        },
+      })
+
+      const panel = wrapper.get('[data-testid="zhipu-model-credits-panel"]')
+      // 窄屏（~430px）不保留压缩桌面表格：复用 DataTable 的字段卡片模式
+      expect(panel.find('table').exists()).toBe(false)
+      expect(panel.findAll('[data-field="model"]')).toHaveLength(2)
+      expect(panel.findAll('[data-field="credits"]')).toHaveLength(2)
+      expect(panel.findAll('[data-testid="zhipu-model-credits-model"]')).toHaveLength(2)
+      expect(panel.text()).not.toContain('NaN')
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { writable: true, value: previousMatchMedia })
+    }
+  })
+
+  it('keeps the desktop table with all six columns on a wide viewport', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-model-credits-panel"]')
+    expect(panel.find('table').exists()).toBe(true)
+    const headers = panel.findAll('thead th').map((th) => th.text())
+    expect(headers).toEqual([
+      'monitorCommon.credits.columns.date',
+      'monitorCommon.credits.columns.model',
+      'monitorCommon.credits.columns.inputTokens',
+      'monitorCommon.credits.columns.cachedTokens',
+      'monitorCommon.credits.columns.outputTokens',
+      'monitorCommon.credits.columns.credits',
+    ])
+  })
+
+  it('falls back to the credits unavailable state when no row carries any detail field', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [{ model: 'glm-4.6', date: '2026-10-05' } as never],
+        }),
+      },
+    })
+    const panel = wrapper.get('[data-testid="zhipu-model-credits-panel"]')
+    expect(panel.get('[data-testid="zhipu-model-credits-unavailable"]').text()).toContain(
+      'monitorCommon.credits.unavailable'
+    )
+    expect(panel.findAll('[data-testid="zhipu-model-credits-model"]')).toHaveLength(0)
+  })
+})
+
+// 智谱登录托管账号：重置卡只读卡片（design M4 `reset_cards`，R0 严格只读）。
+describe('MonitorQuotaView reset cards panel', () => {
+  it('shows per-type counts and the nearest expiry state', () => {
+    const nearestFiveHour = daysFromNow(2)
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [
+            { type: 'five_hour', expire_at: daysFromNow(3) },
+            { type: 'five_hour', expire_at: nearestFiveHour },
+            { type: 'week', expire_at: daysFromNow(30) },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    expect(panel.get('[data-testid="zhipu-reset-cards-readonly"]').text()).toBe(
+      'monitorCommon.resetCards.readOnly'
+    )
+
+    // 张数取同类型卡片数量（2 / 1），"最近到期"取最小值（2 天后那张）
+    const fiveHour = panel.get('[data-testid="zhipu-reset-card-five_hour"]')
+    expect(fiveHour.attributes('data-state')).toBe('expiring')
+    expect(fiveHour.get('[data-testid="zhipu-reset-card-count"]').text()).toContain(
+      'monitorCommon.resetCards.count|{"count":2}'
+    )
+    const fiveHourExpiry = fiveHour.get('[data-testid="zhipu-reset-card-expiry"]')
+    expect(fiveHourExpiry.text()).toContain('monitorCommon.resetCards.expiring')
+    expect(fiveHourExpiry.attributes('title')).toBe(nearestFiveHour)
+    expect(fiveHourExpiry.html()).toContain('text-amber-600')
+
+    const week = panel.get('[data-testid="zhipu-reset-card-week"]')
+    expect(week.attributes('data-state')).toBe('ok')
+    expect(week.get('[data-testid="zhipu-reset-card-count"]').text()).toContain('{"count":1}')
+    expect(week.get('[data-testid="zhipu-reset-card-expiry"]').text()).toContain(
+      'monitorCommon.resetCards.expiresIn'
+    )
+
+    expect(panel.text()).not.toContain('NaN')
+    expect(panel.text()).not.toContain('Invalid Date')
+  })
+
+  it('marks expired and unknown-expiry cards as unusable/unknown', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [
+            { type: 'five_hour', expire_at: daysFromNow(-1) },
+            { type: 'week', expire_at: 'not-a-date' },
+          ],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    const fiveHour = panel.get('[data-testid="zhipu-reset-card-five_hour"]')
+    expect(fiveHour.attributes('data-state')).toBe('expired')
+    const fiveHourExpiry = fiveHour.get('[data-testid="zhipu-reset-card-expiry"]')
+    expect(fiveHourExpiry.text()).toContain('monitorCommon.resetCards.expired')
+    expect(fiveHourExpiry.html()).toContain('text-red-600')
+    // 卡片仍显示最后返回张数，但不描述为可用
+    expect(fiveHour.get('[data-testid="zhipu-reset-card-count"]').text()).toContain('{"count":1}')
+
+    const week = panel.get('[data-testid="zhipu-reset-card-week"]')
+    expect(week.attributes('data-state')).toBe('unknown')
+    const weekExpiry = week.get('[data-testid="zhipu-reset-card-expiry"]')
+    expect(weekExpiry.text()).toBe('monitorCommon.resetCards.unknownExpiry')
+    // 非法日期不得渲染成 Invalid Date（到期未知时 title 缺省，保留原始字段由后端排查）
+    expect(weekExpiry.attributes('title')).toBeUndefined()
+    expect(week.get('[data-testid="zhipu-reset-card-count"]').text()).toContain('{"count":1}')
+    expect(panel.text()).not.toContain('Invalid Date')
+  })
+
+  it('shows a type-empty placeholder instead of fabricating zero cards', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(10) }],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    const week = panel.get('[data-testid="zhipu-reset-card-week"]')
+    expect(week.get('[data-testid="zhipu-reset-card-empty"]').text()).toBe(
+      'monitorCommon.resetCards.typeEmpty'
+    )
+    expect(week.find('[data-testid="zhipu-reset-card-count"]').exists()).toBe(false)
+    // 另一类型不受影响
+    expect(panel.get('[data-testid="zhipu-reset-card-five_hour"]').text()).toContain('{"count":1}')
+
+    // 两类都缺失 → 整面板空态
+    const none = mount(MonitorQuotaView, {
+      props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1), reset_cards: [] }) },
+    })
+    const emptyPanel = none.get('[data-testid="zhipu-reset-cards-panel"]')
+    expect(emptyPanel.get('[data-testid="zhipu-reset-cards-empty"]').text()).toContain(
+      'monitorCommon.resetCards.empty'
+    )
+    expect(emptyPanel.find('[data-testid="zhipu-reset-card-five_hour"]').exists()).toBe(false)
+  })
+
+  it('renders needs_relogin as read-only text with no affordance at all (R0)', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          needs_relogin: true,
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(1) }],
+        }),
+      },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    expect(panel.get('[data-testid="zhipu-reset-cards-relogin"]').text()).toBe(
+      'monitorCommon.resetCards.needsRelogin'
+    )
+    expect(panel.get('[data-testid="zhipu-reset-cards-relogin"]').html()).toContain('text-red-600')
+
+    // R0 负向断言：重置卡区块内不存在任何可交互元素或操作暗示
+    expect(panel.findAll('button, a, input, select, textarea, [role="button"], [tabindex]')).toHaveLength(0)
+    expect(panel.html()).not.toContain('<button')
+    expect(panel.html()).not.toContain('<a ')
+    expect(panel.html()).not.toContain('cursor-pointer')
+    expect(panel.html()).not.toContain('reset/use')
+  })
+
+  it('shows the relogin notice alone when reset_cards is absent (no fabricated cards)', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: { snapshot: makeSnapshot({ fetched_at: fetchedAtMinutesAgo(1), needs_relogin: true }) },
+    })
+
+    const panel = wrapper.get('[data-testid="zhipu-reset-cards-panel"]')
+    expect(panel.get('[data-testid="zhipu-reset-cards-relogin"]').exists()).toBe(true)
+    expect(panel.find('[data-testid="zhipu-reset-card-five_hour"]').exists()).toBe(false)
+    expect(panel.find('[data-testid="zhipu-reset-card-week"]').exists()).toBe(false)
+    expect(panel.find('[data-testid="zhipu-reset-cards-empty"]').exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('"count":0')
+  })
+
+  it('flags stale snapshots while keeping the last values visible', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(30),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(30) }],
+        }),
+      },
+    })
+
+    const creditsStale = wrapper.get('[data-testid="zhipu-model-credits-stale"]')
+    expect(creditsStale.text()).toBe('monitorCommon.credits.stale')
+    expect(creditsStale.html()).toContain('text-amber-600')
+    const resetStale = wrapper.get('[data-testid="zhipu-reset-cards-stale"]')
+    expect(resetStale.text()).toBe('monitorCommon.resetCards.stale')
+    expect(resetStale.html()).toContain('text-amber-600')
+
+    // 陈旧不清空面板：旧值仍在
+    expect(wrapper.get('[data-testid="zhipu-model-credits-input_tokens"]').text()).toBe('1.2K')
+    expect(wrapper.get('[data-testid="zhipu-reset-card-five_hour"]').attributes('data-state')).toBe('ok')
+
+    const fresh = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(30) }],
+        }),
+      },
+    })
+    expect(fresh.find('[data-testid="zhipu-model-credits-stale"]').exists()).toBe(false)
+    expect(fresh.find('[data-testid="zhipu-reset-cards-stale"]').exists()).toBe(false)
+  })
+
+  it('keeps last values with a failure note when the fetch failed but data exists', () => {
+    const wrapper = mount(MonitorQuotaView, {
+      props: {
+        snapshot: makeSnapshot({
+          success: false,
+          error: 'upstream 500',
+          fetched_at: fetchedAtMinutesAgo(1),
+          model_credits: [
+            { model: 'glm-4.6', date: '2026-10-05', input_tokens: 1200, cached_tokens: 0, output_tokens: 1, credits: 1 },
+          ],
+          reset_cards: [{ type: 'five_hour', expire_at: daysFromNow(30) }],
+        }),
+      },
+    })
+
+    expect(wrapper.get('[data-testid="zhipu-model-credits-failed"]').text()).toBe(
+      'monitorCommon.credits.failed'
+    )
+    expect(wrapper.get('[data-testid="zhipu-reset-cards-failed"]').text()).toBe(
+      'monitorCommon.resetCards.failed'
+    )
+    // 有旧数据时不退化成空态；既有错误行仍保留
+    expect(wrapper.find('[data-testid="zhipu-model-credits-empty"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="monitor-quota-error"]').exists()).toBe(true)
+
+    // 失败且无新字段（老快照）：不新增面板，维持既有红字错误行
+    const noData = mount(MonitorQuotaView, {
+      props: { snapshot: makeSnapshot({ success: false, error: 'boom' }) },
+    })
+    expect(noData.get('[data-testid="monitor-quota-error"]').text()).toBe('boom')
+    expect(noData.find('[data-testid="zhipu-model-credits-panel"]').exists()).toBe(false)
+    expect(noData.find('[data-testid="zhipu-reset-cards-panel"]').exists()).toBe(false)
+  })
+})
+
+// 两块新面板的全部文案必须 zh/en 齐备且键集合一致（票 16 验收项）。
+function flattenKeys(node: unknown, prefix = ''): string[] {
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+    return prefix ? [prefix] : []
+  }
+  return Object.entries(node as Record<string, unknown>).flatMap(([key, value]) =>
+    flattenKeys(value, prefix ? `${prefix}.${key}` : key)
+  )
+}
+
+describe('MonitorQuotaView zhipu panel i18n keys', () => {
+  const requiredKeys = [
+    'monitorCommon.credits.title',
+    'monitorCommon.credits.range',
+    'monitorCommon.credits.updatedAt',
+    'monitorCommon.credits.columns.date',
+    'monitorCommon.credits.columns.model',
+    'monitorCommon.credits.columns.inputTokens',
+    'monitorCommon.credits.columns.cachedTokens',
+    'monitorCommon.credits.columns.outputTokens',
+    'monitorCommon.credits.columns.credits',
+    'monitorCommon.credits.empty',
+    'monitorCommon.credits.unavailable',
+    'monitorCommon.credits.stale',
+    'monitorCommon.credits.failed',
+    'monitorCommon.resetCards.title',
+    'monitorCommon.resetCards.readOnly',
+    'monitorCommon.resetCards.types.five_hour',
+    'monitorCommon.resetCards.types.week',
+    'monitorCommon.resetCards.count',
+    'monitorCommon.resetCards.expiresAt',
+    'monitorCommon.resetCards.expiresIn',
+    'monitorCommon.resetCards.expiring',
+    'monitorCommon.resetCards.expired',
+    'monitorCommon.resetCards.unknownExpiry',
+    'monitorCommon.resetCards.empty',
+    'monitorCommon.resetCards.typeEmpty',
+    'monitorCommon.resetCards.stale',
+    'monitorCommon.resetCards.needsRelogin',
+    'monitorCommon.resetCards.failed',
+  ]
+
+  it.each([
+    ['zh', zhDashboard],
+    ['en', enDashboard],
+  ] as const)('%s dashboard locale contains every panel key', (_locale, messages) => {
+    const keys = new Set(flattenKeys(messages))
+    expect(requiredKeys.filter((key) => !keys.has(key))).toEqual([])
+  })
+
+  it('keeps the zh/en key sets identical for both new subtrees', () => {
+    const creditsZh = flattenKeys(zhDashboard.monitorCommon.credits).sort()
+    const creditsEn = flattenKeys(enDashboard.monitorCommon.credits).sort()
+    expect(creditsZh).toEqual(creditsEn)
+    const resetZh = flattenKeys(zhDashboard.monitorCommon.resetCards).sort()
+    const resetEn = flattenKeys(enDashboard.monitorCommon.resetCards).sort()
+    expect(resetZh).toEqual(resetEn)
   })
 })

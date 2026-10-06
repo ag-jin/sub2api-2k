@@ -41,6 +41,29 @@ export interface MonitorBalance {
   balance: number
 }
 
+/**
+ * 登录态智谱账号的逐模型积分明细（design M4 `MonitorQuotaModelCredit`）。
+ * `date` 是上游 xTime 的日历日（Asia/Shanghai，形如 `2026-10-05`），不是时间戳。
+ */
+export interface MonitorQuotaModelCredit {
+  model: string
+  date: string
+  input_tokens: number
+  cached_tokens: number
+  output_tokens: number
+  credits: number
+}
+
+/**
+ * 重置卡余量条目（design M4 `MonitorResetCard`）。
+ * R0：本项目只读展示重置卡，永不提供使用/消耗入口；`type` 仅 five_hour / week。
+ */
+export interface MonitorResetCard {
+  type: 'five_hour' | 'week'
+  /** RFC3339；缺失或非法时前端显示「到期时间未知」，不得按 0 张处理。 */
+  expire_at: string
+}
+
 /** 归一化配额快照（与后端 domain.MonitorQuotaSnapshot 一致）。 */
 export interface MonitorQuotaSnapshot {
   /** usage | cn_quota | cn_balance */
@@ -53,6 +76,12 @@ export interface MonitorQuotaSnapshot {
   plan_level?: string
   /** 401/403 鉴权失败标记（推导为 failed 状态） */
   credential_invalid?: boolean
+  /** 近 7 日逐模型积分明细（智谱登录托管账号；老快照/其它平台缺省） */
+  model_credits?: MonitorQuotaModelCredit[]
+  /** 重置卡余量（只读；老快照/非登录账号缺省，缺省即不渲染面板） */
+  reset_cards?: MonitorResetCard[]
+  /** 管理面登录态失效（需管理员重登；缺省即 false） */
+  needs_relogin?: boolean
   error?: string
   fetched_at: string
 }
