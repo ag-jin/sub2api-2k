@@ -61,6 +61,9 @@ func RegisterAdminRoutes(
 		// Grok OAuth
 		registerGrokOAuthRoutes(admin, h)
 
+		// 智谱（bigmodel）登录
+		registerZhipuOAuthRoutes(admin, h)
+
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
 		registerCNProviderRoutes(admin, h)
 
@@ -502,6 +505,20 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		grok.GET("/accounts/:id/quota", h.Admin.GrokOAuth.QueryQuota)
 		grok.POST("/accounts/:id/reset-quota", h.Admin.GrokOAuth.ResetQuota)
 		grok.GET("/runtime-sanity", h.Admin.GrokOAuth.RuntimeSanity)
+	}
+}
+
+// registerZhipuOAuthRoutes 注册智谱（bigmodel）登录端点（design M1 / 票 04）：
+// 生成登录链接、兑换授权码、登录建号、重登。全部挂在 admin 分组下，继承既有
+// 管理端鉴权/限流/审计中间件。M4 的只读 /accounts/:id/reset-card 由票 12/13
+// 追加到本函数；R0：本函数绝不注册任何重置卡「使用」路由。
+func registerZhipuOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	zhipu := admin.Group("/zhipu")
+	{
+		zhipu.POST("/oauth/login-url", h.Admin.ZhipuOAuth.GenerateLoginURL)
+		zhipu.POST("/oauth/exchange", h.Admin.ZhipuOAuth.Exchange)
+		zhipu.POST("/oauth/create-from-login", h.Admin.ZhipuOAuth.CreateAccountFromLogin)
+		zhipu.POST("/accounts/:id/relogin", h.Admin.ZhipuOAuth.ReloginAccount)
 	}
 }
 
