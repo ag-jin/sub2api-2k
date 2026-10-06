@@ -171,6 +171,10 @@ const openCodeUpstreamUserAgent = "sub2api/1.0"
 // 账号级 header 覆写，最后经代理发出。传输层失败（DNS/TCP/TLS，无 HTTP 响应）
 // 统一由 handleOpenAIUpstreamTransportError 归一为 failover。
 //
+// 本函数是三条 CC 路径（CC 直转 / responses 回退 / anthropic 回退）共用的发送口，
+// 也是智谱签名自愈状态机（design M3.1(a) / 票 23）在 CC 侧的挂点：响应命中
+// VERIFY_* 时作废私钥并重放**恰好一次**（见 sendCCUpstreamRequestOnce）。
+//
 // userAgent 为空时保留默认 UA；Grok 的默认 UA 兜底由调用方解析后传入。
 //
 // firstTokenTimeout > 0 时启用首 token 截止守卫：在分离的上游 context 上叠加
@@ -188,6 +192,51 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	grokCacheIdentity string,
 	firstTokenTimeout time.Duration,
 ) (*http.Response, *openAIFirstOutputHeaderGuard, error) {
+	resp, guard, signed, err := s.sendCCUpstreamRequestOnce(
+		ctx, c, account, targetURL, body, stream, bearerToken, userAgent, grokCacheIdentity, firstTokenTimeout,
+	)
+	if err != nil || resp == nil || resp.StatusCode < 400 || !signed {
+		// signed=false：本次请求没带签名（门控关闭或 fail-open），没有可作废的私钥，
+		// 也不进入自愈路径 —— 非 zhipu / 未启用签名的账号零额外处理。
+		return resp, guard, err
+	}
+
+	// 检测点唯一：复用错误体接缝（body 读后回卷，调用方仍可重读）。
+	errorBody, _ := s.readOpenAIUpstreamError(resp)
+	var replayGuard *openAIFirstOutputHeaderGuard
+	outcome := s.zhipuSignSelfHealVerifyFailure(account, signed, resp, errorBody, func() (*http.Response, error) {
+		// 重放走「单次发送」入口，绝不再进入本自愈包装 —— 单次重放由结构保证。
+		replayResp, replayFirstTokenGuard, _, replayErr := s.sendCCUpstreamRequestOnce(
+			ctx, c, account, targetURL, body, stream, bearerToken, userAgent, grokCacheIdentity, firstTokenTimeout,
+		)
+		replayGuard = replayFirstTokenGuard
+		return replayResp, replayErr
+	})
+	if !outcome.Replayed {
+		return resp, guard, nil
+	}
+	if outcome.ReplayErr != nil {
+		// 重放的传输层失败：与首次发送的传输失败同处置（failover 语义）。
+		// TODO(票 24): fail 策略 closed 分支的接入点在 zhipuSignSelfHealVerifyFailure。
+		return nil, replayGuard, outcome.ReplayErr
+	}
+	return outcome.Resp, replayGuard, nil
+}
+
+// sendCCUpstreamRequestOnce 是 CC 上游请求的一次发送（不重放）。signed 表示本次
+// 请求确实带了签名（自愈状态机据此判定 VERIFY_* 是否与自己的私钥有关）。
+func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	targetURL string,
+	body []byte,
+	stream bool,
+	bearerToken string,
+	userAgent string,
+	grokCacheIdentity string,
+	firstTokenTimeout time.Duration,
+) (*http.Response, *openAIFirstOutputHeaderGuard, bool, error) {
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	var firstTokenGuard *openAIFirstOutputHeaderGuard
 	if firstTokenTimeout > 0 {
@@ -203,7 +252,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		if firstTokenGuard != nil {
 			firstTokenGuard.close()
 		}
-		return nil, nil, fmt.Errorf("build upstream request: %w", err)
+		return nil, nil, false, fmt.Errorf("build upstream request: %w", err)
 	}
 	// 记录本次实际选择的协议端点，供错误日志和用量日志在没有
 	// OpenAIForwardResult（例如 503/传输失败）时使用。每次发送都覆盖，
@@ -258,7 +307,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
 	// 与 session 必须同源一致，任何在其之后的覆写都会把签名拆散。zhipu 数据面挂点
 	// 仅此两处，另一处是 buildNativeAnthropicUpstreamRequest。
-	s.applyZhipuClientSign(upstreamReq.Context(), c, account, body, upstreamReq.Header)
+	signed := s.applyZhipuClientSign(upstreamReq.Context(), c, account, body, upstreamReq.Header)
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -275,9 +324,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		if fired {
 			firstTokenGuard.fire()
 		}
-		return resp, firstTokenGuard, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		return resp, firstTokenGuard, signed, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
-	return resp, firstTokenGuard, nil
+	return resp, firstTokenGuard, signed, nil
 }
 
 // ccStreamScanState 是 scanCCStream 返回的读取状态快照。

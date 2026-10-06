@@ -64,6 +64,8 @@ type zhipuSignStubSigner struct {
 	partial map[string]string
 	// values 覆盖默认的签名头值，用于「签名值不得被后续覆写拆散」的断言。
 	values map[string]string
+	// invalidated 记录 Invalidate 调用（票 23 自愈入口）。
+	invalidated []string
 }
 
 // TestApplyZhipuClientSignFailOpenStripsPartialHeaders 覆盖 fail 路径：签名失败时
@@ -508,6 +510,13 @@ func TestForwardAsRawChatCompletionsKeepsUnsignedPathByteIdentical(t *testing.T)
 	require.Equal(t, []string{"override-present"}, values)
 }
 
+
+// Invalidate 是 #23 自愈状态机的接口成员：本文件的门控/fail-open 用例不触发它，
+// 仅需满足 zhipuClientSigner 接口；自愈路径的调用断言在
+// openai_gateway_zhipu_selfheal_test.go 的专用替身上。
+func (s *zhipuSignStubSigner) Invalidate(apiKeyID string) {
+	s.invalidated = append(s.invalidated, apiKeyID)
+}
 
 func (s *zhipuSignStubSigner) Sign(_ context.Context, apiKey, sessionID string, h http.Header) error {
 	s.calls++
