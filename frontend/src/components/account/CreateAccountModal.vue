@@ -466,6 +466,68 @@
         </div>
       </div>
 
+      <!-- 智谱登录方式：登录账号（推荐）/ 手动 API Key -->
+      <div v-if="form.platform === 'zhipu'">
+        <label class="input-label">{{ t('admin.accounts.cnProviders.zhipuLogin.title') }}</label>
+        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-zhipu-login-mode">
+          <button
+            type="button"
+            data-testid="zhipu-create-mode-login"
+            @click="zhipuCreateMode = 'login'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              zhipuCreateMode === 'login'
+                ? cnAccentActiveClass
+                : 'border-gray-200 hover:border-gray-400 dark:border-dark-600 dark:hover:border-gray-600'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                zhipuCreateMode === 'login'
+                  ? cnAccentIconClass
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="user" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.zhipuLogin.login') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.zhipuLogin.loginDesc') }}</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            data-testid="zhipu-create-mode-manual"
+            @click="zhipuCreateMode = 'manual'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              zhipuCreateMode === 'manual'
+                ? cnAccentActiveClass
+                : 'border-gray-200 hover:border-gray-400 dark:border-dark-600 dark:hover:border-gray-600'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                zhipuCreateMode === 'manual'
+                  ? cnAccentIconClass
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="key" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.zhipuLogin.manual') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.zhipuLogin.manualDesc') }}</span>
+            </div>
+          </button>
+        </div>
+        <p v-if="isZhipuLoginMode" class="input-hint">
+          {{ t('admin.accounts.cnProviders.zhipuLogin.loginHint') }}
+        </p>
+      </div>
+
       <!-- Account Mode Selection (Kimi / Zhipu / DeepSeek) -->
       <div v-if="isCNPlatform">
         <label class="input-label">{{ t('admin.accounts.cnProviders.accountMode.title') }}</label>
@@ -1262,7 +1324,11 @@
       </div>
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <!-- 智谱登录模式：全程对 key 零感知，api key / base url / 请求头覆写整块不渲染 -->
+      <div
+        v-if="form.type === 'apikey' && form.platform !== 'antigravity' && !isZhipuLoginMode"
+        class="space-y-4"
+      >
         <div v-if="!isCNPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -3762,6 +3828,7 @@ import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import { useGrokOAuth } from '@/composables/useGrokOAuth'
+import { useZhipuOAuth } from '@/composables/useZhipuOAuth'
 import type {
   Proxy,
   AdminGroup,
@@ -3793,6 +3860,7 @@ import {
   applyAntigravityProjectID,
   applyHeaderOverride,
   applyInterceptWarmup,
+  buildZhipuLoginCredentials,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
   isHeaderOverrideCapable,
@@ -3836,6 +3904,7 @@ const { t } = useI18n()
 const authStore = useAuthStore()
 
 const oauthStepTitle = computed(() => {
+  if (form.platform === 'zhipu') return t('admin.accounts.oauth.zhipu.title')
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
@@ -3922,9 +3991,16 @@ const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
 const grokOAuth = useGrokOAuth() // For Grok OAuth
+const zhipuOAuth = useZhipuOAuth() // For Zhipu (bigmodel) account login
 
 // Computed: current OAuth state for template binding
+// 智谱登录模式（bigmodel_oauth）走同一套 OAuthAuthorizationFlow（生成链接 → 粘贴授权码）。
+const zhipuOAuthLoading = computed(
+  () => zhipuOAuth.status.value === 'generating' || zhipuOAuth.status.value === 'exchanging'
+)
+
 const currentAuthUrl = computed(() => {
+  if (form.platform === 'zhipu') return zhipuOAuth.loginUrl.value
   if (form.platform === 'openai') return openaiOAuth.authUrl.value
   if (form.platform === 'gemini') return geminiOAuth.authUrl.value
   if (form.platform === 'antigravity') return antigravityOAuth.authUrl.value
@@ -3933,6 +4009,7 @@ const currentAuthUrl = computed(() => {
 })
 
 const currentSessionId = computed(() => {
+  if (form.platform === 'zhipu') return zhipuOAuth.sessionId.value
   if (form.platform === 'openai') return openaiOAuth.sessionId.value
   if (form.platform === 'gemini') return geminiOAuth.sessionId.value
   if (form.platform === 'antigravity') return antigravityOAuth.sessionId.value
@@ -3941,6 +4018,7 @@ const currentSessionId = computed(() => {
 })
 
 const currentOAuthLoading = computed(() => {
+  if (form.platform === 'zhipu') return zhipuOAuthLoading.value
   if (form.platform === 'openai') return openaiOAuth.loading.value
   if (form.platform === 'gemini') return geminiOAuth.loading.value
   if (form.platform === 'antigravity') return antigravityOAuth.loading.value
@@ -3949,6 +4027,7 @@ const currentOAuthLoading = computed(() => {
 })
 
 const currentOAuthError = computed(() => {
+  if (form.platform === 'zhipu') return zhipuOAuth.errorMessage.value
   if (form.platform === 'openai') return openaiOAuth.error.value
   if (form.platform === 'gemini') return geminiOAuth.error.value
   if (form.platform === 'antigravity') return antigravityOAuth.error.value
@@ -3993,6 +4072,13 @@ const adaptiveBaseUrls = ref<Record<CnNativeApiProtocol, string>>({
 })
 const isCNPlatform = computed(
   () => form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek'
+)
+// ── 智谱登录方式：登录账号（推荐）/ 手动 API Key ──
+// 登录账号仍以 type=apikey 落库（03：IsZhipuLoginManaged = platform/type=apikey/auth_flow），
+// 因此不复用 accountCategory —— 它会把 form.type 推成 oauth 并触发错误的取键门控。
+const zhipuCreateMode = ref<'login' | 'manual'>('login')
+const isZhipuLoginMode = computed(
+  () => form.platform === 'zhipu' && zhipuCreateMode.value === 'login'
 )
 // CnBaseUrlPresets 的 platform prop 是平台字面量联合类型，模板里不能写
 // `as` 断言（其中的 `|` 会被 eslint 误判为 Vue2 filter 语法），经此 computed 传递。
@@ -4058,6 +4144,10 @@ function selectCNPlatform(platform: 'kimi' | 'zhipu' | 'deepseek') {
   form.type = 'apikey'
   accountCategory.value = 'apikey'
   apiProtocol.value = 'adaptive'
+  if (platform === 'zhipu') {
+    // 每次进入智谱卡片都回到推荐项（登录账号），避免残留上次的手动选择。
+    zhipuCreateMode.value = 'login'
+  }
   if (platform === 'deepseek') {
     accountMode.value = 'payg'
   }
@@ -4504,6 +4594,10 @@ const form = reactive({
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
+  // 智谱登录模式：生成登录链接 → 粘贴 authCode → 兑换 → 建号（form.type 仍为 apikey）
+  if (isZhipuLoginMode.value) {
+    return true
+  }
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
@@ -4530,6 +4624,9 @@ const expiresAtInput = computed({
 
 const canExchangeCode = computed(() => {
   const authCode = oauthFlowRef.value?.authCode || ''
+  if (form.platform === 'zhipu') {
+    return authCode.trim() && zhipuOAuth.sessionId.value && !zhipuOAuthLoading.value
+  }
   if (form.platform === 'openai') {
     return authCode.trim() && openaiOAuth.sessionId.value && !openaiOAuth.loading.value
   }
@@ -5076,6 +5173,8 @@ const resetForm = () => {
   form.expires_at = null
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
+  zhipuCreateMode.value = 'login'
+  zhipuOAuth.reset()
   accountMode.value = 'payg'
   apiProtocol.value = 'adaptive'
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
@@ -5634,11 +5733,14 @@ const goBackToBasicInfo = () => {
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
   grokOAuth.resetState()
+  zhipuOAuth.reset()
   oauthFlowRef.value?.reset()
 }
 
 const handleGenerateUrl = async () => {
-  if (form.platform === 'openai') {
+  if (form.platform === 'zhipu') {
+    await zhipuOAuth.generateLoginUrl({ proxyId: form.proxy_id })
+  } else if (form.platform === 'openai') {
     await openaiOAuth.generateAuthUrl(form.proxy_id)
   } else if (form.platform === 'gemini') {
     await geminiOAuth.generateAuthUrl(
@@ -6718,11 +6820,54 @@ const handleAnthropicExchange = async (authCode: string) => {
   }
 }
 
+// 智谱登录建号：凭据仅由 buildZhipuLoginCredentials 产出（03 白名单逐字一致），
+// 额外键（base_url/model_mapping/header_overrides/temp_unschedulable 等）一律不写入，
+// 否则 03/04 的键集合断言会把登录账号打回。
+const createZhipuLoginAccount = async (credentials: Record<string, unknown>) => {
+  submitting.value = true
+  try {
+    await adminAPI.zhipu.createFromLogin({
+      name: form.name,
+      notes: form.notes,
+      platform: 'zhipu',
+      type: 'apikey',
+      credentials,
+      proxy_id: form.proxy_id,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at,
+      auto_pause_on_expired: autoPauseOnExpired.value
+    })
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+    emit('created')
+    handleClose()
+  } catch (error: any) {
+    appStore.showError(error.response?.data?.detail || error.message || t('admin.accounts.failedToCreate'))
+  } finally {
+    submitting.value = false
+  }
+}
+
+// 智谱登录授权码兑换 → 登录建号
+const handleZhipuExchange = async (authCode: string) => {
+  if (!authCode.trim() || !zhipuOAuth.sessionId.value) return
+
+  const credential = await zhipuOAuth.exchangeAuthCode({ code: authCode.trim() })
+  if (!credential) return
+
+  await createZhipuLoginAccount(buildZhipuLoginCredentials(credential, apiProtocol.value))
+}
+
 // 主入口：根据平台路由到对应处理函数
 const handleExchangeCode = async () => {
   const authCode = oauthFlowRef.value?.authCode || ''
 
   switch (form.platform) {
+    case 'zhipu':
+      return handleZhipuExchange(authCode)
     case 'openai':
       return handleOpenAIExchange(authCode)
     case 'gemini':

@@ -344,6 +344,14 @@ export default {
           responses: 'Responses',
           responsesDesc: '供应商原生 Responses 端点，适配 Codex。',
         },
+        zhipuLogin: {
+          title: '登录方式',
+          login: '登录账号',
+          loginDesc: '推荐。浏览器授权智谱账号，系统自动解析 API Key，全程无需手填密钥。',
+          manual: '手动 API Key',
+          manualDesc: '沿用现有方式：手填 Base URL 与 API Key。',
+          loginHint: '下一步生成智谱登录链接，登录后粘贴授权码即可自动建号。',
+        },
         balance: '余额 --',
         window5h: '5 小时窗口',
         windowWeekly: '每周窗口',
@@ -1179,6 +1187,9 @@ export default {
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           pleaseEnterSessionToken: '请输入 Session Token'
+        },
+        zhipu: {
+          title: '智谱账号授权',
         },
         grok: {
           title: 'Grok 账号授权',

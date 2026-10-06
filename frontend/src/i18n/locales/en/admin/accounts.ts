@@ -141,6 +141,14 @@ export default {
           responses: 'Responses',
           responsesDesc: 'Provider’s native Responses endpoint — ideal for Codex.',
         },
+        zhipuLogin: {
+          title: 'Login Method',
+          login: 'Sign in with account',
+          loginDesc: 'Recommended. Authorize your Zhipu account in the browser; the API key is resolved automatically — nothing to paste.',
+          manual: 'Manual API Key',
+          manualDesc: 'Keep the current flow: fill in the Base URL and API Key yourself.',
+          loginHint: 'Continue to generate the Zhipu login link, then paste the authorization code to create the account automatically.',
+        },
         balance: 'Balance --',
         window5h: '5-hour window',
         windowWeekly: 'Weekly window',
@@ -1114,6 +1122,9 @@ export default {
           validateAndCreate: 'Validate & Create Account',
           pleaseEnterRefreshToken: 'Please enter Refresh Token',
           pleaseEnterSessionToken: 'Please enter Session Token'
+        },
+        zhipu: {
+          title: 'Zhipu Account Authorization',
         },
         grok: {
           title: 'Grok Account Authorization',

@@ -9,6 +9,7 @@ import {
   applyPlanType,
   buildHeaderOverridesObject,
   buildPlanTypeOptions,
+  buildZhipuLoginCredentials,
   isCustomGrokBaseUrl,
   isHeaderOverrideCapable,
   GROK_BASE_URL_PRESETS,
@@ -476,5 +477,53 @@ describe('plan_type helpers', () => {
       expect(out).toEqual({ email: 'a@b.c' })
       expect('plan_type' in out).toBe(false)
     })
+  })
+})
+
+// 键名白名单来自后端票 03（BuildAccountCredentials 的冻结契约），是本测试的独立事实源。
+describe('buildZhipuLoginCredentials', () => {
+  it('emits exactly the frozen bigmodel_oauth key set for a completed login', () => {
+    const credentials = buildZhipuLoginCredentials(
+      {
+        api_key: '12345.secret',
+        access_token: 'at-token',
+        zcodejwttoken: 'jwt-token',
+        plan_level: 'coding'
+      },
+      'anthropic'
+    )
+
+    expect(credentials).toEqual({
+      auth_flow: 'bigmodel_oauth',
+      api_key: '12345.secret',
+      access_token: 'at-token',
+      zcodejwttoken: 'jwt-token',
+      account_mode: 'coding',
+      api_protocol: 'anthropic'
+    })
+  })
+
+  it('adds refresh_token only when the exchange returned a non-empty one', () => {
+    const withRt = buildZhipuLoginCredentials(
+      {
+        api_key: '12345.secret',
+        access_token: 'at-token',
+        zcodejwttoken: 'jwt-token',
+        refresh_token: 'rt-token'
+      },
+      'adaptive'
+    )
+    expect(withRt.refresh_token).toBe('rt-token')
+
+    const withoutRt = buildZhipuLoginCredentials(
+      {
+        api_key: '12345.secret',
+        access_token: 'at-token',
+        zcodejwttoken: 'jwt-token',
+        refresh_token: ''
+      },
+      'adaptive'
+    )
+    expect('refresh_token' in withoutRt).toBe(false)
   })
 })
