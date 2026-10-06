@@ -94,10 +94,87 @@ export async function generateLoginUrl(
   return data
 }
 
+/**
+ * 签名 V4 管理端契约（backend ticket 28, `zhipu_sign_config.go` / `zhipu_sign_status.go`）。
+ *
+ * 字段名与 `gateway.zhipu.sign_*` 配置键逐字一致（后端 JSON tag 同源），前端不做任何
+ * 本地默认值推断：C1 的默认口径冲突（M3 默认关 vs M6 写作 on）以后端返回的生效值为准。
+ */
+export type ZhipuSignFailPolicy = 'open' | 'closed'
+
+/** 生效值快照：运行层覆盖 > 部署层 > 协议默认（后端 `ZhipuSignConfig`）。 */
+export interface ZhipuSignConfig {
+  sign_v4_enabled: boolean
+  sign_client_version: string
+  sign_pow_bits: number
+  sign_key_ttl_minutes: number
+  sign_handshake_backoff_seconds: number
+  sign_account_circuit_break_threshold: number
+  sign_fail_policy: ZhipuSignFailPolicy
+  sign_alert_enabled: boolean
+  sign_reconcile_interval_hours: number
+  sign_reconcile_deviation_threshold: number
+}
+
+/** 管理面读取视图：生效值 + 被运行期覆盖的 system_settings 键（已排序）。 */
+export interface ZhipuSignConfigView extends ZhipuSignConfig {
+  overridden_keys: string[]
+}
+
+/**
+ * 管理面更新请求：部分更新——只有传了的键才改，未传的键保持当前生效值。
+ * 非法值由后端强校验拒绝（reason=ZHIPU_SIGN_CONFIG_INVALID），且不会写入任何键。
+ */
+export type ZhipuSignConfigUpdate = Partial<ZhipuSignConfig>
+
+/** 单个账号的握手私钥与熔断状态（不含任何凭据或签名材料）。 */
+export interface ZhipuSignAccountStatus {
+  account_id: number
+  account_name: string
+  key_cached: boolean
+  last_handshake_at: string | null
+  key_expires_at: string | null
+  consecutive_failures: number
+  circuit_break_tripped: boolean
+  circuit_break_reason: string
+  /** false 表示运行时状态源未接线，UI 必须渲染「未知」而不是「未熔断」。 */
+  runtime_state_available: boolean
+}
+
+/** 状态读取响应：全局生效值 + 仅「启用签名」的账号（按 account_id 升序）。 */
+export interface ZhipuSignStatus {
+  sign_v4_enabled: boolean
+  sign_fail_policy: ZhipuSignFailPolicy
+  accounts: ZhipuSignAccountStatus[]
+}
+
+/** 读取签名生效配置（管理端 GET，audit 只记录写操作）。 */
+export async function getSignConfig(): Promise<ZhipuSignConfigView> {
+  const { data } = await apiClient.get<ZhipuSignConfigView>('/admin/zhipu/sign/config')
+  return data
+}
+
+/** 写入签名配置修改（管理端 PUT；后端强校验 + 热更新 + 审计中间件留痕）。 */
+export async function updateSignConfig(
+  update: ZhipuSignConfigUpdate
+): Promise<ZhipuSignConfigView> {
+  const { data } = await apiClient.put<ZhipuSignConfigView>('/admin/zhipu/sign/config', update)
+  return data
+}
+
+/** 读取签名状态（全局生效值 + 每个启用账号的握手私钥/熔断状态）。 */
+export async function getSignStatus(): Promise<ZhipuSignStatus> {
+  const { data } = await apiClient.get<ZhipuSignStatus>('/admin/zhipu/sign/status')
+  return data
+}
+
 export default {
   createFromLogin,
   exchange,
   generateLoginUrl,
   getResetCardStatus,
+  getSignConfig,
+  getSignStatus,
   relogin,
+  updateSignConfig,
 }

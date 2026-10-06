@@ -369,6 +369,12 @@
               </div>
             </div>
 
+            <!-- Zhipu Sign V4 (ticket 29): global gateway switch + fail policy + per-account
+                 handshake/circuit-break status. Values come from the admin API only. -->
+            <div v-if="section.platform === 'zhipu' && section.enabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
+              <ZhipuSignV4Section />
+            </div>
+
             <!-- Model Mapping -->
             <div>
               <div class="mb-1 flex items-center justify-between">
@@ -650,6 +656,7 @@ import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import PricingEntryCard from '@/components/admin/channel/PricingEntryCard.vue'
+import ZhipuSignV4Section from '@/components/admin/channel/ZhipuSignV4Section.vue'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
 
