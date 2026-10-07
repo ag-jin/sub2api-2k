@@ -51,12 +51,15 @@ const (
 	ZhipuOffPeakFactorValue = 0.5
 )
 
-// 高峰时段按北京时间（UTC+8）判定；固定时区保证结果只由传入时刻的瞬时决定，与进程时区无关。
-var zhipuOffsetZone = time.FixedZone("UTC+8", 8*60*60)
+// zhipuChinaZone 是智谱口径的北京时间固定时区（UTC+8，中国无夏令时）：高峰时段判定
+// （本文件 ZhipuPeakFactor）与上游用量自然日归一
+// （zhipu_account_monitor_service.go 的 zhipuCreditUsageWindow）共用同一事实源；
+// 固定偏移保证结果只由传入时刻决定，与进程时区、运行环境 tzdata 无关。
+var zhipuChinaZone = time.FixedZone("UTC+8", 8*60*60)
 
 // ZhipuPeakFactor 返回时段系数：周一~五 14:00（含）–18:00（不含）UTC+8 → 1.0，其余（含周末全天）→ 0.5。
 func ZhipuPeakFactor(at time.Time) float64 {
-	local := at.In(zhipuOffsetZone)
+	local := at.In(zhipuChinaZone)
 	switch local.Weekday() {
 	case time.Saturday, time.Sunday:
 		return ZhipuOffPeakFactorValue

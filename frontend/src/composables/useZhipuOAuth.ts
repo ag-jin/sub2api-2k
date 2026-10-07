@@ -64,15 +64,19 @@ export function useZhipuOAuth() {
     errorMessage.value = ''
   }
 
+  /** 三个入口共用的失败收尾：定位消息 → error 态 → 全局提示。 */
+  const reportFailure = (err: unknown): void => {
+    errorMessage.value = resolveErrorMessage(err)
+    status.value = 'error'
+    appStore.showError(errorMessage.value)
+  }
+
   const generateLoginUrl = async (
     options: ZhipuGenerateLoginUrlOptions = {}
   ): Promise<boolean> => {
+    // 清空上一轮（含上次成功留下的链接/会话），再进入 generating。
+    reset()
     status.value = 'generating'
-    loginUrl.value = ''
-    sessionId.value = ''
-    state.value = ''
-    credential.value = null
-    errorMessage.value = ''
 
     const payload: ZhipuLoginUrlRequest = {}
     if (options.proxyId) payload.proxy_id = options.proxyId
@@ -86,9 +90,7 @@ export function useZhipuOAuth() {
       status.value = 'awaiting_code'
       return true
     } catch (err) {
-      errorMessage.value = resolveErrorMessage(err)
-      status.value = 'error'
-      appStore.showError(errorMessage.value)
+      reportFailure(err)
       return false
     }
   }
@@ -110,9 +112,7 @@ export function useZhipuOAuth() {
       return result
     } catch (err) {
       credential.value = null
-      errorMessage.value = resolveErrorMessage(err)
-      status.value = 'error'
-      appStore.showError(errorMessage.value)
+      reportFailure(err)
       return null
     }
   }
@@ -135,9 +135,7 @@ export function useZhipuOAuth() {
       status.value = 'ready'
       return true
     } catch (err) {
-      errorMessage.value = resolveErrorMessage(err)
-      status.value = 'error'
-      appStore.showError(errorMessage.value)
+      reportFailure(err)
       return false
     }
   }

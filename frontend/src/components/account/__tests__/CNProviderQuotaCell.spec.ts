@@ -45,15 +45,16 @@ const account = {
   }
 } as Account
 
-describe('CNProviderQuotaCell', () => {
-  beforeEach(() => {
-    queryQuota.mockReset()
-    getSignStatus.mockReset()
-    // 默认未启用签名：既有用例不因降级徽标的数据源变化而改变断言
-    getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
-    resetZhipuSignStatusCache()
-  })
+// 每个用例都从干净的 mock 与空缓存起步；默认「未启用签名」，降级徽标用例自行覆盖
+// 数据源，既有用例不因降级徽标的数据源变化而改变断言。
+beforeEach(() => {
+  queryQuota.mockReset()
+  getSignStatus.mockReset()
+  getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
+  resetZhipuSignStatusCache()
+})
 
+describe('CNProviderQuotaCell', () => {
   it('renders tier rows through the shared UsageProgressBar inside the account table cell', async () => {
     queryQuota.mockResolvedValue({
       success: true,
@@ -114,14 +115,6 @@ describe('CNProviderQuotaCell', () => {
 })
 
 describe('CNProviderQuotaCell needs-relogin badge', () => {
-  beforeEach(() => {
-    queryQuota.mockReset()
-    getSignStatus.mockReset()
-    // 默认未启用签名：既有用例不因降级徽标的数据源变化而改变断言
-    getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
-    resetZhipuSignStatusCache()
-  })
-
   it('flags the cell when the managed sign-in expired, without exposing credential details', () => {
     const flagged = {
       ...account,
@@ -156,12 +149,6 @@ describe('CNProviderQuotaCell needs-relogin badge', () => {
 
 // 票 30 / ui-panels §6.3：VERIFY_* 降级 + 账号级熔断徽标（有 / 无 / 字段缺失三态）。
 describe('CNProviderQuotaCell sign-degraded badge', () => {
-  beforeEach(() => {
-    queryQuota.mockReset()
-    getSignStatus.mockReset()
-    resetZhipuSignStatusCache()
-  })
-
   function makeStatus(overrides: Record<string, unknown> = {}) {
     return {
       sign_v4_enabled: true,

@@ -309,10 +309,10 @@ func (s *ZhipuOAuthService) riskClientFor(proxyURL string) (*bigmodel.RiskClient
 
 // zcodeMinCallInterval 取 zcode.z.ai 风控端点的全局最小调用间隔
 // （gateway.zhipu.zcode_min_call_interval_seconds，0 = 禁用节流）。
-// 未注入配置时按 design M1 的默认值 30s 兜底。
+// 未注入配置时按 design M1 的默认值兜底（单一事实源：bigmodel 的同名导出常量）。
 func (s *ZhipuOAuthService) zcodeMinCallInterval() time.Duration {
 	if s.cfg == nil {
-		return 30 * time.Second
+		return bigmodel.DefaultZCodeMinCallInterval
 	}
 	seconds := s.cfg.Gateway.Zhipu.ZCodeMinCallIntervalSeconds
 	if seconds <= 0 {

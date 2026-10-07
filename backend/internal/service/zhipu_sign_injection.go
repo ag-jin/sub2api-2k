@@ -98,17 +98,11 @@ func (s *OpenAIGatewayService) zhipuClientSignEnabled(account *Account) bool {
 	return account.GetCredential(zhipuSignCredentialKey) == zhipuSignCredentialV4
 }
 
-// zhipuSignLoginManagedAccount 判定账号是否为「登录托管」的智谱账号：
-// platform=zhipu ∧ type=apikey ∧ credentials[auth_flow]=bigmodel_oauth。
-//
-// TODO(#03): 票 03 的 Account.IsZhipuLoginManaged() 合入 HEAD 后，本函数改为
-// 一行委托该 getter 并删除（判定语义逐字一致）。此处按 #26 的内联桩先例实现，
-// 避免本票卡在并行票的编译依赖上，也不与 account.go 产生冲突。
+// zhipuSignLoginManagedAccount 判定账号是否为「登录托管」的智谱账号
+// （platform=zhipu ∧ type=apikey ∧ credentials[auth_flow]=bigmodel_oauth）：
+// 直接委托 Account.IsZhipuLoginManaged（#03 的单一判定源），nil 账号为 false。
 func zhipuSignLoginManagedAccount(account *Account) bool {
-	return account != nil &&
-		account.Platform == PlatformZhipu &&
-		account.Type == AccountTypeAPIKey &&
-		account.GetCredential("auth_flow") == "bigmodel_oauth"
+	return account.IsZhipuLoginManaged()
 }
 
 // zhipuSignSessionID 生成签名用的 X-Session-Id：复用既有确定性会话种子模式

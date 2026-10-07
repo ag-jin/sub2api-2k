@@ -28,9 +28,10 @@ const oauthTokenEndpoint = "https://zcode.z.ai/api/v1/oauth/token"
 // loginAppID is the application id the bigmodel login page expects.
 const loginAppID = "zcode"
 
-// defaultZCodeMinCallInterval paces the risk client ExchangeCode builds when no
-// doer is injected; it mirrors the Gateway.Zhipu default of 30s.
-const defaultZCodeMinCallInterval = 30 * time.Second
+// DefaultZCodeMinCallInterval paces the risk client ExchangeCode builds when no
+// doer is injected; it mirrors the Gateway.Zhipu default of 30s and is also the
+// fallback the service layer uses when no config is injected.
+const DefaultZCodeMinCallInterval = 30 * time.Second
 
 // defaultHTTPTimeout bounds one default-client call when no doer is injected.
 const defaultHTTPTimeout = 30 * time.Second
@@ -340,27 +341,34 @@ func ExchangeCode(ctx context.Context, doer *RiskClient, proxyURL, code, redirec
 		}
 	}
 
+	return parseTokenExchangeResponse(raw, resp.StatusCode)
+}
+
+// parseTokenExchangeResponse validates a 200 exchange envelope and maps it onto
+// the typed result. Every failure is classified and carries no credential: only
+// the upstream code/message may be embedded, never the request payload.
+func parseTokenExchangeResponse(raw []byte, status int) (*TokenExchangeResult, error) {
 	var parsed tokenExchangeResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, &Error{Op: opExchangeCode, Kind: ErrorKindInvalidBody, Status: resp.StatusCode, err: err}
+		return nil, &Error{Op: opExchangeCode, Kind: ErrorKindInvalidBody, Status: status, err: err}
 	}
 	if parsed.Code != 0 {
 		return nil, &Error{
 			Op:      opExchangeCode,
 			Kind:    ErrorKindUpstreamCode,
-			Status:  resp.StatusCode,
+			Status:  status,
 			Code:    parsed.Code,
 			Message: truncateMessage(parsed.Msg),
 		}
 	}
 	if parsed.Data == nil {
-		return nil, &Error{Op: opExchangeCode, Kind: ErrorKindMissingField, Status: resp.StatusCode, Field: "data"}
+		return nil, &Error{Op: opExchangeCode, Kind: ErrorKindMissingField, Status: status, Field: "data"}
 	}
 	if parsed.Data.Bigmodel == nil || parsed.Data.Bigmodel.AccessToken == "" {
 		return nil, &Error{
 			Op:     opExchangeCode,
 			Kind:   ErrorKindMissingField,
-			Status: resp.StatusCode,
+			Status: status,
 			Field:  "data.bigmodel.access_token",
 		}
 	}
@@ -394,7 +402,7 @@ func resolveRiskClient(doer *RiskClient, proxyURL string) (*RiskClient, error) {
 	if err != nil {
 		return nil, configError(opExchangeCode, err)
 	}
-	return NewRiskClient(client, defaultZCodeMinCallInterval), nil
+	return NewRiskClient(client, DefaultZCodeMinCallInterval), nil
 }
 
 // newDefaultHTTPClient builds the transport used only when no doer is injected,

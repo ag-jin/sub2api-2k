@@ -263,9 +263,8 @@ func sanitizeZhipuSignConfig(in ZhipuSignConfig) ZhipuSignConfig {
 	if in.SignHandshakeBackoffSeconds < 0 || in.SignHandshakeBackoffSeconds > zhipuSignHandshakeBackoffMaxSecond {
 		in.SignHandshakeBackoffSeconds = defaults.SignHandshakeBackoffSeconds
 	}
-	if in.SignAccountCircuitBreakThreshold < 1 || in.SignAccountCircuitBreakThreshold > zhipuSignCircuitBreakThresholdMax {
-		in.SignAccountCircuitBreakThreshold = defaults.SignAccountCircuitBreakThreshold
-	}
+	// 阈值区间与回落规则与告警引擎共用同一实现（zhipuSignSanitizeCircuitBreakThreshold）。
+	in.SignAccountCircuitBreakThreshold = zhipuSignSanitizeCircuitBreakThreshold(in.SignAccountCircuitBreakThreshold)
 	switch in.SignFailPolicy {
 	case ZhipuSignFailPolicyOpen, ZhipuSignFailPolicyClosed:
 	default:
@@ -456,34 +455,24 @@ func (u ZhipuSignConfigUpdate) settingsValues() (map[string]string, error) {
 		values[SettingKeyZhipuSignClientVersion] = version
 	}
 	if u.SignPowBits != nil {
-		if *u.SignPowBits < 0 || *u.SignPowBits > zhipuSignPowBitsMax {
-			return nil, zhipuSignConfigInvalid(fmt.Sprintf(
-				"sign_pow_bits must be an integer in [0,%d], got %d", zhipuSignPowBitsMax, *u.SignPowBits))
+		if err := zhipuSignSetIntValue(values, SettingKeyZhipuSignPowBits, "sign_pow_bits", *u.SignPowBits, 0, zhipuSignPowBitsMax); err != nil {
+			return nil, err
 		}
-		values[SettingKeyZhipuSignPowBits] = strconv.Itoa(*u.SignPowBits)
 	}
 	if u.SignKeyTTLMinutes != nil {
-		if *u.SignKeyTTLMinutes < 1 || *u.SignKeyTTLMinutes > zhipuSignKeyTTLMinutesMax {
-			return nil, zhipuSignConfigInvalid(fmt.Sprintf(
-				"sign_key_ttl_minutes must be an integer in [1,%d], got %d", zhipuSignKeyTTLMinutesMax, *u.SignKeyTTLMinutes))
+		if err := zhipuSignSetIntValue(values, SettingKeyZhipuSignKeyTTLMinutes, "sign_key_ttl_minutes", *u.SignKeyTTLMinutes, 1, zhipuSignKeyTTLMinutesMax); err != nil {
+			return nil, err
 		}
-		values[SettingKeyZhipuSignKeyTTLMinutes] = strconv.Itoa(*u.SignKeyTTLMinutes)
 	}
 	if u.SignHandshakeBackoffSeconds != nil {
-		if *u.SignHandshakeBackoffSeconds < 0 || *u.SignHandshakeBackoffSeconds > zhipuSignHandshakeBackoffMaxSecond {
-			return nil, zhipuSignConfigInvalid(fmt.Sprintf(
-				"sign_handshake_backoff_seconds must be an integer in [0,%d], got %d",
-				zhipuSignHandshakeBackoffMaxSecond, *u.SignHandshakeBackoffSeconds))
+		if err := zhipuSignSetIntValue(values, SettingKeyZhipuSignHandshakeBackoffSeconds, "sign_handshake_backoff_seconds", *u.SignHandshakeBackoffSeconds, 0, zhipuSignHandshakeBackoffMaxSecond); err != nil {
+			return nil, err
 		}
-		values[SettingKeyZhipuSignHandshakeBackoffSeconds] = strconv.Itoa(*u.SignHandshakeBackoffSeconds)
 	}
 	if u.SignAccountCircuitBreakThreshold != nil {
-		if *u.SignAccountCircuitBreakThreshold < 1 || *u.SignAccountCircuitBreakThreshold > zhipuSignCircuitBreakThresholdMax {
-			return nil, zhipuSignConfigInvalid(fmt.Sprintf(
-				"sign_account_circuit_break_threshold must be an integer in [1,%d], got %d",
-				zhipuSignCircuitBreakThresholdMax, *u.SignAccountCircuitBreakThreshold))
+		if err := zhipuSignSetIntValue(values, SettingKeyZhipuSignAccountCircuitBreakThreshold, "sign_account_circuit_break_threshold", *u.SignAccountCircuitBreakThreshold, 1, zhipuSignCircuitBreakThresholdMax); err != nil {
+			return nil, err
 		}
-		values[SettingKeyZhipuSignAccountCircuitBreakThreshold] = strconv.Itoa(*u.SignAccountCircuitBreakThreshold)
 	}
 	if u.SignFailPolicy != nil {
 		policy := strings.ToLower(strings.TrimSpace(*u.SignFailPolicy))
@@ -498,12 +487,9 @@ func (u ZhipuSignConfigUpdate) settingsValues() (map[string]string, error) {
 		values[SettingKeyZhipuSignAlertEnabled] = strconv.FormatBool(*u.SignAlertEnabled)
 	}
 	if u.SignReconcileIntervalHours != nil {
-		if *u.SignReconcileIntervalHours < 1 || *u.SignReconcileIntervalHours > zhipuSignReconcileIntervalHoursMax {
-			return nil, zhipuSignConfigInvalid(fmt.Sprintf(
-				"sign_reconcile_interval_hours must be an integer in [1,%d], got %d",
-				zhipuSignReconcileIntervalHoursMax, *u.SignReconcileIntervalHours))
+		if err := zhipuSignSetIntValue(values, SettingKeyZhipuSignReconcileIntervalHours, "sign_reconcile_interval_hours", *u.SignReconcileIntervalHours, 1, zhipuSignReconcileIntervalHoursMax); err != nil {
+			return nil, err
 		}
-		values[SettingKeyZhipuSignReconcileIntervalHours] = strconv.Itoa(*u.SignReconcileIntervalHours)
 	}
 	if u.SignReconcileDeviationThreshold != nil {
 		if *u.SignReconcileDeviationThreshold <= 0 || *u.SignReconcileDeviationThreshold > 1 {
@@ -518,6 +504,18 @@ func (u ZhipuSignConfigUpdate) settingsValues() (map[string]string, error) {
 			"no zhipu sign config key supplied; supply at least one of: "+zhipuSignUpdateKeysList)
 	}
 	return values, nil
+}
+
+// zhipuSignSetIntValue 校验一个整型配置值的区间并写入待持久化集合：越界即返回
+// 「键名 + 允许区间 + 实际取值」的可读 400，且不写入该键。区间校验与错误文案的
+// 单一事实源（五个整型键共用）。
+func zhipuSignSetIntValue(values map[string]string, settingKey, label string, value, low, high int) error {
+	if value < low || value > high {
+		return zhipuSignConfigInvalid(fmt.Sprintf(
+			"%s must be an integer in [%d,%d], got %d", label, low, high, value))
+	}
+	values[settingKey] = strconv.Itoa(value)
+	return nil
 }
 
 // Update 校验并持久化管理端的配置修改（design M3.1(e)：协议漂移只能由管理员显式修改，

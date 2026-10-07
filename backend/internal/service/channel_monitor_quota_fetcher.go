@@ -408,7 +408,7 @@ func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context,
 	if f == nil || snapshot == nil || account == nil || !account.IsZhipuLoginManaged() {
 		return
 	}
-	snapshot.NeedsRelogin = zhipuNeedsRelogin(account)
+	snapshot.NeedsRelogin = accountNeedsRelogin(account)
 	if f.zhipuLogin == nil {
 		// 未接线（或回滚）时静默跳过：快照形状与三源现状一致。
 		return
@@ -428,16 +428,6 @@ func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context,
 	if len(credits) > 0 {
 		snapshot.ModelCredits = credits
 	}
-}
-
-// zhipuNeedsRelogin 读 accounts.extra 的重登标记（票 09 写入契约：布尔 true；
-// 缺键/非布尔/非 true 一律视为 false，老账号行天然兼容）。
-func zhipuNeedsRelogin(account *Account) bool {
-	if account == nil || account.Extra == nil {
-		return false
-	}
-	needs, _ := account.Extra[ZhipuNeedsReloginExtraKey].(bool)
-	return needs
 }
 
 // fetchCNQuota 国产 coding plan：CNProviderQuotaService.QueryUsageForAccount → 快照。

@@ -100,7 +100,8 @@ export function describeZhipuSignAlert(
 
   const description = typeof event?.description === 'string' ? event.description : ''
   const bucket = readNumber(readDimension(event, 'zhipu_sign_window_bucket'))
-  const hasAccountDimension = readAccountIds(event).length > 0
+  const accountIds = readAccountIds(event)
+  const hasAccountDimension = accountIds.length > 0
 
   let kind: ZhipuSignAlertKind | null = null
   if (description.includes(ZHIPU_SIGN_FAIL_WINDOW_METRIC) || bucket !== null || hasAccountDimension) {
@@ -117,7 +118,7 @@ export function describeZhipuSignAlert(
     value: readNumber(event?.metric_value),
     threshold: readNumber(event?.threshold_value),
     windowBucket: bucket,
-    accounts: readAccountIds(event).map((id) => ({ id, masked: maskAccountId(id) })),
+    accounts: accountIds.map((id) => ({ id, masked: maskAccountId(id) })),
     suggestedAction: extractSuggestedAction(event?.description),
   }
 }

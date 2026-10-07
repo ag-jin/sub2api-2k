@@ -155,29 +155,40 @@ func handshake(ctx context.Context, apiKey, origin string, doer HTTPDoer) (*Hand
 			Code:       envelopeCode(payload),
 		}
 	}
-	var envelope handshakeResponse
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, &HandshakeError{Kind: HandshakeErrorKindMalformedBody, StatusCode: resp.StatusCode, Err: err}
+	privateCipher, err := handshakePrivateCipher(payload, resp.StatusCode)
+	if err != nil {
+		return nil, err
 	}
-	if envelope.Code != handshakeSuccessCode {
-		return nil, &HandshakeError{
-			Kind:       HandshakeErrorKindBusinessCode,
-			StatusCode: resp.StatusCode,
-			Code:       int(envelope.Code),
-		}
-	}
-	if envelope.Data == nil || strings.TrimSpace(envelope.Data.PrivateCipher) == "" {
-		return nil, &HandshakeError{
-			Kind:       HandshakeErrorKindMissingCipher,
-			StatusCode: resp.StatusCode,
-			Code:       int(envelope.Code),
-		}
-	}
-	privateKey, err := decryptPrivateCipher(apiKeySecret, apiKeyID, envelope.Data.PrivateCipher)
+	privateKey, err := decryptPrivateCipher(apiKeySecret, apiKeyID, privateCipher)
 	if err != nil {
 		return nil, err
 	}
 	return &HandshakeResult{APIKeyID: apiKeyID, PrivateKey: privateKey}, nil
+}
+
+// handshakePrivateCipher validates a 2xx handshake envelope and returns its
+// data.privateCipher. Every rejection keeps the classified HandshakeError kind
+// the callers key off; the upstream body itself is never retained.
+func handshakePrivateCipher(payload []byte, status int) (string, error) {
+	var envelope handshakeResponse
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return "", &HandshakeError{Kind: HandshakeErrorKindMalformedBody, StatusCode: status, Err: err}
+	}
+	if envelope.Code != handshakeSuccessCode {
+		return "", &HandshakeError{
+			Kind:       HandshakeErrorKindBusinessCode,
+			StatusCode: status,
+			Code:       int(envelope.Code),
+		}
+	}
+	if envelope.Data == nil || strings.TrimSpace(envelope.Data.PrivateCipher) == "" {
+		return "", &HandshakeError{
+			Kind:       HandshakeErrorKindMissingCipher,
+			StatusCode: status,
+			Code:       int(envelope.Code),
+		}
+	}
+	return envelope.Data.PrivateCipher, nil
 }
 
 // newHandshakeNonce returns the 16 random bytes the protocol sends hex encoded.

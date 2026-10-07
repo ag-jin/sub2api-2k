@@ -227,12 +227,7 @@ func (r *ZhipuSignReconciler) RunIfDue(ctx context.Context) (ZhipuSignReconcileR
 
 	baseline, baselineEnd, hasBaseline := r.baselineSnapshot()
 	if !hasBaseline {
-		readings, ok := r.readAccounts(ctx, accounts, windowEnd, windowEnd)
-		if !ok {
-			return r.fail(result, ZhipuSignReconcileReasonUpstreamError), false
-		}
-		r.storeBaseline(readings, windowEnd)
-		return r.skip(result, ZhipuSignReconcileReasonNoBaseline), false
+		return r.captureBaseline(ctx, accounts, windowEnd, result)
 	}
 
 	result.WindowStart = baselineEnd
@@ -249,16 +244,12 @@ func (r *ZhipuSignReconciler) RunIfDue(ctx context.Context) (ZhipuSignReconcileR
 		return r.fail(result, ZhipuSignReconcileReasonUpstreamError), false
 	}
 	deltas := zhipuSignReconcileDeltaByModel(baseline, readings)
-	actual, expected := zhipuSignReconcileAggregate(deltas, baselineEnd, windowEnd)
-	if !zhipuSignReconcileFinite(actual) || actual <= 0 {
-		return r.skip(result, ZhipuSignReconcileReasonNoUsage), false
-	}
-	if !zhipuSignReconcileFinite(expected) || expected <= 0 {
-		return r.skip(result, ZhipuSignReconcileReasonNoExpectedCost), false
-	}
-	rate := actual / expected
-	if !zhipuSignReconcileFinite(rate) || rate <= 0 {
-		return r.fail(result, ZhipuSignReconcileReasonInvalidRate), false
+	actual, expected, rate, reason := zhipuSignReconcileRate(deltas, baselineEnd, windowEnd)
+	switch {
+	case reason == ZhipuSignReconcileReasonInvalidRate:
+		return r.fail(result, reason), false
+	case reason != "":
+		return r.skip(result, reason), false
 	}
 
 	result.ActualCredits = actual
@@ -272,6 +263,19 @@ func (r *ZhipuSignReconciler) RunIfDue(ctx context.Context) (ZhipuSignReconcileR
 	r.publish(result)
 	r.logApplied(result)
 	return result, true
+}
+
+// captureBaseline 是首轮分支：读取一次累计读数并记为基线，本轮不产出系数
+// （credit-usage 是自然日累计读数，没有上一读数就算不出增量）。
+func (r *ZhipuSignReconciler) captureBaseline(
+	ctx context.Context, accounts []Account, windowEnd time.Time, result ZhipuSignReconcileResult,
+) (ZhipuSignReconcileResult, bool) {
+	readings, ok := r.readAccounts(ctx, accounts, windowEnd, windowEnd)
+	if !ok {
+		return r.fail(result, ZhipuSignReconcileReasonUpstreamError), false
+	}
+	r.storeBaseline(readings, windowEnd)
+	return r.skip(result, ZhipuSignReconcileReasonNoBaseline), false
 }
 
 // LastResult 返回最近一次可展示的对账状态（ok=false 表示从未成功对账过）。失败轮保留
@@ -540,6 +544,25 @@ func zhipuSignReconcileAggregate(deltas []zhipuSignReconcileDelta, start, end ti
 		expected += zhipuSignReconcileMeanEffectiveCost(delta, start, end)
 	}
 	return actual, expected
+}
+
+// zhipuSignReconcileRate 汇总窗口增量并算出有效系数。actual/expected 非正或系数
+// 非有限/非正时返回原因码（空串表示产出成功）；除 invalid_rate 按失败处理外，
+// 其余原因码都属「本轮没有可用数据」的跳过口径。防除零与「绝不产生 NaN/Inf 指标」
+// 的硬性检查都在这里。
+func zhipuSignReconcileRate(deltas []zhipuSignReconcileDelta, start, end time.Time) (actual, expected, rate float64, reason string) {
+	actual, expected = zhipuSignReconcileAggregate(deltas, start, end)
+	if !zhipuSignReconcileFinite(actual) || actual <= 0 {
+		return 0, 0, 0, ZhipuSignReconcileReasonNoUsage
+	}
+	if !zhipuSignReconcileFinite(expected) || expected <= 0 {
+		return 0, 0, 0, ZhipuSignReconcileReasonNoExpectedCost
+	}
+	rate = actual / expected
+	if !zhipuSignReconcileFinite(rate) || rate <= 0 {
+		return 0, 0, 0, ZhipuSignReconcileReasonInvalidRate
+	}
+	return actual, expected, rate, ""
 }
 
 // zhipuSignReconcileMeanEffectiveCost 返回单个模型增量的期望积分：对窗口逐分钟采样

@@ -13,7 +13,7 @@ import (
 //
 //	GET /api/v1/admin/zhipu/sign/config   读取生效配置（含被运行期覆盖的键）
 //	PUT /api/v1/admin/zhipu/sign/config   强校验后写入修改（热更新，变更由审计中间件留痕）
-//	GET /api/v1/admin/zhipu/sign/status   只读状态（私钥缓存 / 上次握手 / 连续失败 + TODO(#24) 熔断占位）
+//	GET /api/v1/admin/zhipu/sign/status   只读状态（私钥缓存 / 上次握手 / 连续失败 / 账号级熔断）
 //
 // 鉴权不是本文件的职责：三条路由一律挂在 routes/admin.go 的 admin 分组下，继承既有
 // 管理端中间件（adminAuth + 面板限流 + 审计 + 合规守卫）。本文件与登记的路由都不提供

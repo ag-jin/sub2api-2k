@@ -37,21 +37,20 @@ const (
 	zhipuCreditUsageTimeout = 15 * time.Second
 	zhipuCreditUsageMaxBody = 512 * 1024
 	zhipuCreditUsageCodeOK  = 200
+	// zhipuCreditUsageMessageMaxBytes 是上游错误摘要进入快照/日志前的截断长度。
+	zhipuCreditUsageMessageMaxBytes = 240
 
 	// zhipuDefaultCreditUsageCacheMinutes 是 credit-usage 快照的内存缓存 TTL 兜底值，
 	// 与重置卡状态查询共用 gateway.zhipu.reset_status_cache_minutes（票 08 规定口径）。
 	zhipuDefaultCreditUsageCacheMinutes = 10
 )
 
-// zhipuCreditUsageLocation 是上游用量日历日的时区（响应 timezone=Asia/Shanghai，
-// 中国无夏令时，用固定偏移避免依赖运行环境 tzdata）。
-var zhipuCreditUsageLocation = time.FixedZone("UTC+8", 8*60*60)
-
 // zhipuCreditUsageWindow 把调用方给的时刻归一成上游的当日窗口：
 // start → 该时刻所在 +8 自然日的 00:00:00，end → 同日的 23:59:59。
+// 时区取 zhipuChinaZone（zhipu_cost_model.go 的单一事实源）。
 func zhipuCreditUsageWindow(start, end time.Time) (string, string) {
-	return start.In(zhipuCreditUsageLocation).Format("2006-01-02") + " 00:00:00",
-		end.In(zhipuCreditUsageLocation).Format("2006-01-02") + " 23:59:59"
+	return start.In(zhipuChinaZone).Format("2006-01-02") + " 00:00:00",
+		end.In(zhipuChinaZone).Format("2006-01-02") + " 23:59:59"
 }
 
 // ErrZhipuCreditUsageNotConfigured 表示服务缺少必要依赖（未接线）。
@@ -74,8 +73,8 @@ var ErrZhipuCreditUsageResponse = errors.New("zhipu credit usage: unexpected res
 
 // ZhipuAccountMonitorService 采集登录托管智谱账号的积分明细与登录态凭据健康。
 //
-// 本文件当前只包含 credit-usage 部分（票 08）；重置卡只读读取（票 12）与
-// 对账增量（票 27）在此结构上追加。
+// 本文件包含 credit-usage 探针（票 08）与 L2 费率对账的周期挂载 / 快照合并（票 27）；
+// 重置卡只读读取（票 12）在此结构上追加。
 //
 // 缓存语义：以「账号 + 上游当日窗口」为键的单条正缓存（TTL 见 creditUsageCacheTTL），
 // 并发与 TTL 内的连续调用由 singleflight 合并为至多一次上游请求；失败结果不写缓存。
@@ -199,7 +198,7 @@ func (s *ZhipuAccountMonitorService) fetchUsageDetail(ctx context.Context, accou
 		return nil, fmt.Errorf("%w: HTTP %d", ErrZhipuCreditUsageUnauthorized, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrZhipuCreditUsageUpstream, resp.StatusCode,
-			truncate(strings.TrimSpace(string(body)), 240))
+			truncate(strings.TrimSpace(string(body)), zhipuCreditUsageMessageMaxBytes))
 	}
 
 	root := gjson.ParseBytes(body)
@@ -278,12 +277,8 @@ func (s *ZhipuAccountMonitorService) SetSignReconciler(reconciler *ZhipuSignReco
 // 内，每轮调一次——本服务不新建 goroutine/ticker（design M5：不新建 loop）。是否到期
 // 由 ZhipuSignReconciler 的窗口口径决定；未接线时是空操作。
 //
-// 主会话接线 TODO（不在票 27 的文件面内）：
-//   - keeper 侧：给 zhipuCredentialKeeper 增加一条可选接缝（如
-//     `RunDueSignReconcile(ctx context.Context)`），在 runOnce 的账号遍历之后调用一次；
-//   - wire 侧：
-//     `monitor.SetSignReconciler(NewZhipuSignReconciler(cfg, accountRepo, monitor, zhipuSignAlerts, nil))`
-//     并 `reconciler.SetConfigSource(zhipuSignConfigService)`（#28 的运行层覆盖热生效）。
+// 装配已就位（service/wire.go）：keeper.SetSignReconcileHook 挂载本方法，
+// 对账器与生效配置面经 SetSignReconciler / SetConfigSource 注入。
 func (s *ZhipuAccountMonitorService) RunDueSignReconcile(ctx context.Context) {
 	if s == nil || s.signReconcile == nil {
 		return
@@ -302,8 +297,8 @@ func (s *ZhipuAccountMonitorService) SignReconcileResult() (ZhipuSignReconcileRe
 // ApplySignReconcileSnapshot 把最近一次 L2 对账结果合入配额快照（票 11 的快照字段）。
 // 未接线或从未成功对账时保持快照原样——老历史行与既有消费方零变化。
 //
-// 主会话接线 TODO（不在票 27 的文件面内）：ChannelMonitorQuotaFetcher 的智谱登录态分支
-// （fetchZhipuLoginSources / fetchCNQuota）在建好快照后调用一次本方法即可，无需新字段。
+// 抓取侧经 monitorSignReconcileSnapshotSink 动态下探调用
+// （channel_monitor_quota_fetcher.go 的 appendZhipuLoginFields）。
 func (s *ZhipuAccountMonitorService) ApplySignReconcileSnapshot(snapshot *domain.MonitorQuotaSnapshot) {
 	if s == nil || snapshot == nil || s.signReconcile == nil {
 		return
@@ -401,7 +396,7 @@ func zhipuCreditUsageMessage(root gjson.Result) string {
 	if message == "" {
 		message = "unknown zhipu credit usage error"
 	}
-	return truncate(message, 240)
+	return truncate(message, zhipuCreditUsageMessageMaxBytes)
 }
 
 // zhipuCreditUsageSeriesValue 取日序列第 index 项：数字与数字字符串都接受，

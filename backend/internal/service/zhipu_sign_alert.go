@@ -606,8 +606,9 @@ func zhipuSignAlertEnabledFromConfig(cfg *config.Config) bool {
 	return cfg.Gateway.Zhipu.SignAlertEnabled
 }
 
-// zhipuSignSanitizeCircuitBreakThreshold 收敛阈值：越界（<1 或 >上限）回落默认值，
-// 与票 28 的 sanitizeZhipuSignConfig 同口径。
+// zhipuSignSanitizeCircuitBreakThreshold 收敛阈值：越界（<1 或 >上限）回落默认值。
+// 本函数是阈值区间规则与回落语义的单一实现，同时服务本文件（引擎未接线时的阈值读取）
+// 与票 28 的 sanitizeZhipuSignConfig。
 func zhipuSignSanitizeCircuitBreakThreshold(threshold int) int {
 	if threshold < 1 || threshold > zhipuSignCircuitBreakThresholdMax {
 		return zhipuSignProtocolDefaults().SignAccountCircuitBreakThreshold

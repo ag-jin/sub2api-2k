@@ -345,7 +345,9 @@ func (k *ZhipuCredentialKeeper) nowTime() time.Time {
 	return time.Now()
 }
 
-// accountNeedsRelogin 读取 extra 标记（非 bool 或缺失一律视为未标记）。
+// accountNeedsRelogin 读取 extra 的 zhipu_needs_relogin 标记（票 09 写入契约：布尔 true；
+// 缺键/非布尔/非 true 一律视为未标记，老账号行天然兼容）。keeper 判定与监控快照
+// （channel_monitor_quota_fetcher.go）共用本读取口。
 func accountNeedsRelogin(account *Account) bool {
 	if account == nil {
 		return false

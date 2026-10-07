@@ -12,7 +12,7 @@
       </h4>
       <span
         class="rounded px-1.5 py-0.5 text-[10px] font-medium"
-        :class="stateBadgeClass"
+        :class="statePresentation.badgeClass"
         data-testid="zhipu-sign-health-state"
       >
         {{ stateText }}
@@ -30,7 +30,7 @@
     <div class="space-y-2 p-4">
       <p
         class="font-mono text-xl font-bold"
-        :class="stateTextClass"
+        :class="statePresentation.textClass"
         :title="t('monitorCommon.signHealth.effectiveRateTooltip')"
         :aria-label="t('monitorCommon.signHealth.current')"
         data-testid="zhipu-sign-health-value"
@@ -142,6 +142,40 @@ function toFiniteNumber(value: unknown): number | null {
 
 type HealthState = 'on_target' | 'above_target' | 'alert' | 'unknown'
 
+interface HealthStatePresentation {
+  /** i18n 子键：monitorCommon.signHealth.states.<key> */
+  key: string
+  textClass: string
+  badgeClass: string
+}
+
+/**
+ * 四态的唯一映射表：状态文案 key 与数值/徽标两处配色同源
+ * （此前是三份内容平行的 switch，新增状态时容易只改一处而漂移）。
+ */
+const STATE_PRESENTATION: Record<HealthState, HealthStatePresentation> = {
+  on_target: {
+    key: 'onTarget',
+    textClass: 'text-emerald-600 dark:text-emerald-400',
+    badgeClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  },
+  above_target: {
+    key: 'aboveTarget',
+    textClass: 'text-amber-600 dark:text-amber-400',
+    badgeClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+  },
+  alert: {
+    key: 'alert',
+    textClass: 'text-red-600 dark:text-red-400',
+    badgeClass: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+  },
+  unknown: {
+    key: 'unknown',
+    textClass: 'text-gray-500 dark:text-gray-400',
+    badgeClass: 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300',
+  },
+}
+
 const effectiveRate = computed(() => toFiniteNumber(props.snapshot?.sign_effective_rate))
 
 /**
@@ -170,46 +204,9 @@ const state = computed<HealthState>(() => {
   return rate <= ALERT_THRESHOLD ? 'above_target' : 'alert'
 })
 
-const stateKey = computed(() => {
-  switch (state.value) {
-    case 'on_target':
-      return 'onTarget'
-    case 'above_target':
-      return 'aboveTarget'
-    case 'alert':
-      return 'alert'
-    default:
-      return 'unknown'
-  }
-})
+const statePresentation = computed(() => STATE_PRESENTATION[state.value])
 
-const stateText = computed(() => t(`monitorCommon.signHealth.states.${stateKey.value}`))
-
-const stateTextClass = computed(() => {
-  switch (state.value) {
-    case 'on_target':
-      return 'text-emerald-600 dark:text-emerald-400'
-    case 'above_target':
-      return 'text-amber-600 dark:text-amber-400'
-    case 'alert':
-      return 'text-red-600 dark:text-red-400'
-    default:
-      return 'text-gray-500 dark:text-gray-400'
-  }
-})
-
-const stateBadgeClass = computed(() => {
-  switch (state.value) {
-    case 'on_target':
-      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-    case 'above_target':
-      return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
-    case 'alert':
-      return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-    default:
-      return 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300'
-  }
-})
+const stateText = computed(() => t(`monitorCommon.signHealth.states.${statePresentation.value.key}`))
 
 const valueText = computed(() =>
   effectiveRate.value === null ? PLACEHOLDER : effectiveRate.value.toFixed(2)
