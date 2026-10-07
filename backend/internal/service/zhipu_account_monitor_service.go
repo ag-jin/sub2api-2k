@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/bigmodel"
 	"github.com/tidwall/gjson"
 	"golang.org/x/sync/singleflight"
 )
@@ -73,8 +74,8 @@ var ErrZhipuCreditUsageResponse = errors.New("zhipu credit usage: unexpected res
 
 // ZhipuAccountMonitorService 采集登录托管智谱账号的积分明细与登录态凭据健康。
 //
-// 本文件包含 credit-usage 探针（票 08）与 L2 费率对账的周期挂载 / 快照合并（票 27）；
-// 重置卡只读读取（票 12）在此结构上追加。
+// 本文件包含 credit-usage 探针（票 08）、重置卡只读读取（票 12）与 L2 费率对账的
+// 周期挂载 / 快照合并（票 27）。
 //
 // 缓存语义：以「账号 + 上游当日窗口」为键的单条正缓存（TTL 见 creditUsageCacheTTL），
 // 并发与 TTL 内的连续调用由 singleflight 合并为至多一次上游请求；失败结果不写缓存。
@@ -82,6 +83,11 @@ type ZhipuAccountMonitorService struct {
 	accountRepo  AccountRepository
 	httpUpstream HTTPUpstream
 	cfg          *config.Config
+
+	// resetStatus 是重置卡只读读取器（design M4 / 票 12）：装配期在构造函数里
+	// 经共享 RiskClient 建好，运行期只读；无 HTTP 上游（未接线/回滚）时为 nil，
+	// 调用方静默跳过整条链。
+	resetStatus zhipuResetStatusReader
 
 	flight singleflight.Group
 
@@ -95,6 +101,15 @@ type ZhipuAccountMonitorService struct {
 	now func() time.Time
 }
 
+// zhipuResetStatusReader 是重置卡只读状态读取器的接缝（*bigmodel.ResetStatusReader
+// 天然满足；单元测试注入桩）。
+//
+// R0：本接口只有只读 Fetch —— 重置卡是用户资产，本系统仅观测，永不使用；
+// 不存在任何使用/兑换/消耗方法的接缝，也不得新增（校验：scripts/check_r0_invariant.sh）。
+type zhipuResetStatusReader interface {
+	Fetch(ctx context.Context, zcodeJWTToken, accessToken string) (*bigmodel.ResetStatus, error)
+}
+
 // zhipuCreditUsageCacheEntry 是键内已含账号与窗口的单条快照缓存。
 type zhipuCreditUsageCacheEntry struct {
 	credits   []domain.MonitorQuotaModelCredit
@@ -102,14 +117,62 @@ type zhipuCreditUsageCacheEntry struct {
 }
 
 // NewZhipuAccountMonitorService 构造探针服务。accountRepo 供后续管理面查询复用。
+//
+// 重置卡只读读取器在同一构造点装配（票 12）：TTL 与 credit-usage 快照共用
+// gateway.zhipu.reset_status_cache_minutes（票 08 规定的口径，默认 10 分钟）；
+// httpUpstream 缺失时读取器保持 nil（整链静默跳过，等价回滚）。
 func NewZhipuAccountMonitorService(accountRepo AccountRepository, httpUpstream HTTPUpstream, cfg *config.Config) *ZhipuAccountMonitorService {
-	return &ZhipuAccountMonitorService{
+	svc := &ZhipuAccountMonitorService{
 		accountRepo:      accountRepo,
 		httpUpstream:     httpUpstream,
 		cfg:              cfg,
 		creditUsageCache: make(map[string]zhipuCreditUsageCacheEntry),
 		now:              time.Now,
 	}
+	svc.resetStatus = newZhipuResetStatusReader(httpUpstream, cfg, svc.creditUsageCacheTTL())
+	return svc
+}
+
+// newZhipuResetStatusReader 装配重置卡只读读取器（design M4 / 票 12）：zcode.z.ai 是
+// 风控域名，读取必须经共享 RiskClient（最小调用间隔 + 3012/3001/429 负缓存退避 +
+// singleflight），绝不直连；httpUpstream 缺失时返回 nil，调用方静默跳过。
+//
+// 全服务共用**一个**读取器（而非按账号各建）：RiskClient 的节流/退避按端点全局生效，
+// 多账号并发读同一端点时才算「一个上游 IP 一个闸」；读取器内部按凭据哈希缓存 +
+// 串行化，账号之间不会串号（见 reset_status.go 的 callMu）。
+func newZhipuResetStatusReader(httpUpstream HTTPUpstream, cfg *config.Config, cacheTTL time.Duration) zhipuResetStatusReader {
+	if httpUpstream == nil {
+		return nil
+	}
+	return bigmodel.NewResetStatusReader(
+		bigmodel.NewRiskClient(zhipuResetStatusHTTPDoer{upstream: httpUpstream}, zhipuZCodeMinCallInterval(cfg)),
+		cacheTTL,
+	)
+}
+
+// zhipuResetStatusHTTPDoer 把 HTTPUpstream 适配成 bigmodel 需要的单参数 doer。
+// 不绑定账号（accountID=0，与登录链路 ZhipuOAuthService.doerFor 同形）：该层只做
+// 连接池隔离，zcode.z.ai 的调用闸由上面的共享 RiskClient 承担。
+type zhipuResetStatusHTTPDoer struct {
+	upstream HTTPUpstream
+}
+
+func (d zhipuResetStatusHTTPDoer) Do(req *http.Request) (*http.Response, error) {
+	return d.upstream.Do(req, "", 0, 0)
+}
+
+// zhipuZCodeMinCallInterval 取 zcode.z.ai 风控端点的全局最小调用间隔
+// （gateway.zhipu.zcode_min_call_interval_seconds，0 = 禁用节流）。未注入配置时按
+// design M1 的默认值兜底（单一事实源：bigmodel 的同名导出常量）；登录链路读同一个键。
+func zhipuZCodeMinCallInterval(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return bigmodel.DefaultZCodeMinCallInterval
+	}
+	seconds := cfg.Gateway.Zhipu.ZCodeMinCallIntervalSeconds
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // FetchUsageDetailForAccount 拉取 [start, end] 窗口内的逐模型逐日积分明细。
@@ -258,6 +321,69 @@ func (s *ZhipuAccountMonitorService) nowTime() time.Time {
 		return time.Now()
 	}
 	return s.now()
+}
+
+// ---------------------------------------------------------------------------
+// 重置卡只读读取（design M4 / 票 12；R0：仅观测，永不使用）
+// ---------------------------------------------------------------------------
+
+// FetchResetStatusForAccount 只读读取登录托管智谱账号的可用重置卡。
+//
+// R0：本方法只经 zhipuResetStatusReader 发一个 GET（reset/status），不消耗重置卡，
+// 也不存在任何使用/兑换入口；返回的是纯展示字段（类型 + 到期）。
+//
+// 静默语义（与 appendZhipuLoginFields 的积分明细同口径）：非登录托管账号、缺
+// zcodejwttoken 或 access_token、读取器未接线（无 HTTP 上游）一律返回 (nil, nil)，
+// 既不报错也不打上游；只有已发起读取后的上游失败才返回错误，由调用方降级为
+// 「只缺字段」（绝不改写快照 Success/Error）。
+func (s *ZhipuAccountMonitorService) FetchResetStatusForAccount(ctx context.Context, account *Account) ([]domain.MonitorResetCard, error) {
+	if s == nil || s.resetStatus == nil || !account.IsZhipuLoginManaged() {
+		return nil, nil
+	}
+	zcodeJWTToken := strings.TrimSpace(account.GetZhipuZCodeJWTToken())
+	accessToken := strings.TrimSpace(account.GetZhipuAccessToken())
+	if zcodeJWTToken == "" || accessToken == "" {
+		// 两个头缺一上游即拒绝，缺凭据时一个请求都不发（快速路径，不打风控端点的闸）。
+		return nil, nil
+	}
+	status, err := s.resetStatus.Fetch(ctx, zcodeJWTToken, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	return zhipuResetCardsFromStatus(status), nil
+}
+
+// zhipuResetCardsFromStatus 把读取器的两池卡归并为快照字段：five_hour 在前、week 在后
+// （与 MonitorQuotaView 的展示顺序一致）。两池都空（或无状态）返回 nil，让快照 JSON
+// 省略字段——「无卡」与「未采集」对下游同形，前端不虚构 0 张卡片。
+func zhipuResetCardsFromStatus(status *bigmodel.ResetStatus) []domain.MonitorResetCard {
+	if status == nil {
+		return nil
+	}
+	cards := make([]domain.MonitorResetCard, 0, len(status.FiveHourCards)+len(status.WeekCards))
+	for _, card := range status.FiveHourCards {
+		cards = append(cards, zhipuResetCardToSnapshot(card))
+	}
+	for _, card := range status.WeekCards {
+		cards = append(cards, zhipuResetCardToSnapshot(card))
+	}
+	if len(cards) == 0 {
+		return nil
+	}
+	return cards
+}
+
+// zhipuResetCardToSnapshot 把读取器的一张卡映射为只读展示字段：Type 原样透出
+// （"five_hour" / "week"），ExpireAt 归一为 RFC3339 UTC（上游未给 → 空串，前端按
+// 「到期时间未知」展示）。除展示字段外不带任何执行字段（R0：无卡 id）。
+//
+// 不修改读取器交回的 status（缓存命中时同一值会交给多个调用方）。
+func zhipuResetCardToSnapshot(card bigmodel.ResetCard) domain.MonitorResetCard {
+	snapshot := domain.MonitorResetCard{Type: string(card.Type)}
+	if !card.ExpireAt.IsZero() {
+		snapshot.ExpireAt = card.ExpireAt.UTC().Format(time.RFC3339)
+	}
+	return snapshot
 }
 
 // ---------------------------------------------------------------------------

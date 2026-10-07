@@ -21,6 +21,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/bigmodel"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
@@ -787,4 +788,266 @@ func TestZhipuAccountMonitorService_FetchUsageDetailForAccount_DoesNotBleedAcros
 		{Model: "glm-5.3-flash", Date: "2026-10-06", InputTokens: 111, CachedTokens: 222, OutputTokens: 333, Credits: 44.5},
 	}, gotB)
 	require.Equal(t, 2, upstream.callCount(), "不同凭据的并发探测不得被合并/串用")
+}
+
+// ---------------------------------------------------------------------------
+// 重置卡只读读取（design M4 / 票 12 接线；R0：仅观测，永不使用）
+// ---------------------------------------------------------------------------
+
+// zhipuResetReaderFake 是重置卡读取器接缝的桩：记录凭据、返回预置状态，
+// 让 service 层的映射/静默语义独立于 bigmodel 包的真实 HTTP 实现被测。
+type zhipuResetReaderFake struct {
+	status *bigmodel.ResetStatus
+	err    error
+
+	mu       sync.Mutex
+	calls    int
+	zcodes   []string
+	accesses []string
+}
+
+func (f *zhipuResetReaderFake) Fetch(_ context.Context, zcodeJWTToken, accessToken string) (*bigmodel.ResetStatus, error) {
+	f.mu.Lock()
+	f.calls++
+	f.zcodes = append(f.zcodes, zcodeJWTToken)
+	f.accesses = append(f.accesses, accessToken)
+	f.mu.Unlock()
+	return f.status, f.err
+}
+
+func (f *zhipuResetReaderFake) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *zhipuResetReaderFake) lastCredentialPair() (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.zcodes) == 0 {
+		return "", ""
+	}
+	return f.zcodes[len(f.zcodes)-1], f.accesses[len(f.accesses)-1]
+}
+
+// zhipuMonitorManagedAccountWithJWT 构造同时带 zcodejwttoken 与 access_token 的
+// 登录托管账号（重置卡读取需要两个头，缺一不发上游）。
+func zhipuMonitorManagedAccountWithJWT(id int64, zcodeJWTToken, accessToken string) *Account {
+	account := zhipuMonitorManagedAccount(id, accessToken)
+	account.Credentials[zhipuCredentialZCodeJWT] = zcodeJWTToken
+	return account
+}
+
+// zhipuResetReaderService 构造「只有读取器」的服务：HTTP 上游为 nil，
+// 因此构造期不装配真实读取器，由用例显式注入桩。
+func zhipuResetReaderService(reader zhipuResetStatusReader) *ZhipuAccountMonitorService {
+	svc := NewZhipuAccountMonitorService(nil, nil, nil)
+	svc.resetStatus = reader
+	return svc
+}
+
+// 映射：两池 → 快照字段（five_hour 在前、week 在后，到期时间 RFC3339 UTC，
+// 上游未给 expire_at 的卡保留但到期留空）。
+func TestZhipuAccountMonitorService_FetchResetStatusForAccount_MapsReaderPools(t *testing.T) {
+	t.Parallel()
+
+	fiveHourA := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	weekA := time.Date(2026, 11, 5, 9, 20, 0, 0, time.UTC)
+	// 上游可以给非 UTC 的到期时刻：快照字段一律归一为 UTC RFC3339。
+	weekB := time.Date(2026, 11, 12, 0, 0, 0, 0, time.FixedZone("CST", 8*3600))
+
+	cases := []struct {
+		name   string
+		status *bigmodel.ResetStatus
+		want   []domain.MonitorResetCard
+	}{
+		{
+			name: "two pools",
+			status: &bigmodel.ResetStatus{
+				FiveHourCards: []bigmodel.ResetCard{
+					{Type: bigmodel.ResetCardTypeFiveHour, ExpireAt: fiveHourA},
+				},
+				WeekCards: []bigmodel.ResetCard{
+					{Type: bigmodel.ResetCardTypeWeek, ExpireAt: weekA},
+					{Type: bigmodel.ResetCardTypeWeek, ExpireAt: weekB},
+				},
+				HasUnreadHistory: true,
+			},
+			want: []domain.MonitorResetCard{
+				{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"},
+				{Type: "week", ExpireAt: "2026-11-05T09:20:00Z"},
+				{Type: "week", ExpireAt: "2026-11-11T16:00:00Z"},
+			},
+		},
+		{
+			name: "five hour pool only",
+			status: &bigmodel.ResetStatus{
+				FiveHourCards: []bigmodel.ResetCard{{Type: bigmodel.ResetCardTypeFiveHour, ExpireAt: fiveHourA}},
+			},
+			want: []domain.MonitorResetCard{{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"}},
+		},
+		{
+			name: "week pool only",
+			status: &bigmodel.ResetStatus{
+				WeekCards: []bigmodel.ResetCard{{Type: bigmodel.ResetCardTypeWeek, ExpireAt: weekA}},
+			},
+			want: []domain.MonitorResetCard{{Type: "week", ExpireAt: "2026-11-05T09:20:00Z"}},
+		},
+		{
+			// 卡片存在但上游没给到期时间：保留卡片（不能按 0 张处理），到期留空。
+			name: "card without expiry keeps the card",
+			status: &bigmodel.ResetStatus{
+				FiveHourCards: []bigmodel.ResetCard{{Type: bigmodel.ResetCardTypeFiveHour}},
+			},
+			want: []domain.MonitorResetCard{{Type: "five_hour", ExpireAt: ""}},
+		},
+		{
+			name:   "both pools empty stays absent",
+			status: &bigmodel.ResetStatus{},
+			want:   nil,
+		},
+		{
+			name:   "nil status stays absent",
+			status: nil,
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &zhipuResetReaderFake{status: tc.status}
+			svc := zhipuResetReaderService(reader)
+
+			got, err := svc.FetchResetStatusForAccount(
+				context.Background(), zhipuMonitorManagedAccountWithJWT(61, "zc-jwt-61", "at-61"))
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+			// 读取器拿到的必须是该账号的两个 token（Authorization 与 X-Bigmodel-Authorization
+			// 不能互换，见 reset_status.go 的头部契约）。
+			zcode, access := reader.lastCredentialPair()
+			require.Equal(t, "zc-jwt-61", zcode)
+			require.Equal(t, "at-61", access)
+			require.Equal(t, 1, reader.callCount())
+		})
+	}
+}
+
+// 静默语义：非登录托管账号 / 缺任一 token / 读取器未接线 → (nil, nil) 且不触碰上游。
+func TestZhipuAccountMonitorService_FetchResetStatusForAccount_SilentWithoutFullCredentials(t *testing.T) {
+	t.Parallel()
+
+	legacyAPIKey := &Account{
+		ID: 62, Platform: PlatformZhipu, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			zhipuCredentialAccountMode: AccountModeCoding,
+			zhipuCredentialAPIKey:      "sk-legacy",
+			zhipuCredentialAccessToken: "at-legacy",
+			zhipuCredentialZCodeJWT:    "zc-legacy",
+		},
+	}
+	missingZCodeJWT := zhipuMonitorManagedAccount(63, "at-63")
+	missingAccessToken := zhipuMonitorManagedAccount(64, "")
+	missingAccessToken.Credentials[zhipuCredentialZCodeJWT] = "zc-64"
+	blankTokens := zhipuMonitorManagedAccountWithJWT(65, "   ", "  ")
+
+	cases := []struct {
+		name    string
+		account *Account
+	}{
+		{name: "managed account without zcode jwt", account: missingZCodeJWT},
+		{name: "managed account without access token", account: missingAccessToken},
+		{name: "managed account with blank tokens", account: blankTokens},
+		{name: "legacy api key account", account: legacyAPIKey},
+		{name: "nil account", account: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &zhipuResetReaderFake{status: &bigmodel.ResetStatus{
+				WeekCards: []bigmodel.ResetCard{{Type: bigmodel.ResetCardTypeWeek}},
+			}}
+			svc := zhipuResetReaderService(reader)
+
+			got, err := svc.FetchResetStatusForAccount(context.Background(), tc.account)
+
+			require.NoError(t, err)
+			require.Nil(t, got)
+			require.Equal(t, 0, reader.callCount(), "缺凭据/非托管账号不得发起上游请求")
+		})
+	}
+}
+
+// 未接线（无 HTTP 上游 → 读取器为 nil）时整链静默跳过，不 panic。
+func TestZhipuAccountMonitorService_FetchResetStatusForAccount_UnwiredReaderIsSilent(t *testing.T) {
+	t.Parallel()
+
+	svc := NewZhipuAccountMonitorService(nil, nil, nil)
+	require.Nil(t, svc.resetStatus, "无 HTTP 上游时不得装配读取器")
+
+	got, err := svc.FetchResetStatusForAccount(
+		context.Background(), zhipuMonitorManagedAccountWithJWT(66, "zc-66", "at-66"))
+
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+// 上游失败（风控退避 / 401 / 传输错误）由调用方降级为「只缺字段」：本方法原样返回错误。
+func TestZhipuAccountMonitorService_FetchResetStatusForAccount_PropagatesReaderFailure(t *testing.T) {
+	t.Parallel()
+
+	reader := &zhipuResetReaderFake{err: errors.New("bigmodel reset_status: upstream code 3012")}
+	svc := zhipuResetReaderService(reader)
+
+	got, err := svc.FetchResetStatusForAccount(
+		context.Background(), zhipuMonitorManagedAccountWithJWT(67, "zc-67", "at-67"))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "3012")
+	require.Nil(t, got)
+	require.Equal(t, 1, reader.callCount())
+}
+
+// 接线集成：真实读取器经共享 RiskClient 发只读 GET，两个 token 各就各头。
+// 这是「读取器接入监控链路」的端到端证据（服务内的装配 + 请求形状 + 映射）。
+func TestZhipuAccountMonitorService_FetchResetStatusForAccount_ReadsThroughRiskClient(t *testing.T) {
+	t.Parallel()
+
+	const resetStatusBody = `{"code":0,"msg":"ok","data":{` +
+		`"available_five_hour_resets":[{"expire_at":1791288000000}],` +
+		`"available_week_resets":[],"has_unread_history":false}}`
+
+	var mu sync.Mutex
+	var paths []string
+	var methods []string
+	var bigmodelAuth []string
+	var targetTypes []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		methods = append(methods, r.Method)
+		bigmodelAuth = append(bigmodelAuth, r.Header.Get("X-Bigmodel-Authorization"))
+		targetTypes = append(targetTypes, r.Header.Get("Bigmodel-Target-Type"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resetStatusBody))
+	}))
+	defer server.Close()
+
+	upstream := &zhipuMonitorUpstream{responder: zhipuMonitorRespondVia(server.URL)}
+	svc := newZhipuMonitorTestService(upstream, nil, nil)
+
+	got, err := svc.FetchResetStatusForAccount(
+		context.Background(), zhipuMonitorManagedAccountWithJWT(68, "zc-jwt-68", "at-68"))
+
+	require.NoError(t, err)
+	// 1791288000000 ms = 2026-10-06T12:00:00Z（独立核对：date -u -r 1791288000）。
+	require.Equal(t, []domain.MonitorResetCard{
+		{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"},
+	}, got)
+
+	require.Equal(t, 1, upstream.callCount())
+	require.Equal(t, []string{"/api/v1/coding-plan/reset/status"}, paths)
+	require.Equal(t, []string{http.MethodGet}, methods, "重置卡读取必须是只读 GET（R0）")
+	require.Equal(t, []string{"at-68"}, bigmodelAuth, "access_token 走 X-Bigmodel-Authorization")
+	require.Equal(t, []string{"PERSONAL"}, targetTypes)
+	require.Equal(t, "zc-jwt-68", upstream.lastAuth(), "zcodejwttoken 原值走 Authorization（无 Bearer）")
 }

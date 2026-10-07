@@ -1051,6 +1051,45 @@ func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, ac
 	return r.accountsToService(ctx, accounts)
 }
 
+// CountByPlatform 按平台统计未软删除的账号数，只包含有账号的平台。
+//
+// 用途：侧边栏「账号管理」的平台子项默认隐藏没有账号的平台，需要一个聚合视图
+// （账号列表接口没有按平台聚合）。
+// 选型：聚合查询走原生 SQL（与 channelMonitorRepository 的选型一致，避免 ent
+// GROUP BY 的样板代码），并显式过滤 deleted_at IS NULL —— 账号被软删除后计数
+// 必须立刻减掉，否则侧边栏会一直留着空平台。
+func (r *accountRepository) CountByPlatform(ctx context.Context) (map[string]int64, error) {
+	if r == nil || r.sql == nil {
+		return nil, errors.New("account repository SQL executor not configured")
+	}
+
+	const query = `
+		SELECT platform, COUNT(*) AS count
+		FROM accounts
+		WHERE deleted_at IS NULL
+		GROUP BY platform`
+
+	rows, err := r.sql.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[string]int64)
+	for rows.Next() {
+		var platform string
+		var count int64
+		if err := rows.Scan(&platform, &count); err != nil {
+			return nil, err
+		}
+		counts[platform] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
 func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]service.Account, error) {
 	if r == nil || r.client == nil {
 		return []service.Account{}, nil

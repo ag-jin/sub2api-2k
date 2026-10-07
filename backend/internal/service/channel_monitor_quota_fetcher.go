@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,19 +52,24 @@ type monitorCNBalanceSource interface {
 	QueryBalanceForAccount(ctx context.Context, account *Account) (*CNProviderBalanceResult, error)
 }
 
-// monitorAccountSource 账号加载（AccountRepository 天然满足）。
+// monitorAccountSource 账号读写口（AccountRepository 天然满足）：
+//   - GetByID：账号加载（fetchUncached 路由前唯一一次加载，含 proxies/groups 联查）；
+//   - UpdateExtra：观测型数据回写（仅重置卡余量，见 persistZhipuResetCardsExtra）。
 type monitorAccountSource interface {
 	GetByID(ctx context.Context, id int64) (*Account, error)
+	UpdateExtra(ctx context.Context, id int64, updates map[string]any) error
 }
 
 // monitorZhipuLoginSource 登录态智谱账号的管理面探针（design M4 第四数据源；
-// ZhipuAccountMonitorService 的 credit-usage 部分天然满足）。
+// ZhipuAccountMonitorService 天然满足）：
+//   - FetchUsageDetailForAccount：近 7 个自然日的逐模型积分明细（票 08/11）；
+//   - FetchResetStatusForAccount：可用重置卡的只读余量（票 12 接线，R0 只读）。
 //
-// TODO(票 12): design M4 规定本接口另有第二个方法
-// FetchResetStatusForAccount(ctx, account) (*domain.MonitorResetCardStatus, error)，
-// 由票 12 实现后并入此处；本票只消费 credit-usage，ResetCards 保持缺省。
+// 两个方法都只读，且都只返回展示字段：重置卡是用户资产，本系统仅观测，永不使用
+// （校验：scripts/check_r0_invariant.sh）。
 type monitorZhipuLoginSource interface {
 	FetchUsageDetailForAccount(ctx context.Context, account *Account, start, end time.Time) ([]domain.MonitorQuotaModelCredit, error)
+	FetchResetStatusForAccount(ctx context.Context, account *Account) ([]domain.MonitorResetCard, error)
 }
 
 // monitorSignReconcileSnapshotSink 是 L2 对账结果并入快照的口（票 27 接线）：
@@ -76,6 +83,13 @@ type monitorSignReconcileSnapshotSink interface {
 // 自然日（与前端面板口径一致；ZhipuAccountMonitorService 会归一为 +8 自然日窗口）。
 const zhipuMonitorCreditUsageDays = 7
 
+// ZhipuResetCardsExtraKey 是账号 extra 里的重置卡余量快照键（R0：只写展示数据）。
+//
+// 前端账号卡片徽标（CNProviderQuotaCell.vue）按 `<platform>_reset_cards` 读取，
+// 智谱即本键；值形状与监控快照的 reset_cards 一致：[{type, expire_at}]。
+// 本键是一期「配额快照落 extra」的既有模式（同 grok_quota_snapshot）在智谱上的对应物。
+const ZhipuResetCardsExtraKey = "zhipu_reset_cards"
+
 // ChannelMonitorQuotaFetcher 配额抓取器（成功/失败快照均带 TTL 缓存，
 // 同账号并发抓取由 singleflight 合并）。
 type ChannelMonitorQuotaFetcher struct {
@@ -83,8 +97,9 @@ type ChannelMonitorQuotaFetcher struct {
 	cnQuota   monitorCNQuotaSource
 	cnBalance monitorCNBalanceSource
 	accounts  monitorAccountSource
-	// zhipuLogin 登录态智谱账号的第四数据源（design M4，票 11）。可为 nil：
-	// 未接线时 CN 快照只带 NeedsRelogin，不产生积分明细（回滚即回到三源现状）。
+	// zhipuLogin 登录态智谱账号的第四数据源（design M4，票 11/12）。可为 nil：
+	// 未接线时 CN 快照只带 NeedsRelogin，不产生积分明细与重置卡余量
+	// （回滚即回到三源现状）。
 	zhipuLogin monitorZhipuLoginSource
 	// balanceThreshold cn_balance 余额告警阈值（与账号停调共用配置，见 monitorBalanceThreshold）。
 	balanceThreshold float64
@@ -101,8 +116,8 @@ type monitorQuotaCacheEntry struct {
 
 // NewChannelMonitorQuotaFetcher 构造配额抓取器。
 // 参数取具体服务类型以便 wire 直连；单元测试在同包内用 struct 字面量注入 stub。
-// zhipuMonitor 为第四数据源（design M4 票 11 接线）：nil 时登录态账号的快照只带
-// NeedsRelogin，不产生积分明细与 L2 对账字段（回滚即回到三源现状）。
+// zhipuMonitor 为第四数据源（design M4 票 11/12 接线）：nil 时登录态账号的快照只带
+// NeedsRelogin，不产生积分明细、重置卡余量与 L2 对账字段（回滚即回到三源现状）。
 func NewChannelMonitorQuotaFetcher(
 	usage *AccountUsageService,
 	cnQuota *CNProviderQuotaService,
@@ -400,10 +415,14 @@ func sortedQuotaModelNames(quotas map[string]*AntigravityModelQuota) []string {
 
 // appendZhipuLoginFields 把登录态智谱账号（design M4）的附加字段就地并入 CN 快照：
 //   - NeedsRelogin 读 accounts.extra 的 zhipu_needs_relogin（票 09 契约，无上游调用）；
-//   - ModelCredits 取近 zhipuMonitorCreditUsageDays 个自然日的逐模型积分明细（第四数据源）。
+//   - ModelCredits 取近 zhipuMonitorCreditUsageDays 个自然日的逐模型积分明细（第四数据源）；
+//   - ResetCards 取可用重置卡的只读余量（票 12 接线，R0：仅观测，永不使用）。
 //
 // 新字段一期不参与状态判定：任何失败都只让对应字段缺失，绝不修改
 // Success/Error/CredentialInvalid（避免新数据源抖动把健康渠道误报为 degraded）。
+// 积分明细与重置卡是两个独立上游，互不阻塞：任一失败只缺它自己的字段。
+// 重置卡余量同时 best-effort 回写账号 extra（账号卡片徽标的数据源，
+// 见 persistZhipuResetCardsExtra）：回写失败也只影响徽标，不影响快照。
 func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context, account *Account, snapshot *domain.MonitorQuotaSnapshot, now time.Time) {
 	if f == nil || snapshot == nil || account == nil || !account.IsZhipuLoginManaged() {
 		return
@@ -423,11 +442,63 @@ func (f *ChannelMonitorQuotaFetcher) appendZhipuLoginFields(ctx context.Context,
 	if err != nil {
 		slog.Debug("channel_monitor: zhipu credit usage probe failed",
 			"account_id", account.ID, "error", err)
-		return
-	}
-	if len(credits) > 0 {
+	} else if len(credits) > 0 {
 		snapshot.ModelCredits = credits
 	}
+	// 重置卡只读余量（R0）：读取失败/无卡都只让字段缺省，快照状态仍由 CN 结果决定。
+	cards, err := f.zhipuLogin.FetchResetStatusForAccount(ctx, account)
+	if err != nil {
+		slog.Debug("channel_monitor: zhipu reset status probe failed",
+			"account_id", account.ID, "error", err)
+		return
+	}
+	if len(cards) > 0 {
+		snapshot.ResetCards = cards
+	}
+	// 观测数据回写（best-effort）：账号卡片徽标读 accounts.extra 的
+	// zhipu_reset_cards，见 persistZhipuResetCardsExtra。
+	f.persistZhipuResetCardsExtra(ctx, account, cards)
+}
+
+// persistZhipuResetCardsExtra 把本次采集到的重置卡余量 best-effort 写回账号 extra
+// （键 ZhipuResetCardsExtraKey）：账号卡片徽标（`<platform>_reset_cards`）的写入方。
+//
+// 三条纪律：
+//   - 空池（本次没读到可用卡）不写、不删：extra 里保留最后已知值；
+//   - 值未变化不写：快照每轮都可能重建，无变化就刷库等于给调度缓存白送噪声；
+//   - 写失败只留 debug 日志：这是观测数据的副作用，绝不改变快照结果。
+//
+// R0：只写展示数据，不含任何卡片 id 与使用/消耗语义（本系统不存在「使用重置卡」路径）。
+func (f *ChannelMonitorQuotaFetcher) persistZhipuResetCardsExtra(ctx context.Context, account *Account, cards []domain.MonitorResetCard) {
+	if f == nil || f.accounts == nil || account == nil || len(cards) == 0 {
+		return
+	}
+	if zhipuResetCardsExtraMatches(account.Extra[ZhipuResetCardsExtraKey], cards) {
+		return
+	}
+	if err := f.accounts.UpdateExtra(ctx, account.ID, map[string]any{ZhipuResetCardsExtraKey: cards}); err != nil {
+		// 徽标数据回写失败只降级为 debug：账户卡片少一个徽标，快照与状态判定不受影响。
+		slog.Debug("channel_monitor: persist zhipu reset cards extra failed",
+			"account_id", account.ID, "error", err)
+	}
+}
+
+// zhipuResetCardsExtraMatches 判断 extra 里已存的 zhipu_reset_cards 是否与本次采集
+// 结果等价。旧值经 JSONB 往返后是 []any / map[string]any，与新值的 Go 结构体类型不同，
+// 只能按 JSON 语义比较；键缺失或值形状不对（脏值）一律视为不匹配，用新值覆盖以自愈。
+func zhipuResetCardsExtraMatches(stored any, cards []domain.MonitorResetCard) bool {
+	if stored == nil {
+		return false
+	}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		return false
+	}
+	var parsed []domain.MonitorResetCard
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false
+	}
+	return slices.Equal(parsed, cards)
 }
 
 // fetchCNQuota 国产 coding plan：CNProviderQuotaService.QueryUsageForAccount → 快照。

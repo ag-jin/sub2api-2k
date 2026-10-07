@@ -922,6 +922,24 @@ func ifNoneMatchMatched(ifNoneMatch, etag string) bool {
 	return false
 }
 
+// GetPlatformCounts returns the number of accounts per platform (soft-deleted excluded).
+// GET /api/v1/admin/accounts/platform-counts
+//
+// 只读端点，管理员权限由 admin 路由组既有中间件保证。响应形如
+// {"code":0,"data":{"anthropic":3,"zhipu":1}}，只包含有账号的平台；
+// 侧边栏「账号管理」子项用它隐藏"平台下没有账号"的链接。
+func (h *AccountHandler) GetPlatformCounts(c *gin.Context) {
+	counts, err := h.adminService.GetAccountPlatformCounts(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if counts == nil {
+		counts = map[string]int64{}
+	}
+	response.Success(c, counts)
+}
+
 // GetByID handles getting an account by ID
 // GET /api/v1/admin/accounts/:id
 func (h *AccountHandler) GetByID(c *gin.Context) {

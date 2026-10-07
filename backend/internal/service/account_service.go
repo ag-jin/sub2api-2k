@@ -48,6 +48,15 @@ type OAuthRefreshCandidatePager interface {
 	ListOAuthRefreshCandidatePage(ctx context.Context, options OAuthRefreshPageOptions) (*OAuthRefreshCandidatePage, error)
 }
 
+// AccountPlatformCounter 按平台聚合账号数（不含软删除）。
+//
+// 与 OAuthRefreshCandidatePager 同理：这是比 AccountRepository 窄的能力接口，
+// 只读网关测试桩无需补齐实现；生产仓储（*repository.accountRepository）实现它。
+// 不支持该能力的仓储必须显式报错——静默返回空计数会让侧边栏误判"所有平台都没有账号"。
+type AccountPlatformCounter interface {
+	CountByPlatform(ctx context.Context) (map[string]int64, error)
+}
+
 type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
 	GetByID(ctx context.Context, id int64) (*Account, error)

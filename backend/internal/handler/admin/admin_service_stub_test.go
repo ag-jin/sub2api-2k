@@ -20,6 +20,9 @@ type stubAdminService struct {
 	openAISchedulerScorePoolCalls       int
 	proxies                             []service.Proxy
 	proxyCounts                         []service.ProxyWithAccountCount
+	accountPlatformCounts               map[string]int64
+	accountPlatformCountsErr            error
+	getAccountPlatformCountsCalls       int
 	redeems                             []service.RedeemCode
 	boundAuthIdentity                   *service.AdminBindAuthIdentityInput
 	boundAuthIdentityFor                int64
@@ -610,6 +613,14 @@ func (s *stubAdminService) ListProxies(ctx context.Context, page, pageSize int, 
 
 func (s *stubAdminService) ListProxiesWithAccountCount(ctx context.Context, page, pageSize int, protocol, status, search string, sortBy, sortOrder string) ([]service.ProxyWithAccountCount, int64, error) {
 	return s.proxyCounts, int64(len(s.proxyCounts)), nil
+}
+
+func (s *stubAdminService) GetAccountPlatformCounts(ctx context.Context) (map[string]int64, error) {
+	s.getAccountPlatformCountsCalls++
+	if s.accountPlatformCountsErr != nil {
+		return nil, s.accountPlatformCountsErr
+	}
+	return s.accountPlatformCounts, nil
 }
 
 func (s *stubAdminService) GetAllProxies(ctx context.Context) ([]service.Proxy, error) {

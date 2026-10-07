@@ -215,6 +215,9 @@ export default {
     contentModeration: 'Content Moderation',
     promptAudit: 'Prompt Audit',
     auditLogs: 'Audit Logs',
+    // Accounts sub-items: only platforms that own accounts are listed by default.
+    showAllPlatforms: 'Show all platforms',
+    collapseAllPlatforms: 'Collapse',
   },
 
   // Auth

@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -83,6 +84,17 @@ type stubMonitorAccountSource struct {
 	accounts map[int64]*Account
 	err      error
 	calls    int
+	// extraErr 让 UpdateExtra 失败（写侧静默降级的用例）。
+	extraErr error
+
+	mu          sync.Mutex
+	extraWrites []monitorExtraWrite
+}
+
+// monitorExtraWrite 记录一次 extra 回写（形状对齐 keeperExtraWrite 先例）。
+type monitorExtraWrite struct {
+	id      int64
+	updates map[string]any
 }
 
 func (s *stubMonitorAccountSource) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -93,11 +105,33 @@ func (s *stubMonitorAccountSource) GetByID(ctx context.Context, id int64) (*Acco
 	return s.accounts[id], nil
 }
 
-// stubMonitorZhipuLoginSource 桩：schedule 08 的 credit-usage 探针
-// （fetch 方法与真实 ZhipuAccountMonitorService 的签名一致）。
+// UpdateExtra 是重置卡余量的 extra 落库口（票 12 徽标写入方）：记录回写内容，
+// 便于断言「写了什么/没写/写失败」三类行为。
+func (s *stubMonitorAccountSource) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clone := make(map[string]any, len(updates))
+	for k, v := range updates {
+		clone[k] = v
+	}
+	s.extraWrites = append(s.extraWrites, monitorExtraWrite{id: id, updates: clone})
+	return s.extraErr
+}
+
+func (s *stubMonitorAccountSource) getExtraWrites() []monitorExtraWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]monitorExtraWrite(nil), s.extraWrites...)
+}
+
+// stubMonitorZhipuLoginSource 桩：schedule 08 的 credit-usage 探针 + 票 12 的重置卡
+// 只读读取（两个 fetch 方法与真实 ZhipuAccountMonitorService 的签名一致）。
 type stubMonitorZhipuLoginSource struct {
 	credits []domain.MonitorQuotaModelCredit
 	err     error
+	// cards / cardsErr 是重置卡只读读取（票 12 接线）的返回值。
+	cards    []domain.MonitorResetCard
+	cardsErr error
 	// block 非 nil 时阻塞在该 channel 上，用于并发/超时测试。
 	block chan struct{}
 
@@ -106,6 +140,8 @@ type stubMonitorZhipuLoginSource struct {
 	lastAccount *Account
 	lastStart   time.Time
 	lastEnd     time.Time
+	resetCalls  int
+	resetSource *Account
 }
 
 func (s *stubMonitorZhipuLoginSource) FetchUsageDetailForAccount(ctx context.Context, account *Account, start, end time.Time) ([]domain.MonitorQuotaModelCredit, error) {
@@ -119,6 +155,27 @@ func (s *stubMonitorZhipuLoginSource) FetchUsageDetailForAccount(ctx context.Con
 		<-s.block
 	}
 	return s.credits, s.err
+}
+
+// FetchResetStatusForAccount 是票 12 接线的第二个方法：只返回展示字段（R0 只读）。
+func (s *stubMonitorZhipuLoginSource) FetchResetStatusForAccount(_ context.Context, account *Account) ([]domain.MonitorResetCard, error) {
+	s.mu.Lock()
+	s.resetCalls++
+	s.resetSource = account
+	s.mu.Unlock()
+	return s.cards, s.cardsErr
+}
+
+func (s *stubMonitorZhipuLoginSource) getResetCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetCalls
+}
+
+func (s *stubMonitorZhipuLoginSource) getResetSource() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetSource
 }
 
 func (s *stubMonitorZhipuLoginSource) getCalls() int {
@@ -437,6 +494,203 @@ func TestQuotaFetcher_ZhipuLoginSourceFailureKeepsCNError(t *testing.T) {
 	require.Equal(t, MonitorStatusError, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
 }
 
+// --- 重置卡只读余量并入快照（票 12 接线；R0：仅观测，永不使用）---
+
+// 合并：重置卡读取成功时快照带 reset_cards，且与积分明细共用同一次账号加载。
+func TestQuotaFetcher_ZhipuLoginManagedMergesResetCards(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	managed := zhipuLoginManagedQuotaAccount(36, nil)
+	accounts.accounts[36] = managed
+	cnQuota.result = &CNProviderQuotaProbeResult{
+		Success:   true,
+		PlanLevel: "coding",
+		Tiers:     []CNQuotaTier{{Window: "5h", UsedPercent: 33.3}},
+	}
+	cards := []domain.MonitorResetCard{
+		{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"},
+		{Type: "week", ExpireAt: "2026-11-05T09:20:00Z"},
+	}
+	zhipuLogin := &stubMonitorZhipuLoginSource{
+		credits: []domain.MonitorQuotaModelCredit{{Model: "glm-5.3", Date: "2026-10-06", Credits: 1.25}},
+		cards:   cards,
+	}
+	fetcher.zhipuLogin = zhipuLogin
+
+	snapshot := fetcher.Fetch(context.Background(), 36)
+
+	// 既有 CN 配额结果原样保留，只读字段并入。
+	require.True(t, snapshot.Success)
+	require.Equal(t, "cn_quota", snapshot.Source)
+	require.Equal(t, cards, snapshot.ResetCards)
+	require.Equal(t, zhipuLogin.credits, snapshot.ModelCredits)
+	require.Empty(t, snapshot.Error)
+	require.False(t, snapshot.NeedsRelogin)
+	require.Equal(t, MonitorStatusOperational, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
+
+	// 重置卡读取收到的是同一次加载的账号指针（fetcher 只 GetByID 一次）。
+	require.Equal(t, 1, zhipuLogin.getResetCalls())
+	require.Same(t, managed, zhipuLogin.getResetSource())
+
+	// 快照进 TTL 缓存：第二次 Fetch 不再打监控数据源。
+	require.Equal(t, cards, fetcher.Fetch(context.Background(), 36).ResetCards)
+	require.Equal(t, 1, zhipuLogin.getResetCalls())
+}
+
+// 部分失败：重置卡读取失败只让 reset_cards 缺省，Success/Error/状态与积分明细都不受影响
+// （两个数据源相互独立：重置卡失败不得挡住已成功的积分明细）。
+func TestQuotaFetcher_ZhipuResetCardSourceFailureOnlyDropsFields(t *testing.T) {
+	cases := []struct {
+		name  string
+		cards []domain.MonitorResetCard
+		err   error
+	}{
+		{
+			name: "probe transport error",
+			err:  errors.New("bigmodel reset_status: connection refused"),
+		},
+		{
+			name: "risk client backoff",
+			err:  errors.New("bigmodel risk client: endpoint \"zcode_reset_status\" blocked (backoff)"),
+		},
+		{
+			name:  "empty pools keep the field absent",
+			cards: []domain.MonitorResetCard{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+			accounts.accounts[37] = zhipuLoginManagedQuotaAccount(37, nil)
+			cnQuota.result = &CNProviderQuotaProbeResult{Success: true, Tiers: []CNQuotaTier{{Window: "5h", UsedPercent: 20}}}
+			fetcher.zhipuLogin = &stubMonitorZhipuLoginSource{
+				credits:  []domain.MonitorQuotaModelCredit{{Model: "glm-5.3", Date: "2026-10-06", Credits: 2}},
+				cards:    tc.cards,
+				cardsErr: tc.err,
+			}
+
+			snapshot := fetcher.Fetch(context.Background(), 37)
+
+			require.True(t, snapshot.Success, "Success 仍由既有 CN 配额结果决定")
+			require.Empty(t, snapshot.Error)
+			require.False(t, snapshot.CredentialInvalid)
+			require.Nil(t, snapshot.ResetCards)
+			// 独立性：重置卡失败不吞掉积分明细。
+			require.Equal(t, []domain.MonitorQuotaModelCredit{{Model: "glm-5.3", Date: "2026-10-06", Credits: 2}}, snapshot.ModelCredits)
+			require.Equal(t, MonitorStatusOperational, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
+		})
+	}
+}
+
+// --- 重置卡余量回写账号 extra（票 12 徽标写入方；R0：只写展示数据）---
+
+// 首次采集：读到可用重置卡后 best-effort 回写 accounts.extra 的 zhipu_reset_cards。
+// 该键是账号卡片徽标（CNProviderQuotaCell）的读取口径 `<platform>_reset_cards`，
+// 值形状与监控快照的 reset_cards 同形：[{type, expire_at}]。
+func TestQuotaFetcher_ZhipuResetCardsExtraWrittenOnFirstFetch(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	accounts.accounts[41] = zhipuLoginManagedQuotaAccount(41, nil)
+	cnQuota.result = &CNProviderQuotaProbeResult{Success: true, Tiers: []CNQuotaTier{{Window: "5h", UsedPercent: 10}}}
+	cards := []domain.MonitorResetCard{
+		{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"},
+		{Type: "week", ExpireAt: "2026-11-05T09:20:00Z"},
+	}
+	fetcher.zhipuLogin = &stubMonitorZhipuLoginSource{cards: cards}
+
+	snapshot := fetcher.Fetch(context.Background(), 41)
+
+	require.Equal(t, cards, snapshot.ResetCards)
+	writes := accounts.getExtraWrites()
+	require.Len(t, writes, 1, "首次采集应回写一次 extra")
+	require.Equal(t, int64(41), writes[0].id)
+	require.Len(t, writes[0].updates, 1, "只写 zhipu_reset_cards，不带其它键")
+	raw, err := json.Marshal(writes[0].updates[ZhipuResetCardsExtraKey])
+	require.NoError(t, err)
+	// 前端读数口径（CNProviderQuotaCell.spec.ts）：数组，条目 {type, expire_at}。
+	require.JSONEq(t, `[
+		{"type": "five_hour", "expire_at": "2026-10-06T12:00:00Z"},
+		{"type": "week", "expire_at": "2026-11-05T09:20:00Z"}
+	]`, string(raw))
+
+	// 快照进 TTL 缓存：第二次 Fetch 不再抓取，也就不再回写。
+	require.Equal(t, cards, fetcher.Fetch(context.Background(), 41).ResetCards)
+	require.Len(t, accounts.getExtraWrites(), 1)
+}
+
+// 回写时机：只在值变化时写；值未变化 / 空池 / 探针失败都不刷库，
+// 也不删除 extra 里的最后已知值（保持最后已知状态）。
+func TestQuotaFetcher_ZhipuResetCardsExtraWriteTiming(t *testing.T) {
+	// extra 里已存值的落库形状：JSONB 往返成 []any + map[string]any
+	// （与 accountEntityToService 的 copyJSONMap 一致，不是 Go 结构体）。
+	storedCards := []any{
+		map[string]any{"type": "five_hour", "expire_at": "2026-10-06T12:00:00Z"},
+		map[string]any{"type": "week", "expire_at": "2026-11-05T09:20:00Z"},
+	}
+	sameCards := []domain.MonitorResetCard{
+		{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"},
+		{Type: "week", ExpireAt: "2026-11-05T09:20:00Z"},
+	}
+	newerCards := []domain.MonitorResetCard{{Type: "week", ExpireAt: "2026-12-01T00:00:00Z"}}
+	cases := []struct {
+		name      string
+		stored    any
+		cards     []domain.MonitorResetCard
+		err       error
+		wantWrite bool
+	}{
+		{name: "unchanged value skips the write", stored: storedCards, cards: sameCards},
+		{name: "changed value overwrites the stale snapshot", stored: storedCards, cards: newerCards, wantWrite: true},
+		{name: "malformed stored value is replaced by the fresh snapshot", stored: "two", cards: newerCards, wantWrite: true},
+		{name: "empty pools keep the last known value", stored: storedCards},
+		{name: "reset probe failure keeps the last known value", stored: storedCards, err: errors.New("bigmodel reset_status: connection refused")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+			account := zhipuLoginManagedQuotaAccount(43, map[string]any{ZhipuResetCardsExtraKey: tc.stored})
+			accounts.accounts[43] = account
+			cnQuota.result = &CNProviderQuotaProbeResult{Success: true, Tiers: []CNQuotaTier{{Window: "5h", UsedPercent: 10}}}
+			fetcher.zhipuLogin = &stubMonitorZhipuLoginSource{cards: tc.cards, cardsErr: tc.err}
+
+			snapshot := fetcher.Fetch(context.Background(), 43)
+
+			require.True(t, snapshot.Success)
+			writes := accounts.getExtraWrites()
+			if !tc.wantWrite {
+				require.Empty(t, writes, "值未变化/空池/探针失败都不刷库")
+				require.Equal(t, tc.stored, account.Extra[ZhipuResetCardsExtraKey],
+					"旧值必须原样保留（保持最后已知状态）")
+				return
+			}
+			require.Len(t, writes, 1, "值变化或旧值形状不对时用新快照覆盖")
+			require.Equal(t, int64(43), writes[0].id)
+			require.Equal(t, tc.cards, writes[0].updates[ZhipuResetCardsExtraKey])
+		})
+	}
+}
+
+// 写失败静默：extra 回写报错只留 debug 日志，快照（reset_cards 与状态判定）照常返回。
+func TestQuotaFetcher_ZhipuResetCardsExtraWriteFailureKeepsSnapshot(t *testing.T) {
+	fetcher, _, cnQuota, _, accounts := newQuotaFetcherTestSetup(t)
+	accounts.accounts[45] = zhipuLoginManagedQuotaAccount(45, nil)
+	accounts.extraErr = errors.New("extra write boom")
+	cnQuota.result = &CNProviderQuotaProbeResult{
+		Success:   true,
+		PlanLevel: "coding",
+		Tiers:     []CNQuotaTier{{Window: "5h", UsedPercent: 10}},
+	}
+	cards := []domain.MonitorResetCard{{Type: "five_hour", ExpireAt: "2026-10-06T12:00:00Z"}}
+	fetcher.zhipuLogin = &stubMonitorZhipuLoginSource{cards: cards}
+
+	snapshot := fetcher.Fetch(context.Background(), 45)
+
+	require.Len(t, accounts.getExtraWrites(), 1, "首次采集仍会尝试回写")
+	require.Equal(t, cards, snapshot.ResetCards, "写失败不得吞掉快照字段")
+	require.True(t, snapshot.Success)
+	require.Empty(t, snapshot.Error)
+	require.False(t, snapshot.CredentialInvalid)
+	require.Equal(t, MonitorStatusOperational, deriveQuotaCheckResult(snapshot, "quota", time.Now()).Status)
+}
+
 // 未接线/回滚：第四数据源为 nil 时登录态账号只补 extra 标记，
 // Success/tiers 与既有三源现状一致，不 panic。
 func TestQuotaFetcher_ZhipuLoginManagedWithoutSourceKeepsReloginOnly(t *testing.T) {
@@ -450,6 +704,7 @@ func TestQuotaFetcher_ZhipuLoginManagedWithoutSourceKeepsReloginOnly(t *testing.
 	require.True(t, snapshot.Success)
 	require.Len(t, snapshot.Tiers, 1)
 	require.Nil(t, snapshot.ModelCredits)
+	require.Nil(t, snapshot.ResetCards, "未接线时重置卡字段保持缺省")
 	require.True(t, snapshot.NeedsRelogin)
 }
 
@@ -527,7 +782,9 @@ func TestQuotaFetcher_NonZhipuLoginAccountsSkipFourthSource(t *testing.T) {
 
 			require.True(t, snapshot.Success)
 			require.Equal(t, 0, source.getCalls(), "非登录态账号不得调用第四数据源")
+			require.Equal(t, 0, source.getResetCalls(), "非登录态账号不得读重置卡")
 			require.Nil(t, snapshot.ModelCredits)
+			require.Nil(t, snapshot.ResetCards)
 			require.False(t, snapshot.NeedsRelogin)
 		})
 	}

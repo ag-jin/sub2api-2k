@@ -487,6 +487,8 @@ export default {
         window5h: '5h',
         windowWeekly: '7d',
         windowMonthly: '月',
+        // 重置卡只读张数徽标（design M4 / 票 12 接线，R0：仅观测，永不使用）
+        resetCardsCount: '重置卡 {count} 张',
         probe: '查询',
         probeTooltip: '请求供应商额度端点，查询 5 小时 / 每周滚动窗口用量',
         balanceProbeTooltip: '请求供应商余额端点，查询账户余额',

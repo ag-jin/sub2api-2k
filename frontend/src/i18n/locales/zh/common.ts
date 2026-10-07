@@ -215,6 +215,9 @@ export default {
     contentModeration: '内容审核',
     promptAudit: '提示词审计',
     auditLogs: '操作日志',
+    // 「账号管理」子项：默认只列有账号的平台，这组成对切换开关的文案。
+    showAllPlatforms: '显示全部平台',
+    collapseAllPlatforms: '收起',
   },
 
   // Auth

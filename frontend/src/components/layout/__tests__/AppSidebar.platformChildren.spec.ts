@@ -49,6 +49,16 @@ vi.mock('@/composables/useBatchImageAccess', () => ({
   useBatchImageAccess: () => ({ canUseBatchImage: ref(false), refreshBatchImageAccess: vi.fn() })
 }))
 
+// 侧边栏挂载时会拉取平台账号数（默认只列出有账号的平台）。本文件只关心子项的
+// 链接与激活语义，所以把该接口固定在"不可用"：导航回退显示全部平台，
+// 期望与改造前完全一致（计数场景见 AppSidebar.platformCounts.spec.ts）。
+vi.mock('@/api/admin/accounts', () => ({
+  platformCounts: vi.fn(async () => {
+    throw new Error('platform-counts unavailable')
+  }),
+  default: {}
+}))
+
 // 用真实的中文文案渲染：既验证子项可见文案，也顺带证明
 // `admin.accounts.platforms.<platform>` 这套动态 key 在 zh 里确实存在。
 vi.mock('vue-i18n', async () => {

@@ -52,6 +52,29 @@ func (s *adminServiceImpl) ListOpenAISchedulableAccountsForSchedulerScore(ctx co
 	return s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
 }
 
+// GetAccountPlatformCounts 返回各平台的有效账号数（不含软删除），只含有账号的平台。
+//
+// 计数能力通过窄接口按需断言（见 AccountPlatformCounter）：不具备该能力的仓储
+// 直接报错而不是返回空计数——空计数会被侧边栏读成"所有平台都没有账号"，
+// 从而把所有平台入口隐藏掉。空结果统一归一化为空 map，保证 JSON 是 {} 而不是 null。
+func (s *adminServiceImpl) GetAccountPlatformCounts(ctx context.Context) (map[string]int64, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, errors.New("account repository is not configured")
+	}
+	counter, ok := s.accountRepo.(AccountPlatformCounter)
+	if !ok {
+		return nil, errors.New("account repository does not support platform counts")
+	}
+	counts, err := counter.CountByPlatform(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if counts == nil {
+		counts = map[string]int64{}
+	}
+	return counts, nil
+}
+
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	return s.accountRepo.GetByID(ctx, id)
 }

@@ -78,6 +78,9 @@ type AdminService interface {
 	// ListOpenAISchedulableAccountsForSchedulerScore 返回指定分组（nil 为未分组）内
 	// 可调度的 OpenAI 账号，用于按组计算调度分数。
 	ListOpenAISchedulableAccountsForSchedulerScore(ctx context.Context, groupID *int64) ([]Account, error)
+	// GetAccountPlatformCounts 返回各平台的有效账号数（不含软删除），只含有账号的平台。
+	// 侧边栏「账号管理」子项用它隐藏没有账号的平台。
+	GetAccountPlatformCounts(ctx context.Context) (map[string]int64, error)
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)

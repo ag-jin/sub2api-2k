@@ -166,6 +166,16 @@ export async function listWithEtag(
 }
 
 /**
+ * Get the number of accounts per platform (soft-deleted accounts excluded).
+ * Only platforms that own at least one account are present in the map.
+ * The sidebar uses it to hide platform links that have no accounts.
+ */
+export async function platformCounts(): Promise<Record<string, number>> {
+  const { data } = await apiClient.get<Record<string, number>>('/admin/accounts/platform-counts')
+  return data
+}
+
+/**
  * Get account by ID
  * @param id - Account ID
  * @returns Account details

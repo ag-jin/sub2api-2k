@@ -37,7 +37,10 @@
         <div class="sidebar-section">
           <template v-for="item in adminNavItems" :key="item.path">
             <!-- Collapsible group (has children) -->
-            <template v-if="item.children?.length">
+            <!-- expandOnly 的父项本身永不跳转（只负责展开/收起），所以即使可见子项为零
+                 （账号管理下所有平台的账号都被删空）也必须按分组渲染：退化成普通链接
+                 会让父项突然开始跳转，并让「显示全部平台」开关消失。 -->
+            <template v-if="item.children?.length || item.expandOnly">
               <button
                 type="button"
                 class="sidebar-link mb-1 w-full"
@@ -75,6 +78,21 @@
                   <component :is="child.icon" class="h-4 w-4 flex-shrink-0" />
                   <span>{{ child.label }}</span>
                 </router-link>
+                <!-- 「显示全部平台」：平台子项默认只列有账号的平台，这一行负责展开/收起全部。
+                     拿不到计数时不渲染（列表本来就没过滤，按钮会变成空操作）。 -->
+                <button
+                  v-if="item.path === ACCOUNTS_PATH && platformCountsAvailable"
+                  type="button"
+                  data-testid="sidebar-accounts-platforms-toggle"
+                  class="sidebar-link w-full py-1.5 text-sm"
+                  @click="toggleShowAllPlatforms"
+                >
+                  <ChevronDownIcon
+                    class="h-4 w-4 flex-shrink-0 transition-transform duration-200"
+                    :class="showAllPlatforms ? 'rotate-180' : ''"
+                  />
+                  <span>{{ showAllPlatforms ? t('nav.collapseAllPlatforms') : t('nav.showAllPlatforms') }}</span>
+                </button>
               </div>
             </template>
             <!-- Normal item (no children) -->
@@ -198,6 +216,7 @@ import {
   readPlatformFilterFromQuery
 } from '@/views/admin/accountPlatformFilter'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import { platformCounts } from '@/api/admin/accounts'
 
 interface NavItem {
   path: string
@@ -719,17 +738,96 @@ const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
 const flagBatchImageAccess = () => canUseBatchImage.value
 
+// ---------- 账号管理平台子项：平台计数 + 「显示全部平台」 ----------
+//
+// 平台子项默认只保留有账号的平台（用户要求：平台下没有账号的先隐藏起来）。
+// 计数来自 /admin/accounts/platform-counts，挂载时拉一次并做模块级缓存：侧边栏会随
+// 路由重新挂载，缓存可以避免每次导航都重复请求。
+const SHOW_ALL_PLATFORMS_STORAGE_KEY = 'sidebar.showAllPlatforms'
+
+let platformCountsCache: Record<string, number> | null = null
+let platformCountsPromise: Promise<Record<string, number> | null> | null = null
+
+// 只接受"平台 → 正数"的普通对象；其它形态（对象为 null、数组、标量）一律当作拿不到计数。
+function normalizePlatformCounts(payload: unknown): Record<string, number> | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const counts: Record<string, number> = {}
+  for (const [platform, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      counts[platform] = value
+    }
+  }
+  return counts
+}
+
+async function fetchPlatformAccountCounts(): Promise<Record<string, number> | null> {
+  try {
+    return normalizePlatformCounts(await platformCounts())
+  } catch {
+    // 接口不可用：回退显示全部平台（见 buildAccountsPlatformChildren）。
+    return null
+  }
+}
+
+// null 表示"拿不到计数"（接口失败或未返回可用数据）：此时回退显示全部平台，
+// 绝不因为接口问题丢掉导航入口。
+const platformAccountCounts = ref<Record<string, number> | null>(platformCountsCache)
+// 没有计数数据时平台列表本来就不过滤，开关会变成空按钮，故不渲染。
+const platformCountsAvailable = computed(() => platformAccountCounts.value !== null)
+
+async function loadPlatformAccountCounts() {
+  // 模块级缓存命中（本次会话已取过）：直接用它，不再打接口。
+  if (platformAccountCounts.value !== null) return
+  // 并发的两个实例共享同一个请求，避免重复打接口。
+  const pending = platformCountsPromise ?? fetchPlatformAccountCounts()
+  platformCountsPromise = pending
+  const counts = await pending
+  if (counts === null) {
+    // 失败不缓存，下次挂载重试。
+    platformCountsPromise = null
+    return
+  }
+  platformCountsCache = counts
+  platformAccountCounts.value = counts
+}
+
+// localStorage 不可用（无痕模式等）时按未配置处理，偏好只在本次会话内生效。
+function readShowAllPlatformsPreference(): boolean {
+  try {
+    return localStorage.getItem(SHOW_ALL_PLATFORMS_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+const showAllPlatforms = ref(readShowAllPlatformsPreference())
+
+function toggleShowAllPlatforms() {
+  showAllPlatforms.value = !showAllPlatforms.value
+  try {
+    localStorage.setItem(SHOW_ALL_PLATFORMS_STORAGE_KEY, String(showAllPlatforms.value))
+  } catch {
+    // 写入失败只影响持久化，不影响本次切换。
+  }
+}
+
 // 账号管理的平台子项：全部指向同一路径 /admin/accounts，靠 ?platform= 区分，
 // 由 constants/platforms.ts 的目录派生（该目录也是各平台选择器的唯一来源，
 // 新增平台时侧边栏不会静默漏项）。文案复用 admin.accounts.platforms，不再维护第二份平台名。
+//
+// 默认只保留有账号的平台（目录顺序不变）；开关打开、或拿不到计数时显示全部。
 function buildAccountsPlatformChildren(): NavItem[] {
-  return CONCRETE_PLATFORM_OPTIONS.map((option) => ({
-    path: ACCOUNTS_PATH,
-    label: t(`admin.accounts.platforms.${option.value}`),
-    // 平台子项靠文案区分，逐个配图标只会变成一整列重复图形（与自定义菜单项同款处理）。
-    icon: null,
-    platformFilter: option.value
-  }))
+  const counts = platformAccountCounts.value
+  const showEveryPlatform = showAllPlatforms.value || counts === null
+  return CONCRETE_PLATFORM_OPTIONS
+    .filter((option) => showEveryPlatform || (counts?.[option.value] ?? 0) > 0)
+    .map((option) => ({
+      path: ACCOUNTS_PATH,
+      label: t(`admin.accounts.platforms.${option.value}`),
+      // 平台子项靠文案区分，逐个配图标只会变成一整列重复图形（与自定义菜单项同款处理）。
+      icon: null,
+      platformFilter: option.value
+    }))
 }
 
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
@@ -979,7 +1077,10 @@ function handleGroupClick(item: NavItem) {
     toggleGroup(item)
     // 收起按平台筛选的分组（账号管理）时同时清掉筛选：子项收起后用户看不到
     // "当前看的是哪个平台"，留着筛选会变成隐形状态 —— 回到全部平台。
-    if (wasExpanded && item.children?.some(child => child.platformFilter)) {
+    //
+    // 这里按分组路径判断，不能依赖当前可见子项：没有账号的平台默认被隐藏，
+    // 但筛选（以及用户停留的页面）可能正落在被隐藏的那个平台上。
+    if (wasExpanded && item.path === ACCOUNTS_PATH) {
       clearPlatformFilter()
     }
     return
@@ -1025,6 +1126,8 @@ onMounted(() => {
   void refreshBatchImageAccess()
   if (isAdmin.value) {
     adminSettingsStore.fetch()
+    // 平台子项的可见性依赖账号计数；普通用户看不到这段菜单，不必请求。
+    void loadPlatformAccountCounts()
   }
   // Restore sidebar scroll position after route change re-mounts the component
   if (appStore.sidebarScrollTop > 0 && sidebarNavRef.value) {

@@ -5,9 +5,10 @@ import { resetZhipuSignStatusCache } from '@/composables/useZhipuSignStatus'
 import UsageProgressBar from '../UsageProgressBar.vue'
 import type { Account } from '@/types'
 
-const { queryQuota, getSignStatus } = vi.hoisted(() => ({
+const { queryQuota, getSignStatus, t } = vi.hoisted(() => ({
   queryQuota: vi.fn(),
-  getSignStatus: vi.fn()
+  getSignStatus: vi.fn(),
+  t: vi.fn((key: string) => key)
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -23,7 +24,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t
     })
   }
 })
@@ -50,6 +51,7 @@ const account = {
 beforeEach(() => {
   queryQuota.mockReset()
   getSignStatus.mockReset()
+  t.mockClear()
   getSignStatus.mockResolvedValue({ sign_v4_enabled: false, accounts: [] })
   resetZhipuSignStatusCache()
 })
@@ -268,5 +270,129 @@ describe('CNProviderQuotaCell sign-degraded badge', () => {
     expect(cells[1].find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
     expect(cells[2].find('[data-test="cn-provider-quota-sign-degraded"]').exists()).toBe(false)
     for (const cell of cells) cell.unmount()
+  })
+})
+
+// 票 12 接线 / R0（重置卡只读）：账号卡片的用量窗口单元展示张数，仅观测、永不使用。
+// 数据源 = 账号 extra 快照流（`<provider>_reset_cards`，与监控面板的 reset_cards 同形）。
+describe('CNProviderQuotaCell reset-card badge', () => {
+  // 徽标子树里不得出现任何可交互元素（R0：重置卡只有展示，没有使用/兑换入口）。
+  const INTERACTIVE = [
+    'button',
+    'a',
+    'input',
+    'select',
+    'textarea',
+    'label',
+    '[role="button"]',
+    '[role="link"]',
+    '[tabindex]',
+    '[contenteditable]'
+  ].join(', ')
+
+  function managedAccount(extra: Record<string, unknown>): Account {
+    return {
+      ...account,
+      credentials: { account_mode: 'coding', auth_flow: 'bigmodel_oauth' },
+      extra: { ...account.extra, ...extra }
+    } as unknown as Account
+  }
+
+  it('shows the read-only card count next to the 5h/7d window rows', async () => {
+    const cards = [
+      { type: 'five_hour', expire_at: '2026-10-06T12:00:00Z' },
+      { type: 'week', expire_at: '2026-11-05T09:20:00Z' }
+    ]
+    const wrapper = mount(CNProviderQuotaCell, {
+      props: { account: managedAccount({ zhipu_reset_cards: cards }) }
+    })
+    await flushPromises()
+
+    const badge = wrapper.get('[data-test="cn-provider-quota-reset-cards"]')
+    // 纯文本徽标：不是按钮、不可聚焦、无任何交互元素。
+    expect(badge.element.tagName).toBe('SPAN')
+    expect(badge.findAll(INTERACTIVE)).toHaveLength(0)
+    expect(badge.attributes('onclick')).toBeUndefined()
+
+    // 张数按快照条目数渲染，且 tooltip 是本系统「仅观测」的 R0 声明。
+    expect(badge.text()).toBe('admin.accounts.cnProviders.resetCardsCount')
+    expect(t).toHaveBeenCalledWith('admin.accounts.cnProviders.resetCardsCount', { count: 2 })
+    expect(badge.attributes('title')).toBe('monitorCommon.resetCards.observeOnly')
+
+    // 位置：紧跟在 5h/7d 用量条之后（在刷新按钮行之前）。
+    const badgeRow = badge.element.parentElement as HTMLElement
+    const previous = badgeRow.previousElementSibling as HTMLElement | null
+    expect(previous?.querySelectorAll('[data-test="cn-provider-quota-tier"]').length).toBe(2)
+    expect(badgeRow.nextElementSibling?.querySelector('[data-test="cn-provider-quota-probe"]')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('counts an empty card list as zero cards instead of hiding the snapshot', async () => {
+    const wrapper = mount(CNProviderQuotaCell, {
+      props: { account: managedAccount({ zhipu_reset_cards: [] }) }
+    })
+    await flushPromises()
+
+    // 空数组是「确实没有可用重置卡」的事实，与字段缺失（未采集）区分开。
+    expect(wrapper.find('[data-test="cn-provider-quota-reset-cards"]').exists()).toBe(true)
+    expect(t).toHaveBeenCalledWith('admin.accounts.cnProviders.resetCardsCount', { count: 0 })
+    wrapper.unmount()
+  })
+
+  it('stays silent without a reset-card snapshot field', async () => {
+    const variants: Array<[string, Account]> = [
+      // 老快照 / 尚未采集：字段缺失
+      ['field absent', managedAccount({})],
+      // 字段形状不对（非数组）时按缺失处理，不猜测张数
+      ['malformed value', managedAccount({ zhipu_reset_cards: 'two' })],
+      // 其它平台（kimi）的同名键不得串到智谱单元格
+      [
+        'other provider key',
+        {
+          ...account,
+          platform: 'kimi',
+          credentials: { account_mode: 'coding' },
+          extra: {
+            kimi_5h_used_percent: 10,
+            kimi_usage_updated_at: new Date().toISOString(),
+            kimi_reset_cards: [{ type: 'week', expire_at: '' }]
+          }
+        } as unknown as Account
+      ]
+    ]
+
+    for (const [name, candidate] of variants) {
+      const wrapper = mount(CNProviderQuotaCell, { props: { account: candidate } })
+      await flushPromises()
+      expect(`${name}: ${wrapper.find('[data-test="cn-provider-quota-reset-cards"]').exists()}`).toBe(
+        `${name}: false`
+      )
+      // 既有配额单元格照常渲染（新字段缺省不影响老快照）。
+      expect(wrapper.get('[data-test="cn-provider-quota"]').exists()).toBe(true)
+      wrapper.unmount()
+    }
+  })
+
+  it('renders no reset-card action affordance anywhere in the cell (R0)', async () => {
+    const wrapper = mount(CNProviderQuotaCell, {
+      props: {
+        account: managedAccount({ zhipu_reset_cards: [{ type: 'five_hour', expire_at: '2026-10-06T12:00:00Z' }] })
+      }
+    })
+    await flushPromises()
+
+    // 全单元格里与重置卡相关的元素只有那一个只读徽标。
+    const resetNodes = wrapper.findAll('[data-test*="reset"]')
+    expect(resetNodes.map((node) => node.attributes('data-test'))).toEqual([
+      'cn-provider-quota-reset-cards'
+    ])
+    expect(wrapper.find('[data-test="cn-provider-quota-reset-cards"]').findAll(INTERACTIVE)).toHaveLength(0)
+
+    // 文案里只有张数统计，没有任何「可操作」措辞。
+    expect(wrapper.text()).toContain('admin.accounts.cnProviders.resetCardsCount')
+    expect(wrapper.text()).not.toContain('使用重置卡')
+    expect(wrapper.text()).not.toContain('兑换重置卡')
+    expect(wrapper.text()).not.toContain('消耗重置卡')
+    wrapper.unmount()
   })
 })

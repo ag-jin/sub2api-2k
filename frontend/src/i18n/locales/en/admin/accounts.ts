@@ -284,6 +284,8 @@ export default {
         window5h: '5h',
         windowWeekly: '7d',
         windowMonthly: '30d',
+        // Read-only reset-card count badge (design M4 / ticket 12 wiring, R0: observe only)
+        resetCardsCount: '{count} reset cards',
         probe: 'Query',
         probeTooltip: 'Query the provider quota endpoint for 5-hour / weekly rolling window usage',
         balanceProbeTooltip: 'Query the provider balance endpoint for the account balance',

@@ -18,6 +18,20 @@
       />
     </div>
 
+    <!-- 重置卡只读张数（design M4 / 票 12 接线，R0：仅观测，永不使用）。
+         数据源 = 账号 extra 快照流，紧跟 5h/7d 用量条；纯文本徽标，无按钮、
+         无链接、无可聚焦元素——本系统不存在任何「使用重置卡」入口。 -->
+    <div v-if="resetCardsLabel" class="flex flex-wrap items-center gap-1.5">
+      <span
+        data-test="cn-provider-quota-reset-cards"
+        class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-gray-600 tabular-nums dark:bg-dark-800 dark:text-gray-300"
+        :title="t('monitorCommon.resetCards.observeOnly')"
+      >
+        <Icon name="clock" size="sm" :stroke-width="2" />
+        {{ resetCardsLabel }}
+      </span>
+    </div>
+
     <!-- Explicit refresh action (aligned with the OpenAI "Query" / Grok "Probe"
          buttons): a verb label tells users this chip is clickable. The previous
          noun label ("5h/weekly") read as a passive caption and users could not
@@ -191,6 +205,28 @@ const snapshotIsStale = computed(() => {
   if (!updatedAt) return true
   const ts = new Date(updatedAt).getTime()
   return Number.isNaN(ts) || Date.now() - ts > SNAPSHOT_STALE_MS
+})
+
+/**
+ * 重置卡只读张数（design M4 / 票 12 接线，R0：仅观测，永不使用）。
+ *
+ * 数据源是本单元格既有的 extra 快照流：`<provider>_reset_cards`（与监控面板快照的
+ * `reset_cards` 同形，条目 `{type, expire_at}`）。字段缺失 / 形状不对（非数组）→ null：
+ * 老快照与未采集一律静默隐藏，绝不虚构 0 张；非该平台账号的同名键不读（前缀隔离）。
+ * 与 5h/7d 快照键同口径：键的存在即数据契约，前端不额外复刻后端的托管判定。
+ */
+const resetCardCount = computed<number | null>(() => {
+  // 重置卡是智谱专属特性：其它平台即便存在同形同名快照键也不渲染，
+  // 防御将来其它 CN 平台复用 extra 键名时的误展示（spec 有反向守卫用例）。
+  if (props.account.platform !== 'zhipu') return null
+  const raw = (props.account.extra as Record<string, unknown> | undefined)?.['zhipu_reset_cards']
+  return Array.isArray(raw) ? raw.length : null
+})
+
+/** 徽标文案：字段缺失时为空串，模板据此隐藏整行（无数据 = 不渲染）。 */
+const resetCardsLabel = computed(() => {
+  const count = resetCardCount.value
+  return count === null ? '' : t('admin.accounts.cnProviders.resetCardsCount', { count })
 })
 
 // 挂载时：先用持久化快照渲染；快照缺失或过期再自动探测一次（失败显示错误，
