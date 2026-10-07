@@ -122,9 +122,8 @@ func (h *PricingPlanHandler) List(c *gin.Context) {
 // GetByID 返回套餐及其模型协议条目、路由层（管理端全量视图）。
 // GET /api/v1/admin/pricing-plans/:id
 func (h *PricingPlanHandler) GetByID(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || planID <= 0 {
-		response.BadRequest(c, "Invalid pricing plan ID")
+	planID, ok := parsePricingPlanID(c)
+	if !ok {
 		return
 	}
 	detail, err := h.pricingPlanService.GetWithContent(c.Request.Context(), planID)
@@ -138,9 +137,8 @@ func (h *PricingPlanHandler) GetByID(c *gin.Context) {
 // Create 创建套餐（含模型协议条目与路由层）。
 // POST /api/v1/admin/pricing-plans
 func (h *PricingPlanHandler) Create(c *gin.Context) {
-	var req UpsertPricingPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	req, ok := bindUpsertPricingPlanRequest(c)
+	if !ok {
 		return
 	}
 	detail, err := h.pricingPlanService.Create(
@@ -159,14 +157,12 @@ func (h *PricingPlanHandler) Create(c *gin.Context) {
 // Update 整体替换套餐内容（含模型协议条目与路由层）。
 // PUT /api/v1/admin/pricing-plans/:id
 func (h *PricingPlanHandler) Update(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || planID <= 0 {
-		response.BadRequest(c, "Invalid pricing plan ID")
+	planID, ok := parsePricingPlanID(c)
+	if !ok {
 		return
 	}
-	var req UpsertPricingPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	req, ok := bindUpsertPricingPlanRequest(c)
+	if !ok {
 		return
 	}
 	detail, err := h.pricingPlanService.Update(
@@ -186,9 +182,8 @@ func (h *PricingPlanHandler) Update(c *gin.Context) {
 // Delete 删除套餐（软删除，含模型协议条目与路由层）。
 // DELETE /api/v1/admin/pricing-plans/:id
 func (h *PricingPlanHandler) Delete(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || planID <= 0 {
-		response.BadRequest(c, "Invalid pricing plan ID")
+	planID, ok := parsePricingPlanID(c)
+	if !ok {
 		return
 	}
 	if err := h.pricingPlanService.Delete(c.Request.Context(), planID); err != nil {
@@ -196,6 +191,28 @@ func (h *PricingPlanHandler) Delete(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"message": "Pricing plan deleted successfully"})
+}
+
+// parsePricingPlanID 解析路径参数中的套餐 ID；缺失/非法/非正数时写出 400
+// 响应并返回 false（调用方直接 return）。
+func parsePricingPlanID(c *gin.Context) (int64, bool) {
+	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || planID <= 0 {
+		response.BadRequest(c, "Invalid pricing plan ID")
+		return 0, false
+	}
+	return planID, true
+}
+
+// bindUpsertPricingPlanRequest 绑定创建/更新请求体；绑定失败时写出 400
+// 响应并返回 false（调用方直接 return）。
+func bindUpsertPricingPlanRequest(c *gin.Context) (UpsertPricingPlanRequest, bool) {
+	var req UpsertPricingPlanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return UpsertPricingPlanRequest{}, false
+	}
+	return req, true
 }
 
 func pricingPlanInputFromRequest(req UpsertPricingPlanRequest) service.PricingPlanInput {
@@ -209,10 +226,9 @@ func pricingPlanInputFromRequest(req UpsertPricingPlanRequest) service.PricingPl
 	}
 }
 
+// pricingPlanModelInputsFromRequest 把请求条目映射为服务层输入；空输入映射为
+// 空切片，服务层按下发的空集合执行整体替换（空即清空）。
 func pricingPlanModelInputsFromRequest(reqs []PricingPlanModelRequest) []service.PricingPlanModelInput {
-	if len(reqs) == 0 {
-		return nil
-	}
 	out := make([]service.PricingPlanModelInput, 0, len(reqs))
 	for _, r := range reqs {
 		out = append(out, service.PricingPlanModelInput{
@@ -230,10 +246,9 @@ func pricingPlanModelInputsFromRequest(reqs []PricingPlanModelRequest) []service
 	return out
 }
 
+// pricingPlanRouteInputsFromRequest 把请求路由层映射为服务层输入；空输入语义
+// 同上（空即清空）。
 func pricingPlanRouteInputsFromRequest(reqs []PricingPlanRouteRequest) []service.PricingPlanRouteInput {
-	if len(reqs) == 0 {
-		return nil
-	}
 	out := make([]service.PricingPlanRouteInput, 0, len(reqs))
 	for _, r := range reqs {
 		out = append(out, service.PricingPlanRouteInput{

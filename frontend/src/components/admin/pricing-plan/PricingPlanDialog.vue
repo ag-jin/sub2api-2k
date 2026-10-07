@@ -59,7 +59,7 @@
             </h4>
             <p class="mt-0.5 text-xs text-gray-400">{{ t('admin.pricingPlans.form.modelsHint') }}</p>
           </div>
-          <button type="button" data-testid="add-model" class="btn btn-secondary btn-sm" @click="addModel">
+          <button type="button" data-testid="add-model" class="btn btn-secondary btn-sm" @click="form.models.push(emptyModelRow())">
             <Icon name="plus" size="sm" />
             {{ t('admin.pricingPlans.form.addModel') }}
           </button>
@@ -79,7 +79,7 @@
             <h5 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
               {{ t('admin.pricingPlans.form.modelEntry', { index: index + 1 }) }}
             </h5>
-            <button type="button" data-testid="remove-model" class="btn btn-ghost btn-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" @click="removeModel(index)">
+            <button type="button" data-testid="remove-model" class="btn btn-ghost btn-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" @click="form.models.splice(index, 1)">
               <Icon name="trash" size="sm" />
               {{ t('common.remove') }}
             </button>
@@ -185,7 +185,7 @@
             </h4>
             <p class="mt-0.5 text-xs text-gray-400">{{ t('admin.pricingPlans.form.routesHint') }}</p>
           </div>
-          <button type="button" data-testid="add-route" class="btn btn-secondary btn-sm" @click="addRoute">
+          <button type="button" data-testid="add-route" class="btn btn-secondary btn-sm" @click="form.routes.push(emptyRouteRow())">
             <Icon name="plus" size="sm" />
             {{ t('admin.pricingPlans.form.addRoute') }}
           </button>
@@ -227,7 +227,7 @@
               <Toggle v-model="route.enabled" />
               {{ t('admin.pricingPlans.form.enabled') }}
             </label>
-            <button type="button" data-testid="remove-route" class="btn btn-ghost btn-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" @click="removeRoute(index)">
+            <button type="button" data-testid="remove-route" class="btn btn-ghost btn-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" @click="form.routes.splice(index, 1)">
               <Icon name="trash" size="sm" />
               {{ t('common.remove') }}
             </button>
@@ -256,18 +256,21 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
+import { PRICING_PLAN_PROTOCOLS, type PricingPlanBillingMode } from '@/api/admin/pricingPlans'
 import {
-  PRICING_PLAN_PROTOCOLS,
-  type AdminPricingPlanModel,
-  type AdminPricingPlanRoute,
-  type PlanModelPricing,
-  type PlanPricingInterval,
-  type PlanTimePricing,
-  type PricingPlanBillingMode,
-  type PricingPlanModelInput,
-  type PricingPlanRouteInput,
-  type PricingPlanUpsertRequest
-} from '@/api/admin/pricingPlans'
+  buildPayload,
+  createPlanForm,
+  emptyModelRow,
+  emptyRouteRow,
+  groupConflictIndexes,
+  modelToForm,
+  normalizeCompatibilityFallback,
+  onPriceInput,
+  priorityConflictIndexes,
+  routeToForm,
+  selectBillingMode,
+  type PriceKey
+} from './planForm'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
@@ -289,86 +292,9 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
-interface ModelFormRow {
-  public_model: string
-  protocol: string
-  upstream_model: string
-  direct: boolean
-  allow_compatibility_fallback: boolean
-  priority: number
-  enabled: boolean
-  notes: string
-  billing_mode: PricingPlanBillingMode | ''
-  input_price: number | null
-  output_price: number | null
-  cache_write_price: number | null
-  cache_read_price: number | null
-  fast_multiplier: number | null
-  flex_multiplier: number | null
-  image_input_price: number | null
-  image_output_price: number | null
-  per_request_price: number | null
-  // 后端明细（区间/分时）仅保留不编辑，保存时原样带回
-  intervals: PlanPricingInterval[]
-  time_pricing: PlanTimePricing | null
-}
-
-interface RouteFormRow {
-  group_id: number | null
-  priority: number
-  enabled: boolean
-}
-
 const detailLoading = ref(false)
 const saving = ref(false)
 const groups = ref<Awaited<ReturnType<typeof adminAPI.groups.getAll>>>([])
-
-// 显式默认值：direct/enabled 默认 true，priority 默认 100
-function emptyModelRow(): ModelFormRow {
-  return {
-    public_model: '',
-    protocol: 'chat_completions',
-    upstream_model: '',
-    direct: true,
-    allow_compatibility_fallback: false,
-    priority: 100,
-    enabled: true,
-    notes: '',
-    billing_mode: 'token',
-    input_price: null,
-    output_price: null,
-    cache_write_price: null,
-    cache_read_price: null,
-    fast_multiplier: null,
-    flex_multiplier: null,
-    image_input_price: null,
-    image_output_price: null,
-    per_request_price: null,
-    intervals: [],
-    time_pricing: null
-  }
-}
-
-function emptyRouteRow(): RouteFormRow {
-  return {
-    group_id: null,
-    priority: 0,
-    enabled: true
-  }
-}
-
-function createPlanForm() {
-  return {
-    name: '',
-    title: '',
-    description: '',
-    status: 'active' as 'active' | 'disabled',
-    is_public: false,
-    sort_order: 0,
-    models: [] as ModelFormRow[],
-    routes: [] as RouteFormRow[]
-  }
-}
 
 const form = ref(createPlanForm())
 
@@ -395,18 +321,7 @@ const billingModes = computed(() => [
 ])
 
 interface PriceFieldDef {
-  key: keyof Pick<
-    ModelFormRow,
-    | 'input_price'
-    | 'output_price'
-    | 'cache_write_price'
-    | 'cache_read_price'
-    | 'fast_multiplier'
-    | 'flex_multiplier'
-    | 'image_input_price'
-    | 'image_output_price'
-    | 'per_request_price'
-  >
+  key: PriceKey
   label: string
   placeholder: string
 }
@@ -415,7 +330,7 @@ interface PriceFieldDef {
 // 用按次价，image 用图片输入/输出价。区间/分时暂不提供编辑（保留后端明细）。
 function priceFieldsFor(mode: PricingPlanBillingMode | ''): PriceFieldDef[] {
   const mk = (
-    key: PriceFieldDef['key'],
+    key: PriceKey,
     labelKey: string,
     placeholderKey: string
   ): PriceFieldDef => ({
@@ -451,74 +366,8 @@ const groupOptions = computed<SelectOption[]>(() =>
   }))
 )
 
-function addModel() {
-  form.value.models.push(emptyModelRow())
-}
-
-function removeModel(index: number) {
-  form.value.models.splice(index, 1)
-}
-
-function selectBillingMode(row: ModelFormRow, mode: PricingPlanBillingMode | '') {
-  row.billing_mode = mode
-  if (mode !== 'token') {
-    row.time_pricing = null
-  }
-}
-
-function normalizeCompatibilityFallback(row: ModelFormRow) {
-  if (row.direct || row.protocol !== 'chat_completions') {
-    row.allow_compatibility_fallback = false
-  }
-}
-
-// 价格输入：空串转 null，保持表单状态为 number | null（避免 v-model.number 的空串污染）
-function onPriceInput(row: ModelFormRow, key: PriceFieldDef['key'], event: Event) {
-  const raw = (event.target as HTMLInputElement).value
-  row[key] = raw === '' ? null : Number(raw)
-}
-
-function addRoute() {
-  form.value.routes.push(emptyRouteRow())
-}
-
-function removeRoute(index: number) {
-  form.value.routes.splice(index, 1)
-}
-
-// 客户端重复校验：同一套餐内 group 与 priority 均不可重复。
-// 冲突行（含首行）全部标红，方便一眼定位。
-function groupConflictIndexes(): Set<number> {
-  const byGroup = new Map<number, number[]>()
-  form.value.routes.forEach((r, i) => {
-    if (r.group_id == null) return
-    const arr = byGroup.get(r.group_id) ?? []
-    arr.push(i)
-    byGroup.set(r.group_id, arr)
-  })
-  const conflicts = new Set<number>()
-  for (const arr of byGroup.values()) {
-    if (arr.length > 1) arr.forEach((i) => conflicts.add(i))
-  }
-  return conflicts
-}
-
-function priorityConflictIndexes(): Set<number> {
-  const byPriority = new Map<number, number[]>()
-  form.value.routes.forEach((r, i) => {
-    const arr = byPriority.get(r.priority) ?? []
-    arr.push(i)
-    byPriority.set(r.priority, arr)
-  })
-  const conflicts = new Set<number>()
-  for (const arr of byPriority.values()) {
-    if (arr.length > 1) arr.forEach((i) => conflicts.add(i))
-  }
-  return conflicts
-}
-
-const groupConflicts = computed(() => groupConflictIndexes())
-const priorityConflicts = computed(() => priorityConflictIndexes())
+const groupConflicts = computed(() => groupConflictIndexes(form.value.routes))
+const priorityConflicts = computed(() => priorityConflictIndexes(form.value.routes))
 
 function routeGroupError(index: number): string {
   if (form.value.routes[index].group_id == null) {
@@ -547,7 +396,9 @@ async function loadDetail() {
   detailLoading.value = true
   try {
     const detail = await adminAPI.pricingPlans.getById(props.planId)
+    // 先取新建默认形态，再用详情整体覆盖（与 createPlanForm 同一套键）
     form.value = {
+      ...createPlanForm(),
       name: detail.name,
       title: detail.title,
       description: detail.description,
@@ -565,112 +416,11 @@ async function loadDetail() {
   }
 }
 
-function modelToForm(m: AdminPricingPlanModel): ModelFormRow {
-  const p = m.pricing
-  return {
-    public_model: m.public_model,
-    protocol: m.protocol || 'chat_completions',
-    upstream_model: m.upstream_model,
-    direct: m.direct,
-    allow_compatibility_fallback: m.allow_compatibility_fallback,
-    priority: m.priority,
-    enabled: m.enabled,
-    notes: m.notes,
-    billing_mode: p?.billing_mode || 'token',
-    input_price: p?.input_price ?? null,
-    output_price: p?.output_price ?? null,
-    cache_write_price: p?.cache_write_price ?? null,
-    cache_read_price: p?.cache_read_price ?? null,
-    fast_multiplier: p?.fast_multiplier ?? null,
-    flex_multiplier: p?.flex_multiplier ?? null,
-    image_input_price: p?.image_input_price ?? null,
-    image_output_price: p?.image_output_price ?? null,
-    per_request_price: p?.per_request_price ?? null,
-    intervals: p?.intervals ?? [],
-    time_pricing: p?.time_pricing ?? null
-  }
-}
-
-function routeToForm(r: AdminPricingPlanRoute): RouteFormRow {
-  return {
-    group_id: r.group_id,
-    priority: r.priority,
-    enabled: r.enabled
-  }
-}
-
-// 组装 pricing 文档：只下发当前计费模式的字段 + 保留的区间/分时明细。
-// 分时仅 token 模式支持，切换到其他模式时丢弃以免后端校验失败。
-function buildPricingPayload(row: ModelFormRow): PlanModelPricing {
-  const pricing: PlanModelPricing = { billing_mode: row.billing_mode }
-  switch (row.billing_mode) {
-    case 'per_request':
-    case 'image':
-    case 'video':
-      pricing.per_request_price = row.per_request_price
-      break
-    case 'token':
-    case '':
-    default:
-      pricing.input_price = row.input_price
-      pricing.output_price = row.output_price
-      pricing.cache_write_price = row.cache_write_price
-      pricing.cache_read_price = row.cache_read_price
-      pricing.fast_multiplier = row.fast_multiplier
-      pricing.flex_multiplier = row.flex_multiplier
-      if (row.time_pricing) pricing.time_pricing = row.time_pricing
-      break
-  }
-  if (row.intervals.length > 0) {
-    pricing.intervals = row.intervals
-  }
-  return pricing
-}
-
-// 数值输入兜底：v-model.number 空串时保持字符串，发送前统一归一化
-function normalizeInt(v: unknown, fallback: number): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string' && v.trim() !== '') {
-    const n = Number(v)
-    if (Number.isFinite(n)) return n
-  }
-  return fallback
-}
-
-function buildPayload(): PricingPlanUpsertRequest {
-  const models: PricingPlanModelInput[] = form.value.models.map((m) => ({
-    public_model: m.public_model,
-    protocol: m.protocol,
-    upstream_model: m.upstream_model,
-    direct: m.direct,
-    allow_compatibility_fallback: m.allow_compatibility_fallback,
-    priority: normalizeInt(m.priority, 100),
-    enabled: m.enabled,
-    notes: m.notes,
-    pricing: buildPricingPayload(m)
-  }))
-  const routes: PricingPlanRouteInput[] = form.value.routes.map((r) => ({
-    group_id: r.group_id as number,
-    priority: normalizeInt(r.priority, 0),
-    enabled: r.enabled
-  }))
-  return {
-    name: form.value.name,
-    title: form.value.title,
-    description: form.value.description,
-    status: form.value.status,
-    is_public: form.value.is_public,
-    sort_order: normalizeInt(form.value.sort_order, 0),
-    models,
-    routes
-  }
-}
-
 async function handleSubmit() {
   if (hasRouteErrors()) return
   saving.value = true
   try {
-    const payload = buildPayload()
+    const payload = buildPayload(form.value)
     if (props.planId == null) {
       await adminAPI.pricingPlans.create(payload)
     } else {

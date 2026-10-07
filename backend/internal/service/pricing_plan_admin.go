@@ -75,15 +75,7 @@ func (s *PricingPlanService) Create(
 	if s.repo == nil {
 		return nil, ErrPricingPlanUnavailable
 	}
-	plan := normalizePricingPlanInput(input)
-	if plan.Name == "" {
-		return nil, ErrPricingPlanInvalidInput
-	}
-	models, err := normalizePricingPlanModels(modelInputs)
-	if err != nil {
-		return nil, err
-	}
-	routes, err := normalizePricingPlanRoutes(routeInputs)
+	plan, models, routes, err := normalizePricingPlanUpsert(input, modelInputs, routeInputs)
 	if err != nil {
 		return nil, err
 	}
@@ -104,19 +96,11 @@ func (s *PricingPlanService) Update(
 	if s.repo == nil {
 		return nil, ErrPricingPlanUnavailable
 	}
-	plan := normalizePricingPlanInput(input)
-	if plan.Name == "" {
-		return nil, ErrPricingPlanInvalidInput
+	plan, models, routes, err := normalizePricingPlanUpsert(input, modelInputs, routeInputs)
+	if err != nil {
+		return nil, err
 	}
 	plan.ID = id
-	models, err := normalizePricingPlanModels(modelInputs)
-	if err != nil {
-		return nil, err
-	}
-	routes, err := normalizePricingPlanRoutes(routeInputs)
-	if err != nil {
-		return nil, err
-	}
 	if err := s.repo.UpdatePlan(ctx, &plan, models, routes); err != nil {
 		return nil, err
 	}
@@ -129,6 +113,28 @@ func (s *PricingPlanService) Delete(ctx context.Context, id int64) error {
 		return ErrPricingPlanUnavailable
 	}
 	return s.repo.DeletePlan(ctx, id)
+}
+
+// normalizePricingPlanUpsert 规范化创建/更新输入：套餐名称必填，模型协议
+// 条目与路由层依次校验（错误顺序：名称 -> 模型 -> 路由，保持既有报错序）。
+func normalizePricingPlanUpsert(
+	input PricingPlanInput,
+	modelInputs []PricingPlanModelInput,
+	routeInputs []PricingPlanRouteInput,
+) (PricingPlan, []PricingPlanModel, []PricingPlanRoute, error) {
+	plan := normalizePricingPlanInput(input)
+	if plan.Name == "" {
+		return PricingPlan{}, nil, nil, ErrPricingPlanInvalidInput
+	}
+	models, err := normalizePricingPlanModels(modelInputs)
+	if err != nil {
+		return PricingPlan{}, nil, nil, err
+	}
+	routes, err := normalizePricingPlanRoutes(routeInputs)
+	if err != nil {
+		return PricingPlan{}, nil, nil, err
+	}
+	return plan, models, routes, nil
 }
 
 func normalizePricingPlanModels(inputs []PricingPlanModelInput) ([]PricingPlanModel, error) {
@@ -184,6 +190,17 @@ func normalizePricingPlanRoutes(inputs []PricingPlanRouteInput) ([]PricingPlanRo
 	return out, nil
 }
 
+// hasInvalidPricingValue 报告任一非 nil 定价值为 NaN/Inf/负数（销售定价
+// 文档的通用数值护栏）。
+func hasInvalidPricingValue(values ...*float64) bool {
+	for _, value := range values {
+		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0) {
+			return true
+		}
+	}
+	return false
+}
+
 func validatePricingPlanPricing(pricing *ChannelModelPricing) error {
 	if pricing == nil {
 		return nil
@@ -195,7 +212,7 @@ func validatePricingPlanPricing(pricing *ChannelModelPricing) error {
 			return ErrPricingPlanInvalidInput
 		}
 	}
-	for _, value := range []*float64{
+	if hasInvalidPricingValue(
 		pricing.InputPrice,
 		pricing.OutputPrice,
 		pricing.CacheWritePrice,
@@ -205,17 +222,15 @@ func validatePricingPlanPricing(pricing *ChannelModelPricing) error {
 		pricing.PerRequestPrice,
 		pricing.FastMultiplier,
 		pricing.FlexMultiplier,
-	} {
-		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0) {
-			return ErrPricingPlanInvalidInput
-		}
+	) {
+		return ErrPricingPlanInvalidInput
 	}
 	for _, interval := range pricing.Intervals {
 		if interval.MinTokens < 0 ||
 			(interval.MaxTokens != nil && *interval.MaxTokens <= interval.MinTokens) {
 			return ErrPricingPlanInvalidInput
 		}
-		for _, value := range []*float64{
+		if hasInvalidPricingValue(
 			interval.InputPrice,
 			interval.OutputPrice,
 			interval.CacheWritePrice,
@@ -225,10 +240,8 @@ func validatePricingPlanPricing(pricing *ChannelModelPricing) error {
 			interval.OutputMultiplier,
 			interval.CacheWriteMultiplier,
 			interval.CacheReadMultiplier,
-		} {
-			if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0) {
-				return ErrPricingPlanInvalidInput
-			}
+		) {
+			return ErrPricingPlanInvalidInput
 		}
 	}
 	if err := ValidateIntervals(pricing.Intervals, pricing.BillingMode); err != nil {

@@ -70,11 +70,7 @@ func (r *pricingPlanRepository) ListPlans(ctx context.Context, includeDisabled b
 	if err != nil {
 		return nil, err
 	}
-	out := make([]service.PricingPlan, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, *pricingPlanEntityToService(row))
-	}
-	return out, nil
+	return toServiceSlice(rows, pricingPlanEntityToService), nil
 }
 
 func (r *pricingPlanRepository) ListPublicProducts(ctx context.Context) ([]service.PricingPlanProduct, error) {
@@ -137,11 +133,7 @@ func (r *pricingPlanRepository) ListModelsByPlan(ctx context.Context, planID int
 	if err != nil {
 		return nil, err
 	}
-	out := make([]service.PricingPlanModel, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, *pricingPlanModelEntityToService(row))
-	}
-	return out, nil
+	return toServiceSlice(rows, pricingPlanModelEntityToService), nil
 }
 
 func (r *pricingPlanRepository) ListRoutesByPlan(ctx context.Context, planID int64, includeDisabled bool) ([]service.PricingPlanRoute, error) {
@@ -158,11 +150,7 @@ func (r *pricingPlanRepository) ListRoutesByPlan(ctx context.Context, planID int
 	if err != nil {
 		return nil, err
 	}
-	out := make([]service.PricingPlanRoute, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, *pricingPlanRouteEntityToService(row))
-	}
-	return out, nil
+	return toServiceSlice(rows, pricingPlanRouteEntityToService), nil
 }
 
 func (r *pricingPlanRepository) CreatePlan(ctx context.Context, plan *service.PricingPlan, models []service.PricingPlanModel, routes []service.PricingPlanRoute) error {
@@ -193,7 +181,7 @@ func (r *pricingPlanRepository) UpdatePlan(ctx context.Context, plan *service.Pr
 	if plan == nil {
 		return service.ErrPricingPlanNotFound
 	}
-	err := r.withTx(ctx, func(txCtx context.Context, c *dbent.Client) error {
+	if err := r.withTx(ctx, func(txCtx context.Context, c *dbent.Client) error {
 		updated, err := c.PricingPlan.UpdateOneID(plan.ID).
 			SetName(plan.Name).
 			SetTitle(plan.Title).
@@ -210,8 +198,7 @@ func (r *pricingPlanRepository) UpdatePlan(ctx context.Context, plan *service.Pr
 			return err
 		}
 		return replacePlanRoutes(txCtx, c, plan.ID, routes)
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	// 套餐内容（含模型协议条目与路由层）已整体替换：绑定 Key 的认证快照
@@ -220,32 +207,31 @@ func (r *pricingPlanRepository) UpdatePlan(ctx context.Context, plan *service.Pr
 	return nil
 }
 
-func (r *pricingPlanRepository) ReplaceModels(ctx context.Context, planID int64, models []service.PricingPlanModel) error {
-	err := r.withTx(ctx, func(txCtx context.Context, c *dbent.Client) error {
+// replacePlanChildren 在事务内校验套餐存在后整体替换其子条目，提交后失效
+// 绑定该套餐的 API Key 认证缓存（子条目变更必须让认证快照重新构建）。
+func (r *pricingPlanRepository) replacePlanChildren(ctx context.Context, planID int64, replace func(txCtx context.Context, c *dbent.Client) error) error {
+	if err := r.withTx(ctx, func(txCtx context.Context, c *dbent.Client) error {
 		if _, err := c.PricingPlan.Get(txCtx, planID); err != nil {
 			return translatePersistenceError(err, service.ErrPricingPlanNotFound, nil)
 		}
-		return replacePlanModels(txCtx, c, planID, models)
-	})
-	if err != nil {
+		return replace(txCtx, c)
+	}); err != nil {
 		return err
 	}
 	r.invalidatePlanAuthCache(ctx, planID)
 	return nil
 }
 
+func (r *pricingPlanRepository) ReplaceModels(ctx context.Context, planID int64, models []service.PricingPlanModel) error {
+	return r.replacePlanChildren(ctx, planID, func(txCtx context.Context, c *dbent.Client) error {
+		return replacePlanModels(txCtx, c, planID, models)
+	})
+}
+
 func (r *pricingPlanRepository) ReplaceRoutes(ctx context.Context, planID int64, routes []service.PricingPlanRoute) error {
-	err := r.withTx(ctx, func(txCtx context.Context, c *dbent.Client) error {
-		if _, err := c.PricingPlan.Get(txCtx, planID); err != nil {
-			return translatePersistenceError(err, service.ErrPricingPlanNotFound, nil)
-		}
+	return r.replacePlanChildren(ctx, planID, func(txCtx context.Context, c *dbent.Client) error {
 		return replacePlanRoutes(txCtx, c, planID, routes)
 	})
-	if err != nil {
-		return err
-	}
-	r.invalidatePlanAuthCache(ctx, planID)
-	return nil
 }
 
 func (r *pricingPlanRepository) DeletePlan(ctx context.Context, id int64) error {
@@ -268,14 +254,7 @@ func (r *pricingPlanRepository) DeletePlan(ctx context.Context, id int64) error 
 			return err
 		}
 		// 子条目一并软删除，保持查询（自动过滤 deleted_at）的一致语义
-		if _, err := c.PricingPlanModel.Delete().
-			Where(pricingplanmodel.PlanIDEQ(id)).
-			Exec(txCtx); err != nil {
-			return err
-		}
-		if _, err := c.PricingPlanRoute.Delete().
-			Where(pricingplanroute.PlanIDEQ(id)).
-			Exec(txCtx); err != nil {
+		if err := deletePlanChildren(txCtx, c, id); err != nil {
 			return err
 		}
 		err := c.PricingPlan.DeleteOneID(id).Exec(txCtx)
@@ -315,6 +294,20 @@ func (r *pricingPlanRepository) apiKeysByPlan(ctx context.Context, planID int64)
 		Where(apikey.PricingPlanIDEQ(planID), apikey.DeletedAtIsNil()).
 		Select(apikey.FieldKey).
 		Strings(ctx)
+}
+
+// deletePlanChildren 软删除套餐的全部模型协议条目与路由层（ent 查询自动
+// 过滤 deleted_at，与读路径语义一致）。
+func deletePlanChildren(ctx context.Context, c *dbent.Client, planID int64) error {
+	if _, err := c.PricingPlanModel.Delete().
+		Where(pricingplanmodel.PlanIDEQ(planID)).
+		Exec(ctx); err != nil {
+		return err
+	}
+	_, err := c.PricingPlanRoute.Delete().
+		Where(pricingplanroute.PlanIDEQ(planID)).
+		Exec(ctx)
+	return err
 }
 
 // replacePlanModels 软删除 planID 的既有模型条目并批量写入新条目（整体替换）。
@@ -359,11 +352,7 @@ func bulkCreatePlanModels(ctx context.Context, c *dbent.Client, planID int64, mo
 	if err != nil {
 		return translatePersistenceError(err, nil, service.ErrPricingPlanExists)
 	}
-	for i := range created {
-		if i < len(models) {
-			models[i] = *pricingPlanModelEntityToService(created[i])
-		}
-	}
+	backfillCreated(created, models, pricingPlanModelEntityToService)
 	return nil
 }
 
@@ -383,12 +372,28 @@ func bulkCreatePlanRoutes(ctx context.Context, c *dbent.Client, planID int64, ro
 		}
 		return translatePersistenceError(err, nil, service.ErrPricingPlanExists)
 	}
+	backfillCreated(created, routes, pricingPlanRouteEntityToService)
+	return nil
+}
+
+// toServiceSlice 把 ent 查询返回的实体行按序映射为 service 值切片；空结果
+// 返回非 nil 空切片（与逐行 append 的既有行为一致）。
+func toServiceSlice[E, S any](rows []*E, convert func(*E) *S) []S {
+	out := make([]S, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, *convert(row))
+	}
+	return out
+}
+
+// backfillCreated 把批量创建返回的实体按写入顺序回写为对应的 service 模型
+// （长度取两者较小值，防御驱动返回条目数不足的情况）。
+func backfillCreated[E, S any](created []*E, dst []S, convert func(*E) *S) {
 	for i := range created {
-		if i < len(routes) {
-			routes[i] = *pricingPlanRouteEntityToService(created[i])
+		if i < len(dst) {
+			dst[i] = *convert(created[i])
 		}
 	}
-	return nil
 }
 
 func pricingPlanEntityToService(row *dbent.PricingPlan) *service.PricingPlan {

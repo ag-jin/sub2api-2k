@@ -89,12 +89,12 @@ type modelPlazaResponse struct {
 // GET /api/v1/model-plaza
 func (h *ModelPlazaHandler) Get(c *gin.Context) {
 	if h.settingService == nil {
-		response.NotFound(c, "Model plaza is not enabled")
+		modelPlazaDisabled(c)
 		return
 	}
 	rt := h.settingService.GetModelPlazaRuntime(c.Request.Context())
 	if !rt.Enabled {
-		response.NotFound(c, "Model plaza is not enabled")
+		modelPlazaDisabled(c)
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 
 	if h.pricingPlanRepo == nil {
 		// fail-closed：仓储缺失视为功能未启用，不返回半成品目录。
-		response.NotFound(c, "Model plaza is not enabled")
+		modelPlazaDisabled(c)
 		return
 	}
 	products, err := h.pricingPlanRepo.ListPublicProducts(c.Request.Context())
@@ -123,6 +123,11 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 		Description: rt.Description,
 		Plans:       plans,
 	})
+}
+
+// modelPlazaDisabled 统一下发广场未启用的 fail-closed 404 响应。
+func modelPlazaDisabled(c *gin.Context) {
+	response.NotFound(c, "Model plaza is not enabled")
 }
 
 // toModelPlazaPlan 将公开产品映射为目录套餐：code=套餐稳定代号（Name），

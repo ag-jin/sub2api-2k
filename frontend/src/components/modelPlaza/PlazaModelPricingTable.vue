@@ -246,16 +246,15 @@ function billingModeLabel(p: CatalogProtocol): string {
 const MIN_DECIMALS = 2
 const PER_MILLION = 1_000_000
 
+// 缺值统一由 formatScaled 返回 "-"，此处只固定换算口径与最少小数位。
 /** 目录价格即展示价(无内部倍率折算),token 计费按 $/1M token 展示。 */
 function perMillion(value: number | null | undefined): string {
-  if (value == null) return '-'
-  return formatScaled(value, PER_MILLION, MIN_DECIMALS)
+  return formatScaled(value ?? null, PER_MILLION, MIN_DECIMALS)
 }
 
 /** 按次 / 按图片 / 按视频单价(不换算 1M)。 */
 function requestPrice(value: number | null | undefined): string {
-  if (value == null) return '-'
-  return formatScaled(value, 1, MIN_DECIMALS)
+  return formatScaled(value ?? null, 1, MIN_DECIMALS)
 }
 
 /** 非 token 计费的单位后缀:按图片 → “/ 张”,按次 → “/ 次”,按视频 → “/ 条”。 */
