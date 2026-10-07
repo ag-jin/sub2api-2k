@@ -579,9 +579,9 @@ func zhipuVisionBridgeReadDescription(r io.Reader) (string, error) {
 			continue
 		}
 		if builder.Len() > 0 {
-			builder.WriteString(" ")
+			_, _ = builder.WriteString(" ")
 		}
-		builder.WriteString(text)
+		_, _ = builder.WriteString(text)
 	}
 	description := strings.Join(strings.Fields(builder.String()), " ")
 	description = zhipuVisionBridgeTruncateRunes(description, zhipuVisionBridgeDescriptionMaxRunes)
