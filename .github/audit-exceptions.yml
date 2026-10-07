@@ -42,3 +42,17 @@ exceptions:
     mitigation: "No zero-size custom generators in codebase; upgrade when nanoid releases fix"
     expires_on: "2026-10-13"
     owner: "security@your-domain"
+  - package: source-map-js
+    advisory: "GHSA-68fv-2mgg-jv7q"
+    severity: high
+    reason: "Build-time devDependency (vite/sass toolchain source-map generation); not shipped in production bundle"
+    mitigation: "DoS path requires parsing attacker-controlled source maps at build/dev; CI inputs are first-party"
+    expires_on: "2026-11-07"
+    owner: "security@your-domain"
+  - package: "@vue/server-renderer"
+    advisory: "GHSA-g2v6-rqmx-r4w6"
+    severity: high
+    reason: "SSR-only package; this app is a client-side SPA without server rendering, server-renderer absent from shipped client bundle"
+    mitigation: "XSS path requires SSR of attacker-controlled attribute names; no SSR surface exists; track upstream vue patch"
+    expires_on: "2026-11-07"
+    owner: "security@your-domain"
