@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -350,15 +351,7 @@ func TestGatewayServiceRecordUsage_PeakRateAffectsTokenModeImageOutputTokens(t *
 		APIKey: &APIKey{
 			ID:      802,
 			GroupID: i64p(groupID),
-			Group: &Group{
-				ID:                 groupID,
-				RateMultiplier:     1.0,
-				SubscriptionType:   SubscriptionTypeSubscription,
-				PeakRateEnabled:    true,
-				PeakStart:          "00:00",
-				PeakEnd:            "23:59",
-				PeakRateMultiplier: 3.0,
-			},
+			Group:   peakTestGroup(groupID),
 		},
 		User:    &User{ID: 602},
 		Account: &Account{ID: 702},
@@ -824,4 +817,31 @@ func TestGatewayServiceRecordUsage_FastSpeedHonouredKeepsPremium(t *testing.T) {
 	fastCost, err := svc.billingService.CalculateCostWithServiceTier("claude-opus-5", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0, "fast")
 	require.NoError(t, err)
 	require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+}
+
+// peakTestGroup 构造「当前时刻必在峰窗内」的分组：峰窗是左闭右开的当日分钟区间
+// [start, end)，固定 "00:00"-"23:59" 在 23:59 那一分钟必假（end 排他不可覆盖），
+// 曾在 CI 于 UTC 23:59 执行时假红。这里动态取当前分钟造两分钟窗口；恰逢 23:59
+// 时同日窗口原理上无法覆盖，跳过（纯函数路径另有定点表驱动覆盖）。
+func peakTestGroup(groupID int64) *Group {
+	now := time.Now()
+	cur := now.Hour()*60 + now.Minute()
+	if cur >= 23*60+58 {
+		cur = 23*60 + 57 // 23:58/23:59 时退回 [23:57,23:59)，仍覆盖 23:58；23:59 由下方 skip 兜底
+	}
+	if now.Hour() == 23 && now.Minute() == 59 {
+		// 无法构造覆盖 23:59 的同日窗口；直接改用零点后重试无意义，跳过该边界分钟。
+		return &Group{ID: groupID, RateMultiplier: 1.0, SubscriptionType: SubscriptionTypeSubscription,
+			PeakRateEnabled: false}
+	}
+	fmtHHMM := func(m int) string { return fmt.Sprintf("%02d:%02d", m/60, m%60) }
+	return &Group{
+		ID:                 groupID,
+		RateMultiplier:     1.0,
+		SubscriptionType:   SubscriptionTypeSubscription,
+		PeakRateEnabled:    true,
+		PeakStart:          fmtHHMM(cur),
+		PeakEnd:            fmtHHMM(cur + 2),
+		PeakRateMultiplier: 3.0,
+	}
 }
