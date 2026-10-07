@@ -18,7 +18,6 @@ export default {
     deleteConfirm: '确认删除定价套餐「{name}」？',
     emptyTitle: '暂无定价套餐',
     emptyDescription: '创建定价套餐，对外销售带协议出站的公开模型条目与销售定价。',
-    isPublic: '公开',
     columns: {
       name: '名称',
       title: '标题',

@@ -18,7 +18,6 @@ export default {
     deleteConfirm: 'Delete pricing plan "{name}"?',
     emptyTitle: 'No pricing plans yet',
     emptyDescription: 'Create a pricing plan to sell bindable model-protocol entries with sale pricing.',
-    isPublic: 'Public',
     columns: {
       name: 'Name',
       title: 'Title',

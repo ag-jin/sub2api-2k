@@ -157,7 +157,3 @@ export async function getModelPlaza(options?: { signal?: AbortSignal }): Promise
   })
   return data
 }
-
-export const modelPlazaAPI = { getModelPlaza }
-
-export default modelPlazaAPI
