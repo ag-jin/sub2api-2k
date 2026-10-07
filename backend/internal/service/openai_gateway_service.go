@@ -600,6 +600,9 @@ func NewOpenAIGatewayService(
 	if openAITokenProvider != nil {
 		openAITokenProvider.SetAccountRuntimeBlocker(svc)
 	}
+	// 视觉桥（票 #35）在构造期做一次配置断言 + 接线日志：桥模型必须与盲模型集互斥
+	// （防「flash 被桥」的递归风险），冲突时运行期仍安全但必须显式告警。
+	logZhipuVisionBridgeStartup(cfg)
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }

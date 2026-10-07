@@ -76,6 +76,15 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	body = StripEmptyTextBlocks(body)
 	body = FilterWebSearchHistoryBlocks(body, upstreamModel)
 
+	// 智谱视觉桥（票 #35）：zhipu 账号 ∧ 上游模型在盲模型集 ∧ body 含内联图片时，
+	// 用同账号桥模型（默认 glm-5.3-flash）先行识别，把图片块**原地**替换为文字描述
+	// "[图片 N 内容] <描述>"（失败/超限留占位文本）。位置在 body 定稿之后、签名应用
+	// 之前——签名在 buildNativeAnthropicUpstreamRequest 内最后应用，拿到的就是这里
+	// 替换后的 body。全链路 fail-open：绝不阻断原请求。
+	if bridged, changed := s.zhipuVisionBridgeRewrite(ctx, account, body, upstreamModel); changed {
+		body = bridged
+	}
+
 	logger.LegacyPrintf("service.gateway", "[CN Anthropic 直通] account=%d(%s) platform=%s model=%s upstream=%s stream=%v",
 		account.ID, account.Name, account.Platform, originalModel, upstreamModel, clientStream)
 

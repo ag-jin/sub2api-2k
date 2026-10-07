@@ -37,6 +37,12 @@ func TestLoadGatewayZhipuDefaults(t *testing.T) {
 		{"sign_pow_bits", zhipu.SignPowBits, 8},
 		{"sign_handshake_backoff_seconds", zhipu.SignHandshakeBackoffSeconds, 30},
 		{"sign_account_circuit_break_threshold", zhipu.SignAccountCircuitBreakThreshold, 10},
+		// 视觉桥（票 #35）：默认开启，桥模型与盲模型集默认互斥（glm-5.3-flash ∉ 盲集）。
+		{"vision_bridge.enabled", zhipu.VisionBridge.Enabled, true},
+		{"vision_bridge.model", zhipu.VisionBridge.Model, DefaultZhipuVisionBridgeModel},
+		{"vision_bridge.blind_models", zhipu.VisionBridge.BlindModels, DefaultZhipuVisionBridgeBlindModels},
+		{"vision_bridge.max_images", zhipu.VisionBridge.MaxImages, DefaultZhipuVisionBridgeMaxImages},
+		{"vision_bridge.budget_seconds", zhipu.VisionBridge.BudgetSeconds, DefaultZhipuVisionBridgeBudgetSeconds},
 	}
 	for _, tc := range cases {
 		tc := tc

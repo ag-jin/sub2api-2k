@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -267,4 +268,175 @@ func TestNativeAnthropicPassthroughPreservesImageBlocks(t *testing.T) {
 	require.Equal(t, imageData, gjson.GetBytes(sent, "messages.0.content.1.source.data").String())
 	// 最强断言：整个 content 块数组与入站逐字段一致（无清洗/无重建）。
 	require.JSONEq(t, contentBlocks, gjson.GetBytes(sent, "messages.0.content").Raw)
+}
+
+// TestNativeAnthropicVisionBridgeRewritesBlindModelImageBlocks 是票 #35 挂点的主用例：
+// 智谱登录托管账号 + 盲模型（glm-5.3）+ 内联图片 → 站点先用同账号 flash 识别，把图片块
+// 原地替换为 "[图片 1 内容] <描述>" 后再下发主请求（主请求体里不得再有 image 块）。
+func TestNativeAnthropicVisionBridgeRewritesBlindModelImageBlocks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	contentBlocks := `[{"type":"text","text":"这张图里是什么"},` +
+		zhipuVisionBridgeTestImageBlock(zhipuVisionBridgeTestImageDataA) + `]`
+	body := zhipuVisionBridgeTestMessagesBody(`[{"role":"user","content":` + contentBlocks + `}]`)
+
+	upstream := &zhipuVisionBridgeUpstreamFake{
+		descriptions: map[string]string{zhipuVisionBridgeTestImageDataA: "一只红色的圆球"},
+		mainModel:    "glm-5.3",
+		mainResponse: nativeAnthropicBufferedResponse(),
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          zhipuVisionBridgeTestConfig(),
+		httpUpstream: upstream,
+		zhipuSigner:  &zhipuSignStubSigner{},
+	}
+
+	_, err := svc.ForwardAsAnthropic(context.Background(),
+		adaptiveProtocolTestContext("/v1/messages", body), zhipuVisionBridgeTestAccount(t), body, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, upstream.requests, 2, "一次 flash 识图 + 一次主请求")
+	require.Equal(t, 1, upstream.posts, "flash 调用恰好一次")
+	// 第 1 次出站是桥调用（模型名为桥模型、带原图）；第 2 次是主请求。
+	require.Equal(t, "glm-5.3-flash", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, zhipuVisionBridgeTestImageDataA, zhipuVisionBridgeFlashImageData(upstream.bodies[0]))
+	mainBody := upstream.bodies[1]
+	require.Equal(t, "glm-5.3", gjson.GetBytes(mainBody, "model").String())
+	require.Zero(t, zhipuVisionBridgeImageBlockCount(mainBody), "主请求不得再残留 image 块")
+	require.JSONEq(t,
+		`[{"type":"text","text":"这张图里是什么"},{"type":"text","text":"[图片 1 内容] 一只红色的圆球"}]`,
+		gjson.GetBytes(mainBody, "messages.0.content").Raw)
+}
+
+// TestNativeAnthropicVisionBridgeNeverBridgesTheBridgeModel 是防递归红线的挂点锁：
+// 请求模型就是桥模型（flash）时不得触发桥——即使运维把 flash 误配进盲模型集，运行期
+// 的互斥解析也必须把它剔除（宁可漏桥，不可「flash 被桥」）。
+func TestNativeAnthropicVisionBridgeNeverBridgesTheBridgeModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	contentBlocks := `[{"type":"text","text":"这张图里是什么"},` +
+		zhipuVisionBridgeTestImageBlock(zhipuVisionBridgeTestImageDataA) + `]`
+
+	tests := []struct {
+		name        string
+		blindModels string
+	}{
+		{name: "默认盲集不含 flash", blindModels: "glm-5.3,glm-5.2"},
+		{name: "误把 flash 配进盲集也必须互斥", blindModels: "glm-5.3,glm-5.3-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := zhipuVisionBridgeTestConfig()
+			cfg.Gateway.Zhipu.VisionBridge.BlindModels = tt.blindModels
+			body := []byte(`{"model":"glm-5.3-flash","max_tokens":64,"stream":false,"messages":[{"role":"user","content":` +
+				contentBlocks + `}]}`)
+			upstream := &zhipuVisionBridgeUpstreamFake{
+				fallbackDescription: "不应被调用",
+				mainModel:           "glm-5.3-flash",
+				mainResponse:        nativeAnthropicBufferedResponse(),
+			}
+			svc := &OpenAIGatewayService{
+				cfg:          cfg,
+				httpUpstream: upstream,
+				zhipuSigner:  &zhipuSignStubSigner{},
+			}
+
+			_, err := svc.ForwardAsAnthropic(context.Background(),
+				adaptiveProtocolTestContext("/v1/messages", body), zhipuVisionBridgeTestAccount(t), body, "", "")
+			require.NoError(t, err)
+
+			require.Zero(t, upstream.posts, "flash 请求本身不得触发桥调用")
+			require.Len(t, upstream.requests, 1)
+			require.JSONEq(t, contentBlocks, gjson.GetBytes(upstream.bodies[0], "messages.0.content").Raw,
+				"flash 直通保图语义不变（#33 回归口径）")
+		})
+	}
+}
+
+// TestNativeAnthropicVisionBridgeGateMatrix 覆盖挂点的触发矩阵：开关关闭、非盲模型、
+// 非智谱账号三种情形一律直通现状——图片块逐字段原样到达上游，且没有任何 flash 调用。
+func TestNativeAnthropicVisionBridgeGateMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	contentBlocks := `[{"type":"text","text":"这张图里是什么"},` +
+		zhipuVisionBridgeTestImageBlock(zhipuVisionBridgeTestImageDataA) + `]`
+
+	tests := []struct {
+		name    string
+		mutate  func(*config.Config)
+		account func(*testing.T) *Account
+		model   string
+	}{
+		{
+			name:    "开关关闭 → 直通现状",
+			mutate:  func(cfg *config.Config) { cfg.Gateway.Zhipu.VisionBridge.Enabled = false },
+			account: zhipuVisionBridgeTestAccount,
+			model:   "glm-5.3",
+		},
+		{
+			name:    "非盲模型 → 直通",
+			mutate:  func(*config.Config) {},
+			account: zhipuVisionBridgeTestAccount,
+			model:   "glm-4.7",
+		},
+		{
+			name:    "非智谱账号 → 直通",
+			mutate:  func(*config.Config) {},
+			account: func(*testing.T) *Account { return nativeAnthropicTestAccount() },
+			model:   "glm-5.3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := zhipuVisionBridgeTestConfig()
+			tt.mutate(cfg)
+			body := []byte(`{"model":"` + tt.model + `","max_tokens":64,"stream":false,"messages":[{"role":"user","content":` +
+				contentBlocks + `}]}`)
+			upstream := &zhipuVisionBridgeUpstreamFake{
+				fallbackDescription: "不应被调用",
+				mainModel:           tt.model,
+				mainResponse:        nativeAnthropicBufferedResponse(),
+			}
+			svc := &OpenAIGatewayService{
+				cfg:          cfg,
+				httpUpstream: upstream,
+				zhipuSigner:  &zhipuSignStubSigner{},
+			}
+
+			_, err := svc.ForwardAsAnthropic(context.Background(),
+				adaptiveProtocolTestContext("/v1/messages", body), tt.account(t), body, "", "")
+			require.NoError(t, err)
+
+			require.Zero(t, upstream.posts, "未命中桥条件时不得有任何 flash 调用")
+			require.Len(t, upstream.requests, 1, "未命中桥条件时只有主请求")
+			require.JSONEq(t, contentBlocks, gjson.GetBytes(upstream.bodies[0], "messages.0.content").Raw,
+				"图片块必须原样到达上游（#33 保图语义）")
+		})
+	}
+}
+
+// TestNativeAnthropicVisionBridgeAppliesToAnyZhipuAccount 锁定触发面的账号判定（票面挂点
+// 口径「zhipu 账号」）：非登录托管的 payg api_key 形态同样适用桥（桥模型与请求同账号），
+// 不因账号形态而漏桥；非 zhipu 平台一律不桥（见 GateMatrix 的非智谱用例）。
+func TestNativeAnthropicVisionBridgeAppliesToAnyZhipuAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	contentBlocks := `[{"type":"text","text":"这张图里是什么"},` +
+		zhipuVisionBridgeTestImageBlock(zhipuVisionBridgeTestImageDataA) + `]`
+	body := zhipuVisionBridgeTestMessagesBody(`[{"role":"user","content":` + contentBlocks + `}]`)
+
+	upstream := &zhipuVisionBridgeUpstreamFake{
+		descriptions: map[string]string{zhipuVisionBridgeTestImageDataA: "一只红色的圆球"},
+		mainModel:    "glm-5.3",
+		mainResponse: nativeAnthropicBufferedResponse(),
+	}
+	svc := &OpenAIGatewayService{cfg: zhipuVisionBridgeTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.ForwardAsAnthropic(context.Background(),
+		adaptiveProtocolTestContext("/v1/messages", body), zhipuNativeAnthropicTestAccount(), body, "", "")
+	require.NoError(t, err)
+
+	require.Equal(t, 1, upstream.posts)
+	mainBody := upstream.bodies[1]
+	require.Zero(t, zhipuVisionBridgeImageBlockCount(mainBody))
+	require.Equal(t, "[图片 1 内容] 一只红色的圆球",
+		gjson.GetBytes(mainBody, "messages.0.content.1.text").String())
 }

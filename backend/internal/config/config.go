@@ -1167,21 +1167,61 @@ type GatewayCNProvidersConfig struct {
 //   - sign_pow_bits: X-Client-Pow 工作量证明位数（默认 8）
 //   - sign_handshake_backoff_seconds: 每 key 重握手最小间隔，防握手风暴（默认 30）
 //   - sign_account_circuit_break_threshold: 单账号 5 分钟窗口内验签失效次数熔断阈值（默认 10）
+//   - vision_bridge: 视觉桥（票 #35）：盲模型请求含内联图片时，用同账号桥模型先行识别，
+//     把图片块替换为文字描述（详见 GatewayZhipuVisionBridgeConfig）
 type GatewayZhipuConfig struct {
-	SignV4Enabled                    bool    `mapstructure:"sign_v4_enabled"`
-	SignClientVersion                string  `mapstructure:"sign_client_version"`
-	SignKeyTTLMinutes                int     `mapstructure:"sign_key_ttl_minutes"`
-	CredentialCheckIntervalMinutes   int     `mapstructure:"credential_check_interval_minutes"`
-	ZCodeMinCallIntervalSeconds      int     `mapstructure:"zcode_min_call_interval_seconds"`
-	ResetStatusCacheMinutes          int     `mapstructure:"reset_status_cache_minutes"`
-	SignFailPolicy                   string  `mapstructure:"sign_fail_policy"`
-	SignAlertEnabled                 bool    `mapstructure:"sign_alert_enabled"`
-	SignReconcileIntervalHours       int     `mapstructure:"sign_reconcile_interval_hours"`
-	SignReconcileDeviationThreshold  float64 `mapstructure:"sign_reconcile_deviation_threshold"`
-	SignPowBits                      int     `mapstructure:"sign_pow_bits"`
-	SignHandshakeBackoffSeconds      int     `mapstructure:"sign_handshake_backoff_seconds"`
-	SignAccountCircuitBreakThreshold int     `mapstructure:"sign_account_circuit_break_threshold"`
+	SignV4Enabled                    bool                           `mapstructure:"sign_v4_enabled"`
+	SignClientVersion                string                         `mapstructure:"sign_client_version"`
+	SignKeyTTLMinutes                int                            `mapstructure:"sign_key_ttl_minutes"`
+	CredentialCheckIntervalMinutes   int                            `mapstructure:"credential_check_interval_minutes"`
+	ZCodeMinCallIntervalSeconds      int                            `mapstructure:"zcode_min_call_interval_seconds"`
+	ResetStatusCacheMinutes          int                            `mapstructure:"reset_status_cache_minutes"`
+	SignFailPolicy                   string                         `mapstructure:"sign_fail_policy"`
+	SignAlertEnabled                 bool                           `mapstructure:"sign_alert_enabled"`
+	SignReconcileIntervalHours       int                            `mapstructure:"sign_reconcile_interval_hours"`
+	SignReconcileDeviationThreshold  float64                        `mapstructure:"sign_reconcile_deviation_threshold"`
+	SignPowBits                      int                            `mapstructure:"sign_pow_bits"`
+	SignHandshakeBackoffSeconds      int                            `mapstructure:"sign_handshake_backoff_seconds"`
+	SignAccountCircuitBreakThreshold int                            `mapstructure:"sign_account_circuit_break_threshold"`
+	VisionBridge                     GatewayZhipuVisionBridgeConfig `mapstructure:"vision_bridge"`
 }
+
+// GatewayZhipuVisionBridgeConfig 是智谱视觉桥（票 #35）的部署层配置。
+//
+// 背景：glm-5.3 主模型对内联图片是「盲」的（图 token 计费但不识别），而同账号的
+// glm-5.3-flash 能看内联 base64 图。视觉桥在请求发出前用 flash 逐图识别，把图片块
+// 原地替换为文字描述，客户端零改动、无 URL 依赖、无额外登录。
+//
+//   - enabled: 总开关（默认 true；关闭 = 完全直通现状）
+//   - model: 桥模型（默认 glm-5.3-flash）。必须与 blind_models 互斥：桥模型出现在
+//     盲模型集里等于让 flash 自己被桥（递归风险），启动检查会报冲突，运行期解析
+//     也会把它从盲集里硬性剔除。
+//   - blind_models: 盲模型集，逗号分隔（默认 "glm-5.3,glm-5.2"；flash 及含 v 结尾的
+//     视觉模型不在集内）
+//   - max_images: 单请求最多桥接的图片数（默认 4；超出的图块只留占位文本）
+//   - budget_seconds: 整桥总耗时预算，秒（默认 20；超时按识别失败处理，原请求照发）
+//
+// 本配置只读部署层（不做 settingsValues 热更新）：桥是请求前置步骤，配置变更走
+// 既有部署层流程即可（与 gateway.zhipu 其余字段同一口径）。
+type GatewayZhipuVisionBridgeConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	Model         string `mapstructure:"model"`
+	BlindModels   string `mapstructure:"blind_models"`
+	MaxImages     int    `mapstructure:"max_images"`
+	BudgetSeconds int    `mapstructure:"budget_seconds"`
+}
+
+// 视觉桥默认值（票面冻结）：单一事实源同时供 viper 默认值与运行期空值兜底使用。
+const (
+	// DefaultZhipuVisionBridgeModel 是默认桥模型（同账号套餐内的 flash）。
+	DefaultZhipuVisionBridgeModel = "glm-5.3-flash"
+	// DefaultZhipuVisionBridgeBlindModels 是默认盲模型集（逗号分隔）。
+	DefaultZhipuVisionBridgeBlindModels = "glm-5.3,glm-5.2"
+	// DefaultZhipuVisionBridgeMaxImages 是单请求默认最多桥接的图片数。
+	DefaultZhipuVisionBridgeMaxImages = 4
+	// DefaultZhipuVisionBridgeBudgetSeconds 是整桥默认总耗时预算（秒）。
+	DefaultZhipuVisionBridgeBudgetSeconds = 20
+)
 
 type GatewayLiveConfig struct {
 	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
@@ -2524,6 +2564,13 @@ func setDefaults() {
 	viper.SetDefault("gateway.zhipu.sign_pow_bits", 8)
 	viper.SetDefault("gateway.zhipu.sign_handshake_backoff_seconds", 30)
 	viper.SetDefault("gateway.zhipu.sign_account_circuit_break_threshold", 10)
+	// 视觉桥（票 #35）：默认开启——盲模型带内联图时不桥就是现状（模型看不见图），
+	// 桥是全链路 fail-open 的前置步骤，失败只留占位文本、绝不阻断原请求。
+	viper.SetDefault("gateway.zhipu.vision_bridge.enabled", true)
+	viper.SetDefault("gateway.zhipu.vision_bridge.model", DefaultZhipuVisionBridgeModel)
+	viper.SetDefault("gateway.zhipu.vision_bridge.blind_models", DefaultZhipuVisionBridgeBlindModels)
+	viper.SetDefault("gateway.zhipu.vision_bridge.max_images", DefaultZhipuVisionBridgeMaxImages)
+	viper.SetDefault("gateway.zhipu.vision_bridge.budget_seconds", DefaultZhipuVisionBridgeBudgetSeconds)
 	viper.SetDefault("gateway.image_concurrency.enabled", false)
 	viper.SetDefault("gateway.image_concurrency.max_concurrent_requests", 0)
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
