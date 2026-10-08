@@ -167,7 +167,7 @@ func TestUsageLogBestEffortInsertShape_ListsStayAligned(t *testing.T) {
 	query, args := buildUsageLogBestEffortInsertQuery(preparedList)
 
 	withColumns := usageLogSQLList(t, query, "WITH input (", ") AS (VALUES")
-	insertColumns := usageLogSQLList(t, query, "INSERT INTO usage_logs (", "SELECT")
+	insertColumns := usageLogSQLList(t, query, "INSERT INTO usage_logs (", ")")
 	selectExprs := usageLogSQLList(t, query, "SELECT", "FROM input")
 
 	want := len(usageLogInsertArgTypes)
