@@ -1170,7 +1170,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			upstream_request_id,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			upstream_credit
 		FROM input
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)

@@ -115,6 +115,73 @@ func TestUsageLogStaticInsertShape_PlaceholdersMatchArgTypes(t *testing.T) {
 	})
 }
 
+// usageLogSQLList 抽取生成 SQL 中由 start/end 标记界定的逗号分隔清单
+// （去空白、去空项），用于逐位核对同一张表的列清单是否同步。
+func usageLogSQLList(t *testing.T, query, start, end string) []string {
+	t.Helper()
+	startIdx := strings.Index(query, start)
+	require.GreaterOrEqual(t, startIdx, 0, "start marker %q not found in query:\n%s", start, query)
+	rest := query[startIdx+len(start):]
+	endIdx := strings.Index(rest, end)
+	require.GreaterOrEqual(t, endIdx, 0, "end marker %q not found in query:\n%s", end, query)
+
+	var out []string
+	for _, item := range strings.Split(rest[:endIdx], ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// TestUsageLogBestEffortInsertShape_ListsStayAligned 是 best-effort 批量插入的长期守卫：
+// WITH input 列清单、INSERT 目标列清单与 SELECT 表达式必须逐位同名且列数等于
+// usageLogInsertArgTypes。背景（票 #38 A）：这三个清单在同一函数里各写一遍，
+// upstream_credit 只在 WITH/INSERT 补齐、SELECT 漏写，导致 100% 触发
+// `INSERT has more target columns than expressions`，请求退化为逐行兜底插入。
+// 列数守卫在此挡住"改一处漏一处"。
+func TestUsageLogBestEffortInsertShape_ListsStayAligned(t *testing.T) {
+	preparedList := []usageLogInsertPrepared{
+		prepareUsageLogInsert(&service.UsageLog{
+			UserID:      1,
+			APIKeyID:    2,
+			AccountID:   3,
+			RequestID:   "client:best-effort-shape-1",
+			Model:       "glm-5",
+			InputTokens: 10,
+			CreatedAt:   time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC),
+		}),
+		prepareUsageLogInsert(&service.UsageLog{
+			UserID:       4,
+			APIKeyID:     5,
+			AccountID:    6,
+			RequestID:    "client:best-effort-shape-2",
+			Model:        "glm-5",
+			OutputTokens: 7,
+			CreatedAt:    time.Date(2026, 10, 8, 12, 0, 1, 0, time.UTC),
+		}),
+	}
+	require.Len(t, preparedList, 2, "batch branch must be exercised with >= 2 rows")
+
+	query, args := buildUsageLogBestEffortInsertQuery(preparedList)
+
+	withColumns := usageLogSQLList(t, query, "WITH input (", ") AS (VALUES")
+	insertColumns := usageLogSQLList(t, query, "INSERT INTO usage_logs (", "SELECT")
+	selectExprs := usageLogSQLList(t, query, "SELECT", "FROM input")
+
+	want := len(usageLogInsertArgTypes)
+	require.Equal(t, want, len(withColumns), "WITH input column count must match usageLogInsertArgTypes")
+	require.Equal(t, want, len(insertColumns), "INSERT target column count must match usageLogInsertArgTypes")
+	require.Equal(t, want, len(selectExprs), "SELECT expression count must match usageLogInsertArgTypes")
+	require.Equal(t, withColumns, insertColumns, "INSERT column list must mirror the WITH input list")
+	require.Equal(t, withColumns, selectExprs, "SELECT expressions must mirror the WITH input list")
+	require.Contains(t, selectExprs, "upstream_credit", "SELECT must carry upstream_credit")
+	require.Contains(t, insertColumns, "upstream_credit", "INSERT target list must carry upstream_credit")
+
+	require.Len(t, args, len(preparedList)*want, "each row contributes len(usageLogInsertArgTypes) args")
+}
+
 // TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring 把 upstream_request_id 钉在
 // session_id 之前，与参数类型表保持同位；缺失时落 NULL 而不是空串。
 func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
