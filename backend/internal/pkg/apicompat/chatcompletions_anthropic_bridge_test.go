@@ -490,11 +490,14 @@ func TestChatCompletionsChunkToAnthropicEvents_ReasoningThenContent(t *testing.T
 	})
 
 	types := anthropicEventTypes(events)
-	// message_start → thinking block start → thinking_delta → thinking block stop
-	// → text block start → text_delta → text block stop → message_delta → message_stop
+	// message_start → thinking block start → thinking_delta → signature_delta
+	// → thinking block stop → text block start → text_delta → text block stop
+	// → message_delta → message_stop
+	// （signature_delta 由合成层本地补发，见票 #38 B：上游 CC 流不给签名。）
 	require.Equal(t, []string{
 		"message_start",
 		"content_block_start",
+		"content_block_delta",
 		"content_block_delta",
 		"content_block_stop",
 		"content_block_start",

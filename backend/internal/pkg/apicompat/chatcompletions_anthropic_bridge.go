@@ -1,6 +1,8 @@
 package apicompat
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -398,6 +400,20 @@ func joinResponsesContentPartText(parts []ResponsesContentPart) string {
 }
 
 // ---------------------------------------------------------------------------
+// Synthesized thinking signatures
+// ---------------------------------------------------------------------------
+
+// anthropicThinkingSignature 为合成 thinking 块生成本地签名。Anthropic 规范要求
+// thinking 块带 signature（严格客户端回传时会校验字段存在），但 OpenAI 兼容上游
+// （DeepSeek / OpenCode 等 CC 端点）只给 reasoning_content，永远不给签名。
+// 网关无法真实验签，取深思文本的 SHA-256 base64 作不透明值即可：格式合法、
+// 同内容稳定（同一块内容在流式与非流式路径上派生出同一签名，多轮回传不漂移）。
+func anthropicThinkingSignature(thinking string) string {
+	sum := sha256.Sum256([]byte(thinking))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// ---------------------------------------------------------------------------
 // Non-streaming response: ChatCompletionsResponse → AnthropicResponse
 // ---------------------------------------------------------------------------
 
@@ -458,8 +474,9 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 
 	if reasoning != "" {
 		blocks = append(blocks, AnthropicContentBlock{
-			Type:     "thinking",
-			Thinking: reasoning,
+			Type:      "thinking",
+			Thinking:  reasoning,
+			Signature: anthropicThinkingSignature(reasoning),
 		})
 	}
 
@@ -566,6 +583,10 @@ type ChatCompletionsToAnthropicStreamState struct {
 	CurrentToolHadDelta bool
 	HasToolCall         bool
 
+	// currentThinking 累积当前 thinking 块的深思文本，块关闭时据此产出
+	// signature_delta（Anthropic 规范要求 thinking 块带签名，上游 CC 流不提供）。
+	currentThinking strings.Builder
+
 	// Tool calls keyed by the upstream tool_call index. The Anthropic block
 	// index is assigned when the tool block is announced (content_block_start),
 	// which is deferred until the tool's name has arrived. Argument fragments
@@ -643,6 +664,7 @@ func ChatCompletionsChunkToAnthropicEvents(
 		reasoning := choice.Delta.reasoningText()
 		if reasoning != nil && *reasoning != "" {
 			events = append(events, ensureCCAnthropicThinkingBlock(state)...)
+			_, _ = state.currentThinking.WriteString(*reasoning)
 			events = append(events, ccAnthropicDelta(state, &AnthropicDelta{
 				Type:     "thinking_delta",
 				Thinking: *reasoning,
@@ -908,16 +930,29 @@ func closeCCAnthropicBlockIfOpen(state *ChatCompletionsToAnthropicStreamState, b
 	return closeCCAnthropicBlock(state)
 }
 
-// closeCCAnthropicBlock closes the currently open content block. A tool_use
-// block that streamed no argument delta gets a final input_json_delta "{}"
-// first — the double-conversion path normalizes empty tool arguments to "{}",
-// and some clients assemble tool input exclusively from deltas.
+// closeCCAnthropicBlock closes the currently open content block. A thinking block
+// gets its locally synthesized signature_delta first — Anthropic clients require
+// the signature to precede the block stop, and the upstream never sends one. A
+// tool_use block that streamed no argument delta gets a final input_json_delta
+// "{}" first — the double-conversion path normalizes empty tool arguments to
+// "{}", and some clients assemble tool input exclusively from deltas.
 func closeCCAnthropicBlock(state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if !state.ContentBlockOpen {
 		return nil
 	}
 	idx := state.ContentBlockIndex
 	var events []AnthropicStreamEvent
+	if state.CurrentBlockType == "thinking" {
+		events = append(events, AnthropicStreamEvent{
+			Type:  "content_block_delta",
+			Index: &idx,
+			Delta: &AnthropicDelta{
+				Type:      "signature_delta",
+				Signature: anthropicThinkingSignature(state.CurrentThinking.String()),
+			},
+		})
+		state.CurrentThinking.Reset()
+	}
 	if state.CurrentBlockType == "tool_use" && !state.CurrentToolHadDelta {
 		events = append(events, AnthropicStreamEvent{
 			Type:  "content_block_delta",
