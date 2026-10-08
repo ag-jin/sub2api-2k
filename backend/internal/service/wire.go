@@ -857,8 +857,13 @@ func ProvideImageTaskService(store ImageTaskStore, settings *ImageStorageSetting
 
 // ProvideImageBedService 构造站点图床服务并启动 TTL 清理定时器（票 #36）。
 //
-// 对象存储走 ImageStorageSettingService 的 resolver（与 ProvideImageTaskService 同源）：
-// 后台改 image_storage 开关/凭证后图床无需重启即可生效，未配置时上传回 503 而不是 500。
+// 对象存储优先走 ImageStorageSettingService 的 resolver（与 ProvideImageTaskService 同源）：
+// 后台改 image_storage 开关/凭证后图床无需重启即可生效。
+//
+// 没有 S3 的部署不应卡在 503 上：resolver 不可用且 gateway.image_bed.local_enabled
+// （默认开启）时退化为本地磁盘存储——站点用自己的磁盘当图床，公开直链由本站
+// 匿名读路由 GET /v1/images/bed/:key 提供（智谱识图工具链只能匿名抓取）。
+// 两者都不可用时上传仍回 503，而不是 500。
 // 清理定时器的停止逻辑挂在 cmd/server 的 provideCleanup。
 func ProvideImageBedService(
 	repo ImageBedUploadRepository,
@@ -866,14 +871,39 @@ func ProvideImageBedService(
 	owners ImageBedOwnerResolver,
 	counter ImageBedQuotaCounter,
 	cfg *config.Config,
+	local ImageBedLocalStorage,
 ) *ImageBedService {
 	var resolve ImageStorageResolver
 	if settings != nil {
 		resolve = settings.Resolver()
 	}
+	// 本地兜底只在开关打开时注入：开关关闭的部署保持既有语义——
+	// 没有可用存储时上传回 503，公开直链回 404。
+	if cfg == nil || !cfg.Gateway.ImageBed.LocalEnabled {
+		local = nil
+	}
+	if local != nil {
+		resolve = imageBedResolverWithLocalFallback(resolve, local)
+	}
 	svc := NewImageBedService(repo, resolve, owners, counter, cfg)
+	svc.SetLocalImageBedStorage(local)
 	svc.StartCleanup()
 	return svc
+}
+
+// imageBedResolverWithLocalFallback 把本地磁盘存储接到 resolver 之后：
+// S3 可用时永远优先 S3（配好对象存储的部署行为不变），否则用本地兜底。
+// 每次调用都重新问 S3（后台可能刚配上凭证），本地兜底是常量级返回。
+func imageBedResolverWithLocalFallback(s3 ImageStorageResolver, local ImageBedLocalStorage) ImageStorageResolver {
+	localUploader := NewImageResultUploader(local, "", 0, nil)
+	return func() (*ImageResultUploader, bool) {
+		if s3 != nil {
+			if uploader, ok := s3(); ok && uploader != nil {
+				return uploader, true
+			}
+		}
+		return localUploader, true
+	}
 }
 
 // ProvideImageBedOwnerResolver 把 APIKeyService 收窄成图床需要的归属解析接口。

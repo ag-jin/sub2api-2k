@@ -544,6 +544,14 @@ func RegisterGatewayRoutes(
 		h.Gateway.XSearch(c)
 	})
 
+	// 站点图床的公开直链（票 #36 本地兜底后端）：GET /v1/images/bed/:key **无鉴权**。
+	// 与 POST /v1/images/uploads 成对：上传要 API Key，读图不能要 Key——
+	// 智谱识图等外部抓取端只能匿名拉 URL（实测形态：匿名 GET 拿到 PNG 200）。
+	// key 是 128 位随机不透明文件名，不可枚举，因此不列目录、不做缓存头（24h TTL 短链）。
+	// 刻意不套 rootRoute：它的中间件链含 apiKeyAuth 及其后依赖 Key 上下文的中间件；
+	// 也不挂 opsErrorLogger——公开资源的匿名探测（404）不该写进运维错误面板。
+	r.GET("/v1/images/bed/:key", bodyLimit, clientRequestID, endpointNorm, h.ImageBed.Serve)
+
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
 

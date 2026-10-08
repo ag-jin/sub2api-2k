@@ -6,10 +6,12 @@ import (
 	"net/http"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // imageBedMultipartOverhead 是 multipart 边界/表单字段允许的额外字节，
@@ -70,6 +72,37 @@ func (h *ImageBedHandler) Submit(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, got)
+}
+
+// Serve 提供本地磁盘图床的公开直链：GET /v1/images/bed/:key（**无鉴权**）。
+//
+// 这条路由不进网关鉴权组，因为抓取端（智谱识图工具链等）只能匿名 GET 图片字节——
+// 实测形态就是「外部工具直接拉本站 URL 拿 PNG 200」。key 是不透明文件名
+// （128 位随机十六进制 + 扩展名），不可枚举，因此不开目录列表、不做缓存头。
+// S3 的对象不经此处：它们由对象存储自己的域名对外提供。
+func (h *ImageBedHandler) Serve(c *gin.Context) {
+	if h == nil || h.service == nil {
+		imageBedError(c, service.ErrImageBedNotFound)
+		return
+	}
+	reader, contentType, err := h.service.OpenLocal(c.Param("key"))
+	if err != nil {
+		imageBedError(c, err)
+		return
+	}
+	defer func() { _ = reader.Close() }()
+
+	c.Header("Content-Type", contentType)
+	// 直链是 24h TTL 的短链，且内容类型由扩展名决定，禁止嗅探。
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		// 响应头已发出，改不了状态码，只能记日志（不静默丢弃）。
+		logger.L().Warn("image_bed.serve_local_failed",
+			zap.String("key", c.Param("key")),
+			zap.Error(err),
+		)
+	}
 }
 
 // imageBedError 输出网关风格的错误体（与 batch image 的形态一致）。

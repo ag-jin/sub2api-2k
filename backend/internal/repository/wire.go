@@ -154,6 +154,10 @@ var ProviderSet = wire.NewSet(
 	// Image storage (async image task result offload)
 	ProvideImageStorageFactory,
 
+	// Image bed local disk backend (no-S3 fallback + public read route)
+	ProvideImageBedLocalStorage,
+	wire.Bind(new(service.ImageBedLocalStorage), new(*LocalImageBedStorage)),
+
 	// HTTP service ports (DI Strategy A: return interface directly)
 	NewTurnstileVerifier,
 	NewTencentCaptchaVerifier,

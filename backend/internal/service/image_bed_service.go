@@ -126,6 +126,9 @@ type ImageBedService struct {
 	owners  ImageBedOwnerResolver
 	counter ImageBedQuotaCounter
 	cfg     *config.Config
+	// local 是本地磁盘后端（无 S3 时的兜底），由 ProvideImageBedService 注入；
+	// 公开直链 GET /v1/images/bed/:key 经 OpenLocal 读它（见 image_bed_local.go）。
+	local ImageBedLocalStorage
 
 	now func() time.Time
 

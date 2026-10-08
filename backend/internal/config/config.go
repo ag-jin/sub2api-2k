@@ -955,6 +955,17 @@ type ImageBedConfig struct {
 	HourlyLimitPerKey int `mapstructure:"hourly_limit_per_key"`
 	// TTLHours: 上传对象的保留时长（小时，默认 24），到期由清理任务删除
 	TTLHours int `mapstructure:"ttl_hours"`
+	// LocalEnabled: 本地磁盘兜底开关（默认开启）。没有 S3 对象存储时，
+	// 图片落到本机磁盘、公开直链由本站 GET /v1/images/bed/:key 提供。
+	// 配好 S3 后它不影响写入路径（S3 永远优先），只影响兜底是否可用。
+	LocalEnabled bool `mapstructure:"local_enabled"`
+	// LocalDir: 本地磁盘图床根目录（对象写在 <LocalDir>/bed/ 下）。
+	// 留空 = <DATA_DIR>/image-bed，未设置 DATA_DIR 时退化为 ./data/image-bed。
+	LocalDir string `mapstructure:"local_dir"`
+	// PublicBaseURL: 本地直链前缀（如 https://www.facaiai.top），
+	// 留空时返回站点内相对直链 /v1/images/bed/<key>。
+	// 注意：外部抓取端（智谱识图等）要求绝对 URL，生产必须显式配置。
+	PublicBaseURL string `mapstructure:"public_base_url"`
 }
 
 // GatewayConfig API网关相关配置
@@ -2592,11 +2603,15 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
 	// 站点图床（票 #36）：默认开启；单文件 10MiB、每 key 每小时 60 张、24h TTL。
-	// 4 个键都注册默认值，否则纯 env 部署读不到它们（见 TestConfigKeysAreEnvReachable）。
+	// 本地兜底（local_enabled）默认开启：没有 S3 时不需要改配置即可用站点自己的磁盘。
+	// 7 个键都注册默认值，否则纯 env 部署读不到它们（见 TestConfigKeysAreEnvReachable）。
 	viper.SetDefault("gateway.image_bed.enabled", true)
 	viper.SetDefault("gateway.image_bed.max_bytes", int64(10485760))
 	viper.SetDefault("gateway.image_bed.hourly_limit_per_key", 60)
 	viper.SetDefault("gateway.image_bed.ttl_hours", 24)
+	viper.SetDefault("gateway.image_bed.local_enabled", true)
+	viper.SetDefault("gateway.image_bed.local_dir", "")
+	viper.SetDefault("gateway.image_bed.public_base_url", "")
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
