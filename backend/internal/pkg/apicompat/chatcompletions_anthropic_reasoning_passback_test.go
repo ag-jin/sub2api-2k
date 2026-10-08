@@ -11,6 +11,13 @@ import (
 // OpenAI 兼容上游时，历史 assistant 消息里的 thinking 块被整块丢弃。DeepSeek 的
 // thinking mode 要求产生工具调用的 reasoning_content 随该 assistant 消息回传，
 // 于是「单轮正常、一进多轮工具对话必现 400」。
+//
+// issue #39：折叠范围原只覆盖带 tool_calls 的轮，但桥的出向
+// (chatMessageToAnthropicBlocks) 对纯文本轮同样产 thinking 块 —— 长会话里
+// 「思考后直接文字回答、未调工具」的轮次入向被丢空，上游照旧 400。入向折叠
+// 相应放宽到「assistant 轮携带非空 thinking 即回传」，与出向及兄弟
+// Responses→Chat 桥(buildChatMessagesFromItems 对每条 assistant 消息都挂
+// pendingReasoning)对齐。
 
 func anthropicAssistantMsg(t *testing.T, blocks string) *AnthropicRequest {
 	t.Helper()
@@ -127,15 +134,44 @@ func TestAnthropicChatBridge_MatchesResponsesChatBridgeReasoningPlacement(t *tes
 		"两条桥对等价历史必须产出同样的 reasoning_content 位置")
 }
 
-// 作用域守卫：不带工具调用的纯文本轮次维持现状(与兄弟桥一致 —— reasoning 只随
-// 工具调用回传)，避免把 reasoning_content 撒到不需要它的上游请求上。
-func TestAnthropicToChatCompletionsRequest_ThinkingWithoutToolCallsStaysDropped(t *testing.T) {
+// 闭环不变式的纯文本轮版本：上游只给 reasoning_content + text、没有 tool_calls 时，
+// 出向同样会生成 thinking 块(见 chatMessageToAnthropicBlocks)，客户端原样回传后
+// 必须能还原成 reasoning_content。旧门(hasToolCalls)把这一形状丢空 —— 正式站
+// 2026-10-08 09:25 的 4×400 正是这种「思考后直接文字回答」的轮次。
+func TestAnthropicChatBridge_PlainTextTurnReasoningSurvivesOutboundInboundRoundTrip(t *testing.T) {
+	upstream := ChatMessage{
+		Role:             "assistant",
+		ReasoningContent: "step 1: answer directly",
+		Content:          json.RawMessage(`"answer"`),
+	}
+
+	// 出站：Chat 响应 → Anthropic content blocks（纯文本轮 = thinking + text）
+	blocks := chatMessageToAnthropicBlocks(upstream)
+	require.Len(t, blocks, 2)
+	require.Equal(t, "thinking", blocks[0].Type)
+	require.Equal(t, upstream.ReasoningContent, blocks[0].Thinking)
+
+	// 客户端下一轮把同一组 blocks 原样回传
+	raw, err := json.Marshal(blocks)
+	require.NoError(t, err)
+
+	// 入站：Anthropic content blocks → Chat 请求
+	back, err := anthropicAssistantToChatMessages(raw)
+	require.NoError(t, err)
+	require.Len(t, back, 1)
+	require.Equal(t, upstream.ReasoningContent, back[0].ReasoningContent,
+		"无工具调用的纯文本轮同样不得丢 reasoning_content")
+	require.Empty(t, back[0].ToolCalls, "本形状不产生 tool_calls")
+}
+
+// 回归：本轮没有 thinking 块时不得凭空产生 reasoning_content 字段
+// (ChatMessage.ReasoningContent 是 omitempty，缺省时不上线)。
+func TestAnthropicToChatCompletionsRequest_NoThinkingOmitsReasoningContent(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "deepseek-v4-flash",
 		MaxTokens: 100,
 		Messages: []AnthropicMessage{
-			{Role: "assistant", Content: json.RawMessage(
-				`[{"type":"thinking","thinking":"secret thoughts"},{"type":"text","text":"answer"}]`)},
+			{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"answer"}]`)},
 		},
 	}
 
@@ -159,62 +195,48 @@ func TestAnthropicThinkingToReasoningContent(t *testing.T) {
 	}
 
 	cases := []struct {
-		name         string
-		raw          string
-		hasToolCalls bool
-		want         string
+		name string
+		raw  string
+		want string
 	}{
 		{
-			name:         "single_thinking_block",
-			raw:          `[{"type":"thinking","thinking":"a"}]`,
-			hasToolCalls: true,
-			want:         "a",
+			name: "single_thinking_block",
+			raw:  `[{"type":"thinking","thinking":"a"}]`,
+			want: "a",
 		},
 		{
 			// 多个 thinking 块用 "\n" 连接，与 extractResponsesReasoningText 一致。
-			name:         "multiple_blocks_join_with_newline",
-			raw:          `[{"type":"thinking","thinking":"a"},{"type":"text","text":"x"},{"type":"thinking","thinking":"b"}]`,
-			hasToolCalls: true,
-			want:         "a\nb",
+			name: "multiple_blocks_join_with_newline",
+			raw:  `[{"type":"thinking","thinking":"a"},{"type":"text","text":"x"},{"type":"thinking","thinking":"b"}]`,
+			want: "a\nb",
 		},
 		{
 			// redacted_thinking 没有明文可回传。
-			name:         "redacted_thinking_has_no_plaintext",
-			raw:          `[{"type":"redacted_thinking","signature":"abc"}]`,
-			hasToolCalls: true,
-			want:         "",
+			name: "redacted_thinking_has_no_plaintext",
+			raw:  `[{"type":"redacted_thinking","signature":"abc"}]`,
+			want: "",
 		},
 		{
 			// 只带 signature 的 thinking 占位块(xAI/Codex 密文回放形态)同样无明文。
-			name:         "signature_only_thinking",
-			raw:          `[{"type":"thinking","thinking":"","signature":"gAAAAxxx"}]`,
-			hasToolCalls: true,
-			want:         "",
+			name: "signature_only_thinking",
+			raw:  `[{"type":"thinking","thinking":"","signature":"gAAAAxxx"}]`,
+			want: "",
 		},
 		{
-			name:         "no_tool_calls_returns_empty",
-			raw:          `[{"type":"thinking","thinking":"a"}]`,
-			hasToolCalls: false,
-			want:         "",
+			name: "no_thinking_blocks",
+			raw:  `[{"type":"text","text":"x"}]`,
+			want: "",
 		},
 		{
-			name:         "no_thinking_blocks",
-			raw:          `[{"type":"text","text":"x"}]`,
-			hasToolCalls: true,
-			want:         "",
-		},
-		{
-			name:         "empty_blocks",
-			raw:          `[]`,
-			hasToolCalls: true,
-			want:         "",
+			name: "empty_blocks",
+			raw:  `[]`,
+			want: "",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want,
-				anthropicThinkingToReasoningContent(blocksOf(t, tc.raw), tc.hasToolCalls))
+			require.Equal(t, tc.want, anthropicThinkingToReasoningContent(blocksOf(t, tc.raw)))
 		})
 	}
 }

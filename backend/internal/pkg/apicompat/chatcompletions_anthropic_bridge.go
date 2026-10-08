@@ -252,8 +252,8 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 
 // anthropicAssistantToChatMessages handles an Anthropic assistant message.
 // Text content → assistant message content; tool_use blocks → tool_calls on the
-// same assistant message; thinking blocks → reasoning_content, but only on a
-// message that carries tool calls (see anthropicThinkingToReasoningContent).
+// same assistant message; thinking blocks → reasoning_content (see
+// anthropicThinkingToReasoningContent).
 func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 	// Plain string → single assistant message.
 	var s string
@@ -292,31 +292,32 @@ func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error
 		})
 	}
 
-	msg.ReasoningContent = anthropicThinkingToReasoningContent(blocks, len(msg.ToolCalls) > 0)
+	msg.ReasoningContent = anthropicThinkingToReasoningContent(blocks)
 
 	return []ChatMessage{msg}, nil
 }
 
 // anthropicThinkingToReasoningContent folds thinking blocks back into the
-// Chat Completions reasoning_content field.
+// Chat Completions reasoning_content field. Any assistant turn carrying a
+// non-empty thinking block replays it; the turn shape (tool calls or not) makes
+// no difference.
 //
 // chatMessageToAnthropicBlocks emits the upstream's reasoning_content as a
-// thinking block on the way out, so a multi-turn client echoes it back on the
-// next request; dropping it here made the bridge lose exactly what it had just
-// produced. DeepSeek's thinking mode requires the reasoning_content that
-// produced a tool call to be replayed on that assistant message and answers
-// 400 otherwise, which is why buildChatMessagesFromItems already carries
-// pendingReasoning onto assistant tool-call messages in the Responses→Chat
-// bridge. hasToolCalls keeps the scope identical to that sibling: reasoning
-// rides along with tool calls only, never on a plain assistant text turn.
+// thinking block on the way out — on plain-text turns too, not just tool-call
+// turns — so a multi-turn client echoes it back on the next request; dropping
+// it here made the bridge lose exactly what it had just produced. DeepSeek's
+// thinking mode requires the reasoning_content of a history turn to be passed
+// back on that turn's assistant message and answers 400 otherwise ("The
+// `reasoning_content` in the thinking mode must be passed back to the API"),
+// whether or not the turn called a tool — a long session that answered directly
+// after thinking hit it. The sibling Responses→Chat bridge already replays it
+// unconditionally: buildChatMessagesFromItems carries its pendingReasoning onto
+// every assistant message, plain text included.
 //
 // redacted_thinking blocks and signature-only placeholders carry no plaintext
 // and contribute nothing. Multiple blocks join with "\n", matching
 // extractResponsesReasoningText.
-func anthropicThinkingToReasoningContent(blocks []AnthropicContentBlock, hasToolCalls bool) string {
-	if !hasToolCalls {
-		return ""
-	}
+func anthropicThinkingToReasoningContent(blocks []AnthropicContentBlock) string {
 	var parts []string
 	for _, b := range blocks {
 		if b.Type == "thinking" && b.Thinking != "" {

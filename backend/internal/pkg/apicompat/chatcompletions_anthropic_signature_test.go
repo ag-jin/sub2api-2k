@@ -181,7 +181,8 @@ func TestAnthropicToChatCompletionsRequest_AcceptsThinkingSignature(t *testing.T
 	require.False(t, strings.Contains(string(body), "signature"),
 		"signature 不得作为未知字段下发上游：%s", string(body))
 
-	// 无工具调用的纯文本轮：thinking 依既有语义丢弃，但仍不得报错。
+	// 无工具调用的纯文本轮：thinking 同样折回 reasoning_content（票 #39），
+	// 带 signature 不得报错、也不得把 signature 下发上游。
 	textOnly := &AnthropicRequest{
 		Model:     "deepseek-v4.1-flash",
 		MaxTokens: 128,
@@ -193,5 +194,6 @@ func TestAnthropicToChatCompletionsRequest_AcceptsThinkingSignature(t *testing.T
 	convertedTextOnly, err := AnthropicToChatCompletionsRequest(textOnly)
 	require.NoError(t, err)
 	require.Len(t, convertedTextOnly.Messages, 2)
-	require.Empty(t, convertedTextOnly.Messages[1].ReasoningContent)
+	require.Equal(t, "上一轮推理", convertedTextOnly.Messages[1].ReasoningContent,
+		"纯文本轮的 thinking 必须回传（DeepSeek 思考模式契约，票 #39）")
 }

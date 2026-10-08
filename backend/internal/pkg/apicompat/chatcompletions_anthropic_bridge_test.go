@@ -131,7 +131,11 @@ func TestAnthropicToChatCompletionsRequest_ToolResultBecomesToolMessage(t *testi
 	require.Equal(t, `"sunny, 72F"`, string(toolMsg.Content))
 }
 
-func TestAnthropicToChatCompletionsRequest_ThinkingDropped(t *testing.T) {
+// 纯文本轮(thinking + text、无 tool_use)同样要折回 reasoning_content：出站
+// chatMessageToAnthropicBlocks 对纯文本轮也产 thinking 块，客户端只是原样回传，
+// 入向丢弃即造成出入向不对称。DeepSeek 思考模式要求历史中带 reasoning 的轮必须回传，
+// 缺失即 400 "The `reasoning_content` in the thinking mode must be passed back to the API"。
+func TestAnthropicToChatCompletionsRequest_PlainTextTurnReplaysThinking(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 100,
@@ -143,11 +147,14 @@ func TestAnthropicToChatCompletionsRequest_ThinkingDropped(t *testing.T) {
 	out, err := AnthropicToChatCompletionsRequest(req)
 	require.NoError(t, err)
 	require.Len(t, out.Messages, 1)
-	// Only text survives. Thinking is dropped because this turn carries no tool
-	// calls — reasoning rides along with tool calls only, matching the
-	// Responses→Chat bridge (see anthropicThinkingToReasoningContent).
-	require.Equal(t, `"answer"`, string(out.Messages[0].Content))
-	require.Empty(t, out.Messages[0].ReasoningContent)
+	require.Equal(t, `"answer"`, string(out.Messages[0].Content), "text 内容处理不变")
+	require.Equal(t, "secret thoughts", out.Messages[0].ReasoningContent,
+		"无 tool_calls 的纯文本轮也要回传 thinking，否则 DeepSeek 多轮 400")
+
+	payload, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.Contains(t, string(payload), `"reasoning_content":"secret thoughts"`,
+		"字段没序列化出去等于没修")
 }
 
 func TestAnthropicToChatCompletionsRequest_ToolChoiceAuto(t *testing.T) {
