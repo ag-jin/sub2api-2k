@@ -82,6 +82,8 @@ var ProviderSet = wire.NewSet(
 	NewUsageLogRepository,
 	NewUsageBillingRepository,
 	NewBatchImageRepository,
+	NewImageBedRepository,   // 站点图床上传记账（票 #36，原生 SQL + 迁移 240）
+	NewImageBedQuotaCounter, // 站点图床每 key 小时配额（Redis 计数，未配置 Redis 时降级）
 	NewIdempotencyRepository,
 	NewUsageCleanupRepository,
 	NewDashboardAggregationRepository,

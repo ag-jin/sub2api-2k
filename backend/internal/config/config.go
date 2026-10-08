@@ -944,6 +944,19 @@ const (
 	ImageConcurrencyOverflowModeWait   = "wait"
 )
 
+// ImageBedConfig 是站点图床（票 #36）的部署层配置。
+// 图床复用 image_storage 的对象存储绑定，这里只放图床自身的开关与限额。
+type ImageBedConfig struct {
+	// Enabled: 图床总开关（默认开启）
+	Enabled bool `mapstructure:"enabled"`
+	// MaxBytes: 单文件大小上限（字节，默认 10MiB）
+	MaxBytes int64 `mapstructure:"max_bytes"`
+	// HourlyLimitPerKey: 每个调用 Key 每小时的上传张数上限（默认 60）
+	HourlyLimitPerKey int `mapstructure:"hourly_limit_per_key"`
+	// TTLHours: 上传对象的保留时长（小时，默认 24），到期由清理任务删除
+	TTLHours int `mapstructure:"ttl_hours"`
+}
+
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
 	// 等待上游响应头的超时时间（秒），0表示无超时
@@ -1021,6 +1034,8 @@ type GatewayConfig struct {
 	OpenAIProxyStreamCircuit GatewayOpenAIProxyStreamCircuitConfig `mapstructure:"openai_proxy_stream_circuit"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
+	// ImageBed: 站点图床（票 #36）——调用 Key 上传图片换公开直链
+	ImageBed ImageBedConfig `mapstructure:"image_bed"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -2576,6 +2591,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
+	// 站点图床（票 #36）：默认开启；单文件 10MiB、每 key 每小时 60 张、24h TTL。
+	// 4 个键都注册默认值，否则纯 env 部署读不到它们（见 TestConfigKeysAreEnvReachable）。
+	viper.SetDefault("gateway.image_bed.enabled", true)
+	viper.SetDefault("gateway.image_bed.max_bytes", int64(10485760))
+	viper.SetDefault("gateway.image_bed.hourly_limit_per_key", 60)
+	viper.SetDefault("gateway.image_bed.ttl_hours", 24)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))

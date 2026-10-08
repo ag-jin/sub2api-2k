@@ -855,6 +855,49 @@ func ProvideImageTaskService(store ImageTaskStore, settings *ImageStorageSetting
 	return NewImageTaskServiceWithResolver(store, settings.Resolver(), defaultImageTaskTTL, defaultImageTaskExecutionTimeout)
 }
 
+// ProvideImageBedService 构造站点图床服务并启动 TTL 清理定时器（票 #36）。
+//
+// 对象存储走 ImageStorageSettingService 的 resolver（与 ProvideImageTaskService 同源）：
+// 后台改 image_storage 开关/凭证后图床无需重启即可生效，未配置时上传回 503 而不是 500。
+// 清理定时器的停止逻辑挂在 cmd/server 的 provideCleanup。
+func ProvideImageBedService(
+	repo ImageBedUploadRepository,
+	settings *ImageStorageSettingService,
+	owners ImageBedOwnerResolver,
+	counter ImageBedQuotaCounter,
+	cfg *config.Config,
+) *ImageBedService {
+	var resolve ImageStorageResolver
+	if settings != nil {
+		resolve = settings.Resolver()
+	}
+	svc := NewImageBedService(repo, resolve, owners, counter, cfg)
+	svc.StartCleanup()
+	return svc
+}
+
+// ProvideImageBedOwnerResolver 把 APIKeyService 收窄成图床需要的归属解析接口。
+//
+// 上传只带网关鉴权得到的 apiKeyID，而记账行要 user_id；这里用闭包适配
+// （imageBedOwnerResolverFunc），既不让 service 依赖 APIKeyService 的宽接口，
+// 也避免为一次 ID→UserID 查询引入新的仓储。key 不存在时返回 ErrAPIKeyNotFound，
+// 调用方按原错误上抛（测试断言 ErrorIs 到该哨兵）。
+func ProvideImageBedOwnerResolver(apiKeyService *APIKeyService) ImageBedOwnerResolver {
+	return imageBedOwnerResolverFunc(func(ctx context.Context, apiKeyID int64) (int64, error) {
+		if apiKeyService == nil {
+			return 0, ErrAPIKeyNotFound
+		}
+		apiKey, err := apiKeyService.GetByID(ctx, apiKeyID)
+		if err != nil {
+			return 0, err
+		}
+		if apiKey == nil {
+			return 0, ErrAPIKeyNotFound
+		}
+		return apiKey.UserID, nil
+	})
+}
+
 // ProvideBackupService creates and starts BackupService
 func ProvideBackupService(
 	settingRepo SettingRepository,
@@ -1183,6 +1226,8 @@ var ProviderSet = wire.NewSet(
 	ProvideZhipuCredentialKeeper,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
+	ProvideImageBedService,
+	ProvideImageBedOwnerResolver,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,

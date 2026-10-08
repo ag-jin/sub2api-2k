@@ -158,6 +158,13 @@ func ProvideBatchImageHandler(
 	return h
 }
 
+// ProvideImageBedHandler 构造站点图床上传 handler（票 #36）。
+// 图床的存储/配额/记账依赖已在 service 侧的 provider 内聚合完，这里只做薄包装，
+// 与 ProvideBatchImageHandler 的装配方式保持一致。
+func ProvideImageBedHandler(imageBed *service.ImageBedService) *ImageBedHandler {
+	return NewImageBedHandler(imageBed)
+}
+
 // ProvideSystemHandler creates admin.SystemHandler with UpdateService
 func ProvideSystemHandler(updateService *service.UpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
 	return admin.NewSystemHandler(updateService, lockService)
@@ -202,6 +209,7 @@ func ProvideHandlers(
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
+	imageBedHandler *ImageBedHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
@@ -228,6 +236,7 @@ func ProvideHandlers(
 		ModelPlaza:       modelPlazaHandler,
 		AsyncImage:       asyncImageHandler,
 		BatchImage:       batchImageHandler,
+		ImageBed:         imageBedHandler,
 	}
 }
 
@@ -254,6 +263,7 @@ var ProviderSet = wire.NewSet(
 	NewModelPlazaHandler,
 	NewAsyncImageHandler,
 	ProvideBatchImageHandler,
+	ProvideImageBedHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

@@ -322,6 +322,9 @@ func RegisterGatewayRoutes(
 		gateway.POST("/images/batches/:id/cancel", h.BatchImage.Cancel)
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
 		gateway.DELETE("/images/batches/:id/outputs", h.BatchImage.DeleteOutputs)
+		// 站点图床（票 #36）：调用 Key 上传图片换公开直链（GET 该直链不带鉴权，
+		// 供智谱识图工具链等外部抓取端使用）。
+		gateway.POST("/images/uploads", h.ImageBed.Submit)
 		// OpenAI-compatible clients may create through /videos; xAI receives the
 		// canonical /videos/generations route inside the Grok media forwarder.
 		gateway.POST("/videos", videoGenerationHandler)

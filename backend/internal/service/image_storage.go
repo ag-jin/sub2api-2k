@@ -27,6 +27,24 @@ type ImageStorage interface {
 	Save(ctx context.Context, key, contentType string, data []byte) (url string, err error)
 }
 
+// ImageObjectDeleter 是可选的对象删除能力：能按 key 删除对象的存储实现它。
+//
+// ImageStorage 只要求写入，删除能力单列，是因为并非每种后端都支持（或需要）
+// 删除；图床的 TTL 清理要求「删不掉就报错、保留记账行下轮重试」，
+// 所以缺失该能力必须显式报错，而不是静默当作删除成功。
+type ImageObjectDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
+// 图床（票 #36）在存储层用到的错误：两者都表示「这次操作没做成」，
+// 调用方据此决定是否保留记账行（绝不静默漏掉对象）。
+var (
+	// ErrImageStorageUnavailable 表示当前没有可用的对象存储绑定（开关关闭或凭证缺失）。
+	ErrImageStorageUnavailable = errors.New("image storage is not configured")
+	// ErrImageStorageDeleteUnsupported 表示存储实现没有实现 ImageObjectDeleter。
+	ErrImageStorageDeleteUnsupported = errors.New("image storage does not support object deletion")
+)
+
 // ImageResultUploader 是 ImageStorage 的上层编排器（与具体厂商无关）：
 // 把上游生图响应里的每张图片（b64_json 解码 / url 下载）转存到对象存储，
 // 并把响应结果改写为只含短链接的紧凑 JSON，从而避免大 base64 落 Redis。
@@ -224,6 +242,35 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 
 func (u *ImageResultUploader) buildKey(taskID string, index int, contentType string) string {
 	return u.prefix + taskID + "-" + strconv.Itoa(index) + extensionForContentType(contentType)
+}
+
+// SaveObject 把 data 写入调用方给定的 key（**不套用 uploader 的 prefix**）。
+//
+// 生图结果的 key 由 buildKey 生成、必须落在 images/ 前缀下；图床对象则相反：
+// 公开直链是 <public_base_url>/bed/<key>，key 完全由调用方决定。两者复用同一个
+// uploader 与同一个 ImageStorage 绑定，只是 key 的来源不同。
+// 未装配对象存储时返回 ErrImageStorageUnavailable（图床据此回 503）。
+func (u *ImageResultUploader) SaveObject(ctx context.Context, key, contentType string, data []byte) (string, error) {
+	if u == nil || u.storage == nil {
+		return "", ErrImageStorageUnavailable
+	}
+	return u.storage.Save(ctx, key, contentType, data)
+}
+
+// DeleteObject 按 key 删除对象（图床 TTL 清理用）。
+//
+// 存储未装配（nil）返回 ErrImageStorageUnavailable；存储没有实现
+// ImageObjectDeleter 时返回 ErrImageStorageDeleteUnsupported——绝不静默成功，
+// 否则清理会删掉记账行却把对象留在桶里，成为永远不会被清扫的孤儿。
+func (u *ImageResultUploader) DeleteObject(ctx context.Context, key string) error {
+	if u == nil || u.storage == nil {
+		return ErrImageStorageUnavailable
+	}
+	deleter, ok := u.storage.(ImageObjectDeleter)
+	if !ok {
+		return ErrImageStorageDeleteUnsupported
+	}
+	return deleter.Delete(ctx, key)
 }
 
 func detectImageContentType(data []byte) string {
