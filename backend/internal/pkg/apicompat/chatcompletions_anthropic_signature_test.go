@@ -63,7 +63,7 @@ func TestChatCompletionsChunkToAnthropicEvents_ThinkingBlockEndsWithSignatureDel
 		`{"id":"02179144314747650b1c418616fd9b5f78a16c5c9d34162ea7cf3","choices":[{"index":0,"delta":{"reasoning_content":"剖析"}}]}`,
 		`{"choices":[{"index":0,"delta":{"reasoning_content":"需求"}}]}`,
 		`{"choices":[{"index":0,"delta":{"content":"答复"}}]}`,
-		`{"choices":[{"index":0,"delta":{}},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
 	})
 
 	sequences := collectAnthropicBlockSequences(events)
@@ -95,7 +95,7 @@ func TestChatCompletionsChunkToAnthropicEvents_ThinkingSignatureStablePerContent
 		`{"choices":[{"index":0,"delta":{"reasoning_content":"同"}}]}`,
 		`{"choices":[{"index":0,"delta":{"reasoning_content":"一段"}}]}`,
 		`{"choices":[{"index":0,"delta":{"content":"答案"}}]}`,
-		`{"choices":[{"index":0,"delta":{}},"finish_reason":"stop"}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 	}
 
 	first := collectAnthropicBlockSequences(collectAnthropicStreamEvents(t, chunks))
@@ -138,7 +138,7 @@ func TestChatCompletionsResponseToAnthropic_ThinkingBlockCarriesSignature(t *tes
 	streamed := collectAnthropicBlockSequences(collectAnthropicStreamEvents(t, []string{
 		`{"choices":[{"index":0,"delta":{"reasoning_content":"先看用户要两个字，然后照做。"}}]}`,
 		`{"choices":[{"index":0,"delta":{"content":"收到"}}]}`,
-		`{"choices":[{"index":0,"delta":{}},"finish_reason":"stop"}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 	}))
 	require.NotNil(t, streamed[0], "thinking 块必须开在索引 0")
 	require.Equal(t, out.Content[0].Signature, streamed[0].signature,

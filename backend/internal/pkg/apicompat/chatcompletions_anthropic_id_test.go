@@ -90,7 +90,7 @@ func TestChatCompletionsChunkToAnthropicEvents_SynthesizedIDsNormalized(t *testi
 	events := collectAnthropicStreamEvents(t, []string{
 		`{"id":"` + upstreamID + `","choices":[{"index":0,"delta":{"reasoning_content":"查天气"}}]}`,
 		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"` + upstreamToolID + `","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}}]}`,
-		`{"choices":[{"index":0,"delta":{}},"finish_reason":"tool_calls"}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 	})
 
 	var messageID string
@@ -113,7 +113,7 @@ func TestChatCompletionsChunkToAnthropicEvents_ToolUseIDNormalizedWithoutUpstrea
 	// 上游 tool_call 不带 id 时本地生成占位 id，同样必须落在 toolu_ 前缀下。
 	events := collectAnthropicStreamEvents(t, []string{
 		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"noop","arguments":"{}"}}]}}]}`,
-		`{"choices":[{"index":0,"delta":{}},"finish_reason":"tool_calls"}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 	})
 
 	tools := assembleToolUseBlocks(events)
