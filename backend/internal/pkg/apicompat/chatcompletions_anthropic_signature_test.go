@@ -67,21 +67,25 @@ func TestChatCompletionsChunkToAnthropicEvents_ThinkingBlockEndsWithSignatureDel
 	})
 
 	sequences := collectAnthropicBlockSequences(events)
+	thinkingSeq := sequences[0]
+	require.NotNil(t, thinkingSeq, "thinking 块必须开在索引 0")
 	require.Equal(t, []string{
 		"start:thinking",
 		"delta:thinking_delta",
 		"delta:thinking_delta",
 		"delta:signature_delta",
 		"stop",
-	}, sequences[0].types, "thinking 块必须在 stop 前补发 signature_delta")
-	require.NotEmpty(t, sequences[0].signature, "signature_delta 必须带非空签名")
+	}, thinkingSeq.types, "thinking 块必须在 stop 前补发 signature_delta")
+	require.NotEmpty(t, thinkingSeq.signature, "signature_delta 必须带非空签名")
 
+	textSeq := sequences[1]
+	require.NotNil(t, textSeq, "文本块必须开在索引 1")
 	require.Equal(t, []string{
 		"start:text",
 		"delta:text_delta",
 		"stop",
-	}, sequences[1].types, "文本块不得被补签名")
-	require.Empty(t, sequences[1].signature)
+	}, textSeq.types, "文本块不得被补签名")
+	require.Empty(t, textSeq.signature)
 }
 
 // TestChatCompletionsChunkToAnthropicEvents_ThinkingSignatureStablePerContent
@@ -97,6 +101,8 @@ func TestChatCompletionsChunkToAnthropicEvents_ThinkingSignatureStablePerContent
 	first := collectAnthropicBlockSequences(collectAnthropicStreamEvents(t, chunks))
 	second := collectAnthropicBlockSequences(collectAnthropicStreamEvents(t, chunks))
 
+	require.NotNil(t, first[0], "thinking 块必须开在索引 0")
+	require.NotNil(t, second[0], "thinking 块必须开在索引 0")
 	require.NotEmpty(t, first[0].signature)
 	require.Equal(t, first[0].signature, second[0].signature, "同内容必须得到同一签名")
 }
@@ -134,6 +140,7 @@ func TestChatCompletionsResponseToAnthropic_ThinkingBlockCarriesSignature(t *tes
 		`{"choices":[{"index":0,"delta":{"content":"收到"}}]}`,
 		`{"choices":[{"index":0,"delta":{}},"finish_reason":"stop"}]}`,
 	}))
+	require.NotNil(t, streamed[0], "thinking 块必须开在索引 0")
 	require.Equal(t, out.Content[0].Signature, streamed[0].signature,
 		"流式与非流式必须对同一深思文本派生出同一签名")
 }

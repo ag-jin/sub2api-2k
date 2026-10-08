@@ -985,10 +985,10 @@ func closeCCAnthropicBlock(state *ChatCompletionsToAnthropicStreamState) []Anthr
 			Index: &idx,
 			Delta: &AnthropicDelta{
 				Type:      "signature_delta",
-				Signature: anthropicThinkingSignature(state.CurrentThinking.String()),
+				Signature: anthropicThinkingSignature(state.currentThinking.String()),
 			},
 		})
-		state.CurrentThinking.Reset()
+		state.currentThinking.Reset()
 	}
 	if state.CurrentBlockType == "tool_use" && !state.CurrentToolHadDelta {
 		events = append(events, AnthropicStreamEvent{
