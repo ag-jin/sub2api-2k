@@ -1271,6 +1271,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodeBuddyCheckinScheduler,
 	ProvideCodeBuddyActivityScheduler,
 	ProvideCodeBuddyGrowthScheduler,
+	ProvideCodeBuddyZeroCreditGate,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
@@ -1458,6 +1459,31 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 	}
 	aggregator.Start()
 	return aggregator
+}
+
+// ProvideCodeBuddyZeroCreditGate 构造并启动 CodeBuddy 0 积分主动门（票 #37）。
+//
+// 周期取自 gateway.codebuddy.zero_credit_check_interval_minutes（<=0 → 默认 30 分钟，
+// 不把"键没配"与"键配成 0"混为一谈）；关门的开关是
+// gateway.codebuddy.zero_credit_gate_enabled（默认 true），两者都在构造里读一次。
+// 探测走 A2 的 CodeBuddyCreditsFetcher（同一实现，不另写积分解析）。
+func ProvideCodeBuddyZeroCreditGate(
+	accountRepo AccountRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+) *CodeBuddyZeroCreditGate {
+	minutes := codeBuddyZeroCreditDefaultIntervalMinutes
+	if cfg != nil && cfg.Gateway.CodeBuddy.ZeroCreditCheckIntervalMinutes > 0 {
+		minutes = cfg.Gateway.CodeBuddy.ZeroCreditCheckIntervalMinutes
+	}
+	gate := NewCodeBuddyZeroCreditGate(
+		accountRepo,
+		NewCodeBuddyCreditsFetcher(httpUpstream),
+		cfg,
+		time.Duration(minutes)*time.Minute,
+	)
+	gate.Start()
+	return gate
 }
 
 // ProvideCodeBuddyTokenKeepaliveScheduler 组装并启动 token 保活调度（T3）。

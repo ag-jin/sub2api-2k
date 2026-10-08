@@ -1131,6 +1131,9 @@ type GatewayConfig struct {
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
 
+	// CodeBuddy: CodeBuddy（腾讯 Copilot）网关侧调度配置（票 #37 主动 0 积分门）。
+	CodeBuddy GatewayCodeBuddyConfig `mapstructure:"codebuddy"`
+
 	// Zhipu: 智谱账号化渠道配置（zcode 登录链路 + 网关签名 V4）。
 	Zhipu GatewayZhipuConfig `mapstructure:"zhipu"`
 }
@@ -1175,6 +1178,19 @@ type GatewayCNProvidersConfig struct {
 	BalanceCheckEnabled         bool    `mapstructure:"balance_check_enabled"`
 	BalanceThreshold            float64 `mapstructure:"balance_threshold"`
 	BalanceCheckIntervalMinutes int     `mapstructure:"balance_check_interval_minutes"`
+}
+
+// GatewayCodeBuddyConfig CodeBuddy（腾讯 Copilot）网关侧调度配置（票 #37）。
+//
+// 0 积分主动门：周期探测账号积分余额，归零即临时停调（摘出选号池），积分恢复
+// （签到/充值）后自动放回。与请求失败后才触发的 A7 分级冷却互补。
+//
+//   - zero_credit_gate_enabled: 是否启用主动探测（默认 true）
+//   - zero_credit_check_interval_minutes: 探测周期（分钟，默认 30；<=0 按默认值
+//     处理，关门的开关是 zero_credit_gate_enabled）
+type GatewayCodeBuddyConfig struct {
+	ZeroCreditGateEnabled          bool `mapstructure:"zero_credit_gate_enabled"`
+	ZeroCreditCheckIntervalMinutes int  `mapstructure:"zero_credit_check_interval_minutes"`
 }
 
 // GatewayZhipuConfig 智谱账号化渠道（zcode 登录链路 + 网关签名 V4）配置。
@@ -2573,6 +2589,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.cn_providers.balance_check_enabled", true)
 	viper.SetDefault("gateway.cn_providers.balance_threshold", 0.5)
 	viper.SetDefault("gateway.cn_providers.balance_check_interval_minutes", 10)
+	// CodeBuddy 0 积分主动门（票 #37）：默认开启（用户要求 0 积分停调度），
+	// 30 分钟探测一轮（与签到/保活的窗口粒度同量级，够快又不至于持续打上游）。
+	viper.SetDefault("gateway.codebuddy.zero_credit_gate_enabled", true)
+	viper.SetDefault("gateway.codebuddy.zero_credit_check_interval_minutes", 30)
 	// 智谱账号化渠道（zcode 登录链路 + 网关签名 V4）。
 	// sign_v4_enabled 默认 true：用户硬性要求 0.67 稳定收益（裁决见 issues/00-dependency-map.md）；
 	// fail-open + 三级告警兜底，灰度期间可按渠道/账号关闭。

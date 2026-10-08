@@ -382,7 +382,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	// 条件凭据回写接口由 accountRepository 运行时类型实现，这里按既有模式断言取用。
 	codeBuddyKeepaliveScheduler := service.ProvideCodeBuddyTokenKeepaliveScheduler(
 		codeBuddyAdminService, accountRepository, settingService)
-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, zhipuCredentialKeeper, openAICodexVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, imageBedService, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler, codeBuddyKeepaliveScheduler)
+	// 票 #37 0 积分主动门：默认开启（gateway.codebuddy.zero_credit_gate_enabled），
+	// 周期探测 codebuddy 账号积分，归零摘出、恢复放回。
+	codeBuddyZeroCreditGate := service.ProvideCodeBuddyZeroCreditGate(accountRepository, httpUpstream, configConfig)
+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, zhipuCredentialKeeper, openAICodexVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, imageBedService, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler, codeBuddyKeepaliveScheduler, codeBuddyZeroCreditGate)
 	application := &Application{
 		Server:        httpServer,
 		PromptAudit:   promptService,
@@ -472,6 +475,7 @@ func provideCleanup(
 	codeBuddyActivity *service.CodeBuddyActivityScheduler,
 	codeBuddyGrowth *service.CodeBuddyGrowthScheduler,
 	codeBuddyKeepalive *service.CodeBuddyTokenKeepaliveScheduler,
+	codeBuddyZeroCreditGate *service.CodeBuddyZeroCreditGate,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -561,6 +565,12 @@ func provideCleanup(
 			{"CodeBuddyTokenKeepaliveScheduler", func() error {
 				if codeBuddyKeepalive != nil {
 					codeBuddyKeepalive.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyZeroCreditGate", func() error {
+				if codeBuddyZeroCreditGate != nil {
+					codeBuddyZeroCreditGate.Stop()
 				}
 				return nil
 			}},

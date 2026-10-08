@@ -134,6 +134,7 @@ func provideCleanup(
 	codeBuddyActivity *service.CodeBuddyActivityScheduler,
 	codeBuddyGrowth *service.CodeBuddyGrowthScheduler,
 	codeBuddyKeepalive *service.CodeBuddyTokenKeepaliveScheduler,
+	codeBuddyZeroCreditGate *service.CodeBuddyZeroCreditGate,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -232,6 +233,14 @@ func provideCleanup(
 				// 保活调度器（每分钟 tick 的 cron）同样显式 Stop（审查 #4 修复）。
 				if codeBuddyKeepalive != nil {
 					codeBuddyKeepalive.Stop()
+				}
+				return nil
+			}},
+			{"CodeBuddyZeroCreditGate", func() error {
+				// 0 积分主动门（票 #37）：周期 ticker + 后台 goroutine，
+				// 同样要显式 Stop（幂等，重复调用安全）。
+				if codeBuddyZeroCreditGate != nil {
+					codeBuddyZeroCreditGate.Stop()
 				}
 				return nil
 			}},
