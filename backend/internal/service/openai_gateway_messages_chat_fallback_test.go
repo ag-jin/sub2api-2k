@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
@@ -480,4 +481,122 @@ func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(
 	require.Empty(t, upstream.lastReq.Header.Get("version"))
 	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
+}
+
+// 非流式 CC 回退的响应 Content-Type 必须固定为 application/json。
+//
+// 生产实测症状：非流式 /v1/messages 间歇回 content-type: text/event-stream
+// （取决于命中的上游/转发层）。根因：上游（或被强制流式的上游）把 JSON 体标成
+// SSE，响应头白名单默认含 content-type，WriteFilteredHeaders 原样透传；Gin 的
+// c.JSON 走 writeContentType，仅当头不存在时才写 application/json，覆盖不了
+// 已存在的 SSE 头 → JSON 体带 SSE 头下发。流式路径不受影响
+// （newStreamHeaderWriter 在过滤后显式 Set text/event-stream）。
+func TestForwardAsAnthropic_ForceChatCompletionsNonStreamingContentTypeStaysJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_msg_ct_json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_ct_json","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		)),
+	}}
+	cfg := rawChatCompletionsTestConfig()
+	svc := &OpenAIGatewayService{
+		cfg:                  cfg,
+		httpUpstream:         upstream,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, forceChatMessagesFallbackAccount(), body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Stream)
+	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"),
+		"非流式响应不得透传上游的 SSE Content-Type")
+	require.Equal(t, "assistant", gjson.Get(rec.Body.String(), "role").String())
+	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
+}
+
+// 流式路径行为不变：客户端仍拿到 text/event-stream —— 防止上面的非流式修复误伤流式。
+func TestForwardAsAnthropic_ForceChatCompletionsStreamingContentTypeStaysSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_ct_sse","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl_ct_sse","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_msg_ct_sse"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	cfg := rawChatCompletionsTestConfig()
+	svc := &OpenAIGatewayService{
+		cfg:                  cfg,
+		httpUpstream:         upstream,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, forceChatMessagesFallbackAccount(), body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	require.Contains(t, rec.Body.String(), "event: message_start")
+}
+
+// 同类兄弟函数：CodeBuddy 非流式回退（上游恒流式、聚合后转 Anthropic）同样
+// 必须回 application/json，不得被上游 SSE 头污染。
+func TestBufferAggregatedCodeBuddyChatAsAnthropic_ContentTypeStaysJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"cb_ct","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
+		"",
+		`data: {"id":"cb_ct","model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_cb_ct"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+	cfg := rawChatCompletionsTestConfig()
+	svc := &OpenAIGatewayService{
+		cfg:                  cfg,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+	}
+
+	result, err := svc.bufferAggregatedCodeBuddyChatAsAnthropic(c, resp,
+		"deepseek-v4.1-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash", nil, nil, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Stream)
+	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"),
+		"非流式回退不得透传上游的 SSE Content-Type")
+	require.Equal(t, "assistant", gjson.Get(rec.Body.String(), "role").String())
+	require.Equal(t, "hi", gjson.Get(rec.Body.String(), "content.0.text").String())
 }

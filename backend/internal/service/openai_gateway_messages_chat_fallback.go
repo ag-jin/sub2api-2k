@@ -168,6 +168,19 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	return s.bufferChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
+// writeAnthropicJSONResponse 写出非流式 Anthropic 响应，并把 Content-Type 锁定为
+// application/json。
+//
+// 上游（或被强制流式的上游）常把 JSON 体标成 text/event-stream；响应头白名单默认
+// 含 content-type，WriteFilteredHeaders 会原样透传，而 Gin 的 c.JSON 走
+// writeContentType——只在头不存在时才写 application/json，覆盖不了已存在的 SSE 头
+// → JSON 体带 SSE 头下发（非流式 /v1/messages 间歇回 SSE 头的实测症状）。显式 Set
+// 改回 JSON，与 gateway_forward_as_chat_completions.go 非流式分支同法。
+func writeAnthropicJSONResponse(c *gin.Context, payload any) {
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusOK, payload)
+}
+
 // bufferAggregatedCodeBuddyChatAsAnthropic 聚合 CodeBuddy 强制流式 SSE 后，
 // 用直接桥（ChatCompletionsResponseToAnthropic）转换出最终 Anthropic 响应。
 func (s *OpenAIGatewayService) bufferAggregatedCodeBuddyChatAsAnthropic(
@@ -199,7 +212,7 @@ func (s *OpenAIGatewayService) bufferAggregatedCodeBuddyChatAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	writeAnthropicJSONResponse(c, anthropicResp)
 
 	return &OpenAIForwardResult{
 		RequestID:       requestID,
@@ -254,7 +267,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	writeAnthropicJSONResponse(c, anthropicResp)
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
