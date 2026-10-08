@@ -14,12 +14,13 @@ import (
 // 全程没有 signature_delta；非流式 thinking 块也没有 signature 字段。
 // 上游是 OpenAI 兼容 CC 端点，永远不会给签名，只能在合成层本地生成。
 
-// collectThinkingSignatureDeltas 返回按内容块索引归组的 delta 类型序列与签名值。
+// anthropicBlockSequence 按内容块索引归组的事件类型序列与签名值。
 type anthropicBlockSequence struct {
 	types     []string
 	signature string
 }
 
+// collectAnthropicBlockSequences 把流事件按 index 归组，供逐块核对生命周期。
 func collectAnthropicBlockSequences(events []AnthropicStreamEvent) map[int]*anthropicBlockSequence {
 	out := map[int]*anthropicBlockSequence{}
 	for _, e := range events {
