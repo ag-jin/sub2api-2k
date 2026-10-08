@@ -312,7 +312,8 @@ func TestChatCompletionsResponseToAnthropic_TextOnly(t *testing.T) {
 	}
 
 	out := ChatCompletionsResponseToAnthropic(resp, "claude-sonnet-4-20250514")
-	require.Equal(t, "chatcmpl-1", out.ID)
+	// 合成 id 规范化（票 #38 C2）：msg_ + sha256(上游 id) 前 16 字节 hex。
+	require.Equal(t, "msg_0adc2896ac2cdafbbf37f789801ef8c0", out.ID)
 	require.Equal(t, "claude-sonnet-4-20250514", out.Model)
 	require.Len(t, out.Content, 1)
 	require.Equal(t, "text", out.Content[0].Type)
@@ -346,7 +347,8 @@ func TestChatCompletionsResponseToAnthropic_ToolUse(t *testing.T) {
 	out := ChatCompletionsResponseToAnthropic(resp, "claude-sonnet-4-20250514")
 	require.Len(t, out.Content, 1)
 	require.Equal(t, "tool_use", out.Content[0].Type)
-	require.Equal(t, "call_1", out.Content[0].ID)
+	// 合成 id 规范化（票 #38 C2）：toolu_ + sha256("call_1") 前 16 字节 hex。
+	require.Equal(t, "toolu_74196fe72e4cdc135c1033e05a2e020c", out.Content[0].ID)
 	require.Equal(t, "get_weather", out.Content[0].Name)
 	require.Equal(t, `{"city":"SF"}`, string(out.Content[0].Input))
 	require.Equal(t, "tool_use", AnthropicStopReasonString(out.StopReason))
@@ -541,7 +543,8 @@ func TestChatCompletionsChunkToAnthropicEvents_ToolCallAggregation(t *testing.T)
 	for _, e := range events {
 		if e.Type == "content_block_start" && e.ContentBlock != nil {
 			require.Equal(t, "tool_use", e.ContentBlock.Type)
-			require.Equal(t, "call_1", e.ContentBlock.ID)
+			// 合成 id 规范化（票 #38 C2）：toolu_ + sha256("call_1") 前 16 字节 hex。
+			require.Equal(t, "toolu_74196fe72e4cdc135c1033e05a2e020c", e.ContentBlock.ID)
 			require.Equal(t, "get_weather", e.ContentBlock.Name)
 		}
 		if e.Type == "message_delta" {
@@ -692,9 +695,26 @@ func TestDirectBridge_NonStreamingMatchesDoubleConversion(t *testing.T) {
 		require.Equal(t, double.Content[i].Text, direct.Content[i].Text, "block %d text mismatch", i)
 		require.Equal(t, double.Content[i].Thinking, direct.Content[i].Thinking, "block %d thinking mismatch", i)
 		require.Equal(t, double.Content[i].Name, direct.Content[i].Name, "block %d name mismatch", i)
-		require.Equal(t, double.Content[i].ID, direct.Content[i].ID, "block %d id mismatch", i)
 		require.Equal(t, string(double.Content[i].Input), string(direct.Content[i].Input), "block %d input mismatch", i)
 	}
+	// id 是两条链刻意分叉的字段（票 #38 C2）：直连桥必须按 Anthropic 规范合成
+	// （message → msg_，tool_use → toolu_），双转换链保持上游原值。两侧分别钉住，
+	// 而不是互相比较，否则规范化一落地就会把这条等价断言变成假红。
+	require.Equal(t, "msg_6ff76dbb64796a9de878cecd008b7fc8", direct.ID)
+	require.Equal(t, "chatcmpl-eq", double.ID)
+	directToolID, doubleToolID := "", ""
+	for _, b := range direct.Content {
+		if b.Type == "tool_use" {
+			directToolID = b.ID
+		}
+	}
+	for _, b := range double.Content {
+		if b.Type == "tool_use" {
+			doubleToolID = b.ID
+		}
+	}
+	require.Equal(t, "toolu_18a0073b52112eca3c6de226d62ee452", directToolID)
+	require.Equal(t, "call_eq", doubleToolID)
 	require.Equal(t, double.Usage.InputTokens, direct.Usage.InputTokens)
 	require.Equal(t, double.Usage.OutputTokens, direct.Usage.OutputTokens)
 	require.Equal(t, double.Usage.CacheReadInputTokens, direct.Usage.CacheReadInputTokens)
@@ -894,7 +914,8 @@ func TestChatCompletionsToAnthropicStreamState_ToolCallArgsArriveBeforeName(t *t
 
 	tools := assembleToolUseBlocks(events)
 	require.Len(t, tools, 1)
-	require.Equal(t, "call_early", tools[0].ID)
+	// 合成 id 规范化（票 #38 C2）：toolu_ + sha256("call_early") 前 16 字节 hex。
+	require.Equal(t, "toolu_c05b9efa9fae3dcc2c65e312439cef48", tools[0].ID)
 	require.Equal(t, "get_weather", tools[0].Name)
 	require.JSONEq(t, `{"city":"SF"}`, tools[0].Input)
 
@@ -921,7 +942,8 @@ func TestChatCompletionsToAnthropicStreamState_ToolCallNameNeverArrives(t *testi
 
 	tools := assembleToolUseBlocks(events)
 	require.Len(t, tools, 1)
-	require.Equal(t, "call_anon", tools[0].ID)
+	// 合成 id 规范化（票 #38 C2）：toolu_ + sha256("call_anon") 前 16 字节 hex。
+	require.Equal(t, "toolu_21c742ba91ef410bc8c46a844ee6f719", tools[0].ID)
 	require.Equal(t, "", tools[0].Name)
 	require.JSONEq(t, `{"a":1}`, tools[0].Input)
 

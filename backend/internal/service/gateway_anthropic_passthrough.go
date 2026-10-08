@@ -254,7 +254,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var firstTokenMs *int
 	var clientDisconnect bool
 	if input.RequestStream {
-		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
+		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel, input.RequestStream)
 		if err != nil {
 			// 流中断时保留已观测到的 usage 与错误一起返回，避免上游已计量的请求
 			// 完全漏记漏计费（issue #5148）。
@@ -376,6 +376,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	account *Account,
 	startTime time.Time,
 	model string,
+	clientStream bool,
 ) (*streamingResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -389,7 +390,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
-		contentType = "text/event-stream"
+		contentType = anthropicPassthroughContentType(clientStream)
 	}
 	c.Header("Content-Type", contentType)
 	if c.Writer.Header().Get("Cache-Control") == "" {
@@ -899,6 +900,16 @@ func classifyAnthropicResponseInputAsCacheRead(body []byte, usage *ClaudeUsage) 
 		return nil, fmt.Errorf("classify forced cache billing cache read tokens: %w", err)
 	}
 	return classified, nil
+}
+
+// anthropicPassthroughContentType 返回上游未提供 Content-Type 时的默认值：
+// 流式请求默认 SSE，非流式请求默认 JSON。调用方先取上游显式值，只有为空时才
+// 落到这里——非流式客户端拿到 text/event-stream 会被严格客户端判为协议不符。
+func anthropicPassthroughContentType(clientStream bool) string {
+	if clientStream {
+		return "text/event-stream"
+	}
+	return "application/json"
 }
 
 func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {

@@ -3,6 +3,7 @@ package apicompat
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -414,6 +415,39 @@ func anthropicThinkingSignature(thinking string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Synthesized Anthropic ids
+// ---------------------------------------------------------------------------
+
+// anthropicSynthesizedMessageID 把合成响应的 id 规范化为 Anthropic 的 msg_ 形态。
+// OpenAI 兼容上游给的是自家 id（`0217914…` / UUID / chatcmpl-…），Anthropic 规范
+// 与严格客户端要求 msg_ 前缀。已带 msg_ 前缀的原样保留（客户端多轮回传要与
+// 上游 id 一致）；其余按上游 id 的 SHA-256 前 16 字节派生成 32 位 hex——同一
+// 上游 id 恒定得到同一合成 id（流式 message_start 与非流式 message 一致，重试
+// 不漂移），上游原值已由 usage_logs.upstream_request_id 落库，不丢可追溯性。
+func anthropicSynthesizedMessageID(upstreamID string) string {
+	upstreamID = strings.TrimSpace(upstreamID)
+	if strings.HasPrefix(upstreamID, "msg_") {
+		return upstreamID
+	}
+	return "msg_" + anthropicSynthesizedIDHex(upstreamID)
+}
+
+// anthropicSynthesizedToolUseID 同理把上游 tool_call id（`call_00_…`）规范化为
+// toolu_ 前缀；原样透传的 call_ 前缀块 id 会被严格客户端判为非法。
+func anthropicSynthesizedToolUseID(upstreamID string) string {
+	upstreamID = strings.TrimSpace(upstreamID)
+	if strings.HasPrefix(upstreamID, "toolu_") {
+		return upstreamID
+	}
+	return "toolu_" + anthropicSynthesizedIDHex(upstreamID)
+}
+
+func anthropicSynthesizedIDHex(upstreamID string) string {
+	sum := sha256.Sum256([]byte(upstreamID))
+	return hex.EncodeToString(sum[:16])
+}
+
+// ---------------------------------------------------------------------------
 // Non-streaming response: ChatCompletionsResponse → AnthropicResponse
 // ---------------------------------------------------------------------------
 
@@ -460,6 +494,9 @@ func ChatCompletionsResponseToAnthropic(resp *ChatCompletionsResponse, model str
 	if out.ID == "" {
 		out.ID = generateResponsesID()
 	}
+	// 合成响应 id 一律落到 Anthropic 的 msg_ 形态（上游原 id 已由
+	// usage_logs.upstream_request_id 落库，改写不丢信息）。
+	out.ID = anthropicSynthesizedMessageID(out.ID)
 
 	return out
 }
@@ -497,7 +534,7 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 		}
 		blocks = append(blocks, AnthropicContentBlock{
 			Type:  "tool_use",
-			ID:    fromResponsesCallID(toolCall.ID),
+			ID:    anthropicSynthesizedToolUseID(fromResponsesCallID(toolCall.ID)),
 			Name:  toolCall.Function.Name,
 			Input: sanitizeAnthropicToolUseInput(toolCall.Function.Name, arguments),
 		})
@@ -756,7 +793,7 @@ func ensureCCAnthropicMessageStart(state *ChatCompletionsToAnthropicStreamState)
 	return []AnthropicStreamEvent{{
 		Type: "message_start",
 		Message: &AnthropicResponse{
-			ID:         state.ResponseID,
+			ID:         anthropicSynthesizedMessageID(state.ResponseID),
 			Type:       "message",
 			Role:       "assistant",
 			Content:    []AnthropicContentBlock{},
@@ -888,7 +925,7 @@ func announceCCAnthropicToolBlock(state *ChatCompletionsToAnthropicStreamState, 
 		Index: &blockIdx,
 		ContentBlock: &AnthropicContentBlock{
 			Type:  "tool_use",
-			ID:    fromResponsesCallID(callID),
+			ID:    anthropicSynthesizedToolUseID(fromResponsesCallID(callID)),
 			Name:  name,
 			Input: json.RawMessage("{}"),
 		},

@@ -119,7 +119,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	}
 
 	if clientStream {
-		return s.handleNativeAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
+		return s.handleNativeAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientStream)
 	}
 	return s.handleNativeAnthropicBufferedResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
 }
@@ -375,6 +375,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 	upstreamModel string,
 	reasoningEffort *string,
 	startTime time.Time,
+	clientStream bool,
 ) (*OpenAIForwardResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -388,7 +389,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
-		contentType = "text/event-stream"
+		contentType = anthropicPassthroughContentType(clientStream)
 	}
 	c.Header("Content-Type", contentType)
 	if c.Writer.Header().Get("Cache-Control") == "" {
