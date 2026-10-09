@@ -116,7 +116,8 @@ type CodeBuddyActivityRunSummary struct {
 	Attempted int `json:"attempted"`
 	// Reported 实际发出上报的账号数（含自检可疑者）。
 	Reported int `json:"reported"`
-	// Skipped 被跳过（已停调 / 缺凭据）未发请求的账号数。
+	// Skipped 被跳过（缺凭据 / 账号已过期）未发请求的账号数。
+	// （2026-10-09 口径修正后"已停调"不再触发跳过，见 codeBuddyTaskSkipReason。）
 	Skipped int `json:"skipped"`
 	// Failed 上报过程出错的账号数。
 	Failed int `json:"failed"`
@@ -350,7 +351,7 @@ func (s *CodeBuddyActivityScheduler) executeOnce(
 			slog.Warn("codebuddy_activity.stopped_early", "error", ctx.Err(), "remaining", len(candidates))
 			break
 		}
-		// 跳过项（停调 / 缺凭据）不发请求——与签到同口径。
+		// 跳过项（缺凭据 / 账号过期）不发请求——与签到同口径。
 		if candidate.SkipReason != "" {
 			skipped++
 			continue
