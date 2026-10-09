@@ -1016,3 +1016,78 @@ func (r *codebuddyUsageTestRepo) ListByPlatform(_ context.Context, platform stri
 	}
 	return out, nil
 }
+
+// Scenario: 2026-10-09 dev 真机抓包复现——高级版套餐（026，"Buddy AI个人高级版"）
+// 的 DeductionEndTime 是**纪元毫秒数**（1792473737000 = 2026-10-20 13:22:17 UTC+8，
+// 官方 JS 客户端 parseTime 两态都吃）。Go 的墙钟 layout 解不了数字，必须按纪元
+// 绝对时刻解释——否则会错误退链到 ExpiredTime（2026-09-23，已过期）显示错日期。
+// 夹具逐字来自 dev 账号 11 的真实上游响应。
+func TestCodeBuddySubscriptionRealAdvancedFixture(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageCode":"TCACA_code_026_BaESVICNoi","PackageName":"Buddy AI个人高级版","CycleEndTime":"2026-10-20 13:22:17","DeductionEndTime":1792473737000,"ExpiredTime":"2026-09-23 16:04:17","AutoRenewFlag":0,"CycleCapacityRemain":0,"CycleCapacityRemainPrecise":"0","Status":3},
+		{"PackageCode":"TCACA_code_007_nzdH5h4Nl0","PackageName":"CodeBuddy个人版国内运营裂变包","CycleEndTime":"2026-11-09 09:58:04","DeductionEndTime":1794189484000,"ExpiredTime":"","AutoRenewFlag":0,"CycleCapacityRemain":50,"CycleCapacityRemainPrecise":"50.96000011","Status":0}
+	]}}}}`)
+	usage, err := parseCodeBuddyCreditsResponse(raw)
+	require.NoError(t, err)
+	require.NotNil(t, usage.Subscription, "真机 026 套餐必须产出订阅")
+	require.Equal(t, "TCACA_code_026_BaESVICNoi", usage.Subscription.PackageCode)
+	require.Equal(t, "Buddy AI个人高级版", usage.Subscription.Name)
+	// 纪元毫秒优先于墙钟串的 ExpiredTime：1792473737000ms = 2026-10-20T05:22:17Z
+	// （= UTC+8 墙钟 2026-10-20 13:22:17，与该套餐 CycleEndTime 一致，官方客户端同值）。
+	require.Equal(t, "2026-10-20T05:22:17Z", usage.Subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	require.False(t, usage.Subscription.AutoRenew)
+	// 余额与到期列表口径不受影响（对照真机：balance 50.96、1 条 expiry）。
+	// 容差 1e-7：Precise 是字符串小数，float64 往返有表示误差。
+	require.NotNil(t, usage.Balance)
+	require.InDelta(t, 50.96000011, *usage.Balance, 1e-7)
+	require.Len(t, usage.Expiries, 1)
+}
+
+// Scenario: 纪元数字三形态（毫秒数字 / 秒数字 / 纯数字串）都按绝对时刻解释；
+// 纪元占位（0 → 1970）被 minYear 挡下后**继续退链**取下一键，不整行丢弃。
+func TestCodeBuddySubscriptionEpochTimeForms(t *testing.T) {
+	t.Parallel()
+
+	t.Run("纪元毫秒（数字）", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": 1792473737000.0,
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-10-20T05:22:17Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+
+	t.Run("纪元秒（数字）", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": 1792473737.0,
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-10-20T05:22:17Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+
+	t.Run("纪元毫秒（纯数字串）", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": "1792473737000",
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-10-20T05:22:17Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+
+	t.Run("纪元占位 0 被 minYear 挡下 → 退 ExpiredTime", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": 0,
+			"ExpiredTime":      "2026-12-01 08:00:00",
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-12-01T00:00:00Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+}

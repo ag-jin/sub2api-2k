@@ -346,9 +346,9 @@ var codeBuddySubscriptionExpiryKeys = []string{"DeductionEndTime", "ExpiredTime"
 const codeBuddySubscriptionMinExpiryYear = 2024
 
 // codeBuddySubscriptionExpiry 订阅到期时刻：按 codeBuddySubscriptionExpiryKeys 顺序
-// 取第一个可解析且年份不早于 codeBuddySubscriptionMinExpiryYear 的值（墙钟，
-// UTC+8 硬编码解释，与本机时区无关）；全链无合理值 → false（调用方保守忽略
-// 整行，绝不下发零值/占位时刻）。
+// 取第一个可解析且年份不早于 codeBuddySubscriptionMinExpiryYear 的值（墙钟串按
+// UTC+8 硬编码解释，纪元数字按绝对时刻，均与本机时区无关）；全链无合理值 →
+// false（调用方保守忽略整行，绝不下发零值/占位时刻）。
 func codeBuddySubscriptionExpiry(item map[string]any) (time.Time, bool) {
 	return codeBuddyFirstBillingTime(item, codeBuddySubscriptionExpiryKeys, codeBuddySubscriptionMinExpiryYear)
 }
@@ -365,12 +365,21 @@ func codeBuddyPackageExpiry(item map[string]any) (time.Time, bool) {
 	return codeBuddyFirstBillingTime(item, []string{"CycleEndTime"}, 0)
 }
 
-// codeBuddyFirstBillingTime 按键链取第一个可解析的上游墙钟时间（TrimSpace 后
-// 空串与解析失败都跳过、试下一键）。minYear>0 时额外要求 parsed.Year() >= minYear
-// （挡零值/纪元占位串），不满足同样试下一键。订阅与套餐到期**共用这一个解析器**，
+// codeBuddyFirstBillingTime 按键链取第一个可解析的上游时间。每键先试**纪元数字**
+// 形态（>1e11 毫秒 / >1e9 秒；2026-10-09 dev 真机实证 DeductionEndTime 是纪元
+// 毫秒，官方 JS 客户端 parseTime 两态都吃，Go 的墙钟 layout 解不了数字——不补
+// 这条就会错误退链、显示成下一键的值），再试墙钟串（TrimSpace 后空串与解析
+// 失败都跳过、试下一键）。minYear>0 时额外要求 parsed.Year() >= minYear（挡
+// 零值/纪元占位），不满足同样试下一键。订阅与套餐到期**共用这一个解析器**，
 // 两条通道的口径此后不可能漂移。
 func codeBuddyFirstBillingTime(item map[string]any, keys []string, minYear int) (time.Time, bool) {
 	for _, key := range keys {
+		if epoch, ok := codeBuddyEpochTime(item[key]); ok {
+			if minYear > 0 && epoch.Year() < minYear {
+				continue
+			}
+			return epoch, true
+		}
 		text := strings.TrimSpace(codeBuddyStr(item[key]))
 		if text == "" {
 			continue
@@ -383,6 +392,39 @@ func codeBuddyFirstBillingTime(item map[string]any, keys []string, minYear int) 
 			continue
 		}
 		return parsed, true
+	}
+	return time.Time{}, false
+}
+
+// codeBuddyEpochTime 判断值是否为**纪元数字**形态并换算为绝对时刻：数字或纯数字串，
+// >1e11 视为毫秒（真机实证形态，如 DeductionEndTime=1792473737000），>1e9 视为秒；
+// 其余（含 0/负数/非数字）不按纪元解释，交回墙钟串路径。年份合理性由调用方的
+// minYear 统一把关（纪元 0 → 1970 会被 minYear 挡下）。
+func codeBuddyEpochTime(v any) (time.Time, bool) {
+	var n float64
+	switch typed := v.(type) {
+	case float64:
+		n = typed
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return time.Time{}, false
+		}
+		n = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		n = parsed
+	default:
+		return time.Time{}, false
+	}
+	switch {
+	case n > 1e11:
+		return time.UnixMilli(int64(n)), true
+	case n > 1e9:
+		return time.Unix(int64(n), 0), true
 	}
 	return time.Time{}, false
 }
