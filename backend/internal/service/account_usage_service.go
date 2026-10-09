@@ -217,6 +217,11 @@ type UpstreamBalanceUsage struct {
 	// Expiries 到期列表（codebuddy 积分：按套餐的 CycleEndTime，仅含仍有余额的套餐，
 	// 按到期时间升序）。其他平台不产出本字段。
 	Expiries []UpstreamBalanceExpiry `json:"expiries,omitempty"`
+	// Subscription 当前付费订阅套餐（**仅 codebuddy 产出**：账号有付费订阅时才有值，
+	// 体验版/试用/签到/加量包不产出）。与 Expiries 口径不同：订阅判定**与余额无关**
+	// ——额度耗尽的订阅仍要显示到期时间（用户要看的是"订阅什么时候到期"，
+	// 不是"还剩多少积分"）。
+	Subscription *UpstreamBalanceSubscription `json:"subscription,omitempty"`
 	// CachedAgeSeconds 本次响应取自缓存时的缓存年龄（秒）；0 表示实时查询。
 	// 用户据此区分"这是实时值还是缓存值"。
 	CachedAgeSeconds int `json:"cached_age_seconds,omitempty"`
@@ -229,6 +234,17 @@ type UpstreamBalanceUsage struct {
 type UpstreamBalanceExpiry struct {
 	At     time.Time `json:"at"`
 	Amount float64   `json:"amount"`
+}
+
+// UpstreamBalanceSubscription 当前生效的付费订阅套餐（codebuddy 口径）。
+// PackageCode 是上游 CommodityCode；Name 透传上游 PackageName（缺省退 PackageCode，
+// 不自建中文翻译映射）；ExpiresAt 是按上游墙钟（UTC+8）解释的订阅到期时刻；
+// AutoRenew 对应上游 AutoRenewFlag==1。
+type UpstreamBalanceSubscription struct {
+	PackageCode string    `json:"package_code"`
+	Name        string    `json:"name,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	AutoRenew   bool      `json:"auto_renew,omitempty"`
 }
 
 // UpstreamBalanceStats is one period of upstream usage stats.

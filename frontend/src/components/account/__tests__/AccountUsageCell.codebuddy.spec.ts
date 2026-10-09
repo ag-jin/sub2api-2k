@@ -3,8 +3,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import AccountUsageCell from '../AccountUsageCell.vue'
 import type { Account } from '@/types'
 
-const { getUsage } = vi.hoisted(() => ({
-  getUsage: vi.fn()
+const { getUsage, subscriptionParams } = vi.hoisted(() => ({
+  getUsage: vi.fn(),
+  // 记录订阅行传给 t() 的插值参数（日期粒度断言用）。
+  subscriptionParams: { name: '', at: '' }
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -26,6 +28,13 @@ vi.mock('vue-i18n', async () => {
         if (key === 'admin.accounts.codebuddy.usage.expiresValue') {
           return `${params?.amount} credits @ ${params?.at}`
         }
+        if (key === 'admin.accounts.codebuddy.usage.subscriptionLabel') return 'Subscription'
+        if (key === 'admin.accounts.codebuddy.usage.subscriptionValue') {
+          subscriptionParams.name = String(params?.name ?? '')
+          subscriptionParams.at = String(params?.at ?? '')
+          return `${params?.name} · expires ${params?.at}`
+        }
+        if (key === 'admin.accounts.codebuddy.usage.subscriptionAutoRenew') return ' (auto-renew)'
         return key
       }
     })
@@ -85,6 +94,8 @@ function mountCell(account: Account, extraProps: Record<string, unknown> = {}) {
 describe('AccountUsageCell — CodeBuddy 单值余额分支（A2）', () => {
   beforeEach(() => {
     getUsage.mockReset()
+    subscriptionParams.name = ''
+    subscriptionParams.at = ''
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: vi.fn().mockImplementation(() => ({
@@ -280,5 +291,87 @@ describe('AccountUsageCell — CodeBuddy 单值余额分支（A2）', () => {
     const value = wrapper.get('[data-testid="codebuddy-balance-value"]')
     expect(value.text()).toContain('700 credits')
     expect(value.text()).not.toContain('$')
+  })
+
+  it('订阅行：有 subscription 时在「⏳ 到期」列表上方渲染套餐名、到期日期与自动续费标记', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: {
+        balance: 30,
+        status: 'ok',
+        subscription: {
+          package_code: 'TCACA_code_002_AkiJS3ZHF5',
+          name: 'CodeBuddy专业版',
+          expires_at: '2026-07-15T12:00:00Z',
+          auto_renew: true
+        },
+        expiries: [{ at: '2026-09-28T01:30:00Z', amount: 20 }]
+      }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7114 }))
+    await flushPromises()
+
+    const row = wrapper.get('[data-testid="codebuddy-subscription-expiry"]')
+    expect(row.text()).toContain('Subscription')
+    expect(row.text()).toContain('CodeBuddy专业版')
+    expect(row.text()).toContain('(auto-renew)')
+
+    // 到期日期走天粒度（toLocaleDateString）：年份可见且不含时分秒
+    // （对照：formatCodebuddyExpiry 用 toLocaleString，含时分秒）。
+    expect(subscriptionParams.name).toBe('CodeBuddy专业版')
+    expect(subscriptionParams.at).toContain('2026')
+    expect(subscriptionParams.at).not.toContain(':')
+    expect(subscriptionParams.at).toBe(new Date('2026-07-15T12:00:00Z').toLocaleDateString())
+
+    // 位置：订阅行在「⏳ 到期」列表上方（DOM 顺序）。
+    const rows = wrapper.findAll(
+      '[data-testid="codebuddy-subscription-expiry"], [data-testid="codebuddy-balance-expiry"]'
+    )
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    expect(rows[0]!.attributes('data-testid')).toBe('codebuddy-subscription-expiry')
+  })
+
+  it('订阅行：无 subscription（体验版/未购买订阅，或响应不含该键）时不渲染', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: {
+        balance: 30,
+        status: 'ok',
+        expiries: [{ at: '2026-09-28T01:30:00Z', amount: 20 }]
+      }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7115 }))
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="codebuddy-subscription-expiry"]').exists()).toBe(false)
+
+    // 对照：subscription 显式为 null 同样不渲染。
+    getUsage.mockResolvedValue({
+      upstream_balance: { balance: 30, status: 'ok', subscription: null }
+    })
+    const nulled = mountCell(makeAccount({ id: 7116 }))
+    await flushPromises()
+    expect(nulled.find('[data-testid="codebuddy-subscription-expiry"]').exists()).toBe(false)
+  })
+
+  it('订阅行：auto_renew 缺省（false）时不追加自动续费标记', async () => {
+    getUsage.mockResolvedValue({
+      upstream_balance: {
+        balance: 30,
+        status: 'ok',
+        subscription: {
+          package_code: 'TCACA_code_026_BaESVICNoi',
+          name: 'CodeBuddy进阶版',
+          expires_at: '2026-07-15T12:00:00Z'
+        }
+      }
+    })
+
+    const wrapper = mountCell(makeAccount({ id: 7117 }))
+    await flushPromises()
+
+    const row = wrapper.get('[data-testid="codebuddy-subscription-expiry"]')
+    expect(row.text()).toContain('CodeBuddy进阶版')
+    expect(row.text()).not.toContain('(auto-renew)')
   })
 })

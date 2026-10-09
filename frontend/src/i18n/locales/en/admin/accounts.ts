@@ -175,7 +175,10 @@ export default {
           },
           cachedHint: 'cached {seconds}s ago',
           expiresLabel: 'Expires',
-          expiresValue: '{amount} credits · {at}'
+          expiresValue: '{amount} credits · {at}',
+          subscriptionLabel: 'Subscription',
+          subscriptionValue: '{name} · expires {at}',
+          subscriptionAutoRenew: ' (auto-renew)'
         },
         checkin: {
           action: 'Daily check-in',

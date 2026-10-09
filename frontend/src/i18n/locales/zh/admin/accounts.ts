@@ -378,7 +378,10 @@ export default {
           },
           cachedHint: '缓存 {seconds}s 前',
           expiresLabel: '到期',
-          expiresValue: '{amount} 积分 · {at}'
+          expiresValue: '{amount} 积分 · {at}',
+          subscriptionLabel: '订阅',
+          subscriptionValue: '{name} · 到期 {at}',
+          subscriptionAutoRenew: '（自动续费）'
         },
         checkin: {
           action: '每日签到',

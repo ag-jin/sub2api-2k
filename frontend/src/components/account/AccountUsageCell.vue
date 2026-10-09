@@ -564,6 +564,22 @@
           >
             {{ line }}
           </div>
+          <!-- 订阅到期行（后端 Subscription：仅付费订阅产出，判定**与余额无关**）——
+               用户口径："有购买订阅的话显示订阅到期时间"。放在积分到期列表上方：
+               订阅何时到期 > 积分何时作废。 -->
+          <div
+            v-if="codebuddySubscription"
+            data-testid="codebuddy-subscription-expiry"
+            class="flex items-center justify-between gap-2 text-[9px] text-gray-500 dark:text-gray-400"
+          >
+            <span>🏷 {{ t('admin.accounts.codebuddy.usage.subscriptionLabel') }}</span>
+            <span>{{
+              t('admin.accounts.codebuddy.usage.subscriptionValue', {
+                name: codebuddySubscription.name || codebuddySubscription.package_code,
+                at: formatCodebuddyDate(codebuddySubscription.expires_at)
+              }) + (codebuddySubscription.auto_renew ? t('admin.accounts.codebuddy.usage.subscriptionAutoRenew') : '')
+            }}</span>
+          </div>
           <!-- 到期列表（后端 Expiries：仅含仍有余额的套餐，升序） -->
           <div
             v-for="(expiry, index) in codebuddyExpiries"
@@ -1188,6 +1204,24 @@ function formatCodebuddyExpiry(at: string): string {
   const parsed = new Date(at)
   if (Number.isNaN(parsed.getTime())) return at
   return parsed.toLocaleString()
+}
+
+// 付费订阅（后端 Subscription：仅付费订阅产出；无订阅 → null，整行不渲染）。
+// 与 codebuddyExpiries 的口径差异：订阅判定**与余额无关**——额度耗尽的订阅
+// 仍要显示到期时间（用户看的是"订阅什么时候到期"，不是"还剩多少积分"）。
+const codebuddySubscription = computed(() => {
+  if (props.account.platform !== 'codebuddy') return null
+  const subscription = usageInfo.value?.upstream_balance?.subscription
+  if (!subscription || typeof subscription.expires_at !== 'string') return null
+  return subscription
+})
+
+// 订阅到期按**天**展示：订阅到期是"哪一天"的事实，时分秒对用户没有意义
+// （对照 formatCodebuddyExpiry：积分批次的到期时刻带时分秒）。Invalid Date 回退原串。
+function formatCodebuddyDate(at: string): string {
+  const parsed = new Date(at)
+  if (Number.isNaN(parsed.getTime())) return at
+  return parsed.toLocaleDateString()
 }
 
 // 降级值通道：error 文本透传，无文本时按 status/stale 回退通用文案。

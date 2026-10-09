@@ -379,6 +379,242 @@ func TestParseCodeBuddyCreditsResponseExpiries(t *testing.T) {
 	require.Equal(t, "2026-09-28T01:30:00Z", usage.Expiries[0].At.UTC().Format(time.RFC3339))
 }
 
+// Scenario: 付费订阅识别（"有购买订阅才显示到期时间"）——响应里同时有体验版
+// (freeMon)、活动包、proMon 订阅包时，Subscription 命中 proMon；Name 透传上游
+// PackageName；到期取 CycleEndTime（同一 UTC+8 墙钟口径）；AutoRenewFlag=1 →
+// AutoRenew=true。体验版/活动包不触发显示。
+func TestCodeBuddySubscriptionPaidPlan(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageCode":"TCACA_code_008_cfWoLwvjU4","PackageName":"CodeBuddy个人体验版","CycleCapacitySize":500,"CycleCapacityRemain":499,"CycleEndTime":"2026-09-30 23:59:59"},
+		{"PackageCode":"TCACA_code_007_nzdH5h4Nl0","PackageName":"CodeBuddy活动赠送包","CycleCapacitySize":100,"CycleCapacityRemain":0,"CycleEndTime":"2026-09-20 00:00:00"},
+		{"PackageCode":"TCACA_code_002_AkiJS3ZHF5","PackageName":"CodeBuddy专业版","CycleCapacitySize":1000,"CycleCapacityRemain":800,"CycleEndTime":"2026-10-09 12:34:56","AutoRenewFlag":1}
+	]}}}}`)
+	usage, err := parseCodeBuddyCreditsResponse(raw)
+	require.NoError(t, err)
+
+	require.NotNil(t, usage.Subscription, "有付费订阅必须产出 Subscription")
+	require.Equal(t, "TCACA_code_002_AkiJS3ZHF5", usage.Subscription.PackageCode)
+	require.Equal(t, "CodeBuddy专业版", usage.Subscription.Name)
+	require.True(t, usage.Subscription.AutoRenew)
+	// UTC+8 墙钟解释：2026-10-09 12:34:56 +08:00 == 2026-10-09 04:34:56 UTC。
+	require.Equal(t, "2026-10-09T04:34:56Z", usage.Subscription.ExpiresAt.UTC().Format(time.RFC3339))
+}
+
+// Scenario: 订阅到期时刻取官方链——DeductionEndTime → ExpiredTime → CycleEndTime
+// 第一个**可解析**值（官方客户端 `endTime = isDaily ? CycleEndTime : DeductionEndTime`；
+// CycleEndTime 是周期刷新的口径，不是订阅本身的到期时刻，只在其他字段缺失时兜底）。
+// 上游字段名是这三个，与请求体 PackageEndTimeRange* 无关。
+func TestCodeBuddySubscriptionExpiryChain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		item map[string]any
+		want string // UTC RFC3339
+	}{
+		{
+			name: "三字段齐备 → DeductionEndTime 胜出",
+			item: map[string]any{
+				"PackageCode":      "TCACA_code_003_FAnt7lcmRT",
+				"DeductionEndTime": "2027-03-15 08:00:00",
+				"ExpiredTime":      "2026-12-31 08:00:00",
+				"CycleEndTime":     "2026-10-31 23:59:59",
+			},
+			want: "2027-03-15T00:00:00Z",
+		},
+		{
+			name: "DeductionEndTime 缺失 → ExpiredTime（先于 CycleEndTime）",
+			item: map[string]any{
+				"PackageCode":  "TCACA_code_003_FAnt7lcmRT",
+				"ExpiredTime":  "2026-12-31 08:00:00",
+				"CycleEndTime": "2026-10-31 23:59:59",
+			},
+			want: "2026-12-31T00:00:00Z",
+		},
+		{
+			name: "只有 CycleEndTime → 兜底取它",
+			item: map[string]any{
+				"PackageCode":  "TCACA_code_003_FAnt7lcmRT",
+				"CycleEndTime": "2026-10-31 23:59:59",
+			},
+			want: "2026-10-31T15:59:59Z",
+		},
+		{
+			name: "首字段在场但不可解析 → 退下一个可解析字段（不是「有键就用」）",
+			item: map[string]any{
+				"PackageCode":      "TCACA_code_003_FAnt7lcmRT",
+				"DeductionEndTime": "not-a-time",
+				"CycleEndTime":     "2026-10-31 23:59:59",
+			},
+			want: "2026-10-31T15:59:59Z",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			subscription := codeBuddySubscription([]map[string]any{testCase.item})
+			require.NotNil(t, subscription, "付费套餐必须产出订阅")
+			require.Equal(t, testCase.want, subscription.ExpiresAt.UTC().Format(time.RFC3339))
+		})
+	}
+}
+
+// Scenario: 多档付费订阅并存时取**优先级最高**的一档（官方
+// `activePlan = flagship || advanced || youth || proPlan`，与列表顺序无关）。
+func TestCodeBuddySubscriptionPriority(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		accounts []map[string]any
+		wantCode string
+		wantName string
+	}{
+		{
+			name: "旗舰版 vs 专业版月付（低档在前）→ 旗舰版",
+			accounts: []map[string]any{
+				{"PackageCode": "TCACA_code_002_AkiJS3ZHF5", "PackageName": "CodeBuddy专业版", "CycleEndTime": "2026-11-01 08:00:00"},
+				{"PackageCode": "TCACA_code_027_0FCGVA6vSa", "PackageName": "CodeBuddy旗舰版", "CycleEndTime": "2026-12-01 08:00:00"},
+			},
+			wantCode: "TCACA_code_027_0FCGVA6vSa",
+			wantName: "CodeBuddy旗舰版",
+		},
+		{
+			name: "进阶版 vs 青春版 → 进阶版",
+			accounts: []map[string]any{
+				{"PackageCode": "TCACA_code_023_4xbGhMrE6q", "PackageName": "CodeBuddy青春版", "CycleEndTime": "2026-11-01 08:00:00"},
+				{"PackageCode": "TCACA_code_026_BaESVICNoi", "PackageName": "CodeBuddy进阶版", "CycleEndTime": "2026-12-01 08:00:00"},
+			},
+			wantCode: "TCACA_code_026_BaESVICNoi",
+			wantName: "CodeBuddy进阶版",
+		},
+		{
+			name: "青春版 vs 专业版月付 → 青春版",
+			accounts: []map[string]any{
+				{"PackageCode": "TCACA_code_002_AkiJS3ZHF5", "PackageName": "CodeBuddy专业版", "CycleEndTime": "2026-11-01 08:00:00"},
+				{"PackageCode": "TCACA_code_023_4xbGhMrE6q", "PackageName": "CodeBuddy青春版", "CycleEndTime": "2026-12-01 08:00:00"},
+			},
+			wantCode: "TCACA_code_023_4xbGhMrE6q",
+			wantName: "CodeBuddy青春版",
+		},
+		{
+			name: "月付 vs 月付Plus（年付不在场）→ 月付",
+			accounts: []map[string]any{
+				{"PackageCode": "TCACA_code_005_maRGyrHhw1", "PackageName": "CodeBuddy专业版Plus", "CycleEndTime": "2026-11-01 08:00:00"},
+				{"PackageCode": "TCACA_code_002_AkiJS3ZHF5", "PackageName": "CodeBuddy专业版", "CycleEndTime": "2026-12-01 08:00:00"},
+			},
+			wantCode: "TCACA_code_002_AkiJS3ZHF5",
+			wantName: "CodeBuddy专业版",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			subscription := codeBuddySubscription(testCase.accounts)
+			require.NotNil(t, subscription)
+			require.Equal(t, testCase.wantCode, subscription.PackageCode)
+			require.Equal(t, testCase.wantName, subscription.Name)
+		})
+	}
+}
+
+// Scenario: 只有非付费套餐（体验版/试用/签到/加量/活动/礼包）时**不产出** Subscription
+// ——用户口径是"如果购买了订阅才显示"。这些码全部来自官方 CommodityCode 枚举，
+// 逐码覆盖，避免"手滑把 008 freeMon 当订阅码"这类回归。
+func TestCodeBuddySubscriptionAbsentForNonPaidPackages(t *testing.T) {
+	t.Parallel()
+
+	nonPaidCodes := []struct {
+		code string
+		note string
+	}{
+		{"TCACA_code_001_PqouKr6QWV", "free 免费版"},
+		{"TCACA_code_006_DbXS0lrypC", "gift 礼包/试用"},
+		{"TCACA_code_008_cfWoLwvjU4", "freeMon 体验版月付（V1 实测样本码）"},
+		{"TCACA_code_035_ArVxJcGDsm", "freeMonIntl 国际版体验"},
+		{"TCACA_code_039_KRcQj7wUat", "proTrialMon 专业版试用月付"},
+		{"TCACA_code_040_mi9rCYg46x", "proTrialYear 专业版试用年付"},
+		{"TCACA_code_009_0XmEQc2xOf", "extra 加量包"},
+		{"TCACA_code_038_OhvqZtiPKr", "extra38 加量包"},
+		{"TCACA_code_036_lupO5WgNdG", "extraIntl 国际版加量包"},
+		{"TCACA_code_007_nzdH5h4Nl0", "activity 活动包（V1 签到来源）"},
+		{"TCACA_code_028_NtpWi0jzXs", "bonus28 活动加赠"},
+		{"TCACA_code_029_6wCGEWquYy", "bonus29 活动加赠"},
+		{"TCACA_code_030_BjSt89qTvr", "bonus30 活动加赠"},
+		{"TCACA_code_037_WxOD3MpI2o", "bonusIntl 国际版活动加赠"},
+	}
+	for _, item := range nonPaidCodes {
+		t.Run(item.note, func(t *testing.T) {
+			t.Parallel()
+			subscription := codeBuddySubscription([]map[string]any{{
+				"PackageCode":      item.code,
+				"PackageName":      "非付费套餐",
+				"CapacityRemain":   100,
+				"DeductionEndTime": "2026-12-01 08:00:00",
+			}})
+			require.Nil(t, subscription, "非付费套餐不得产出订阅（码 %s）", item.code)
+		})
+	}
+}
+
+// Scenario: 命中付费订阅但上游没给 PackageName → Name 退 PackageCode
+// （不自建中文翻译映射：youth/advanced 的官方中文名未实证）；PackageName 带空白
+// 也按缺失处理。
+func TestCodeBuddySubscriptionNameFallback(t *testing.T) {
+	t.Parallel()
+
+	subscription := codeBuddySubscription([]map[string]any{{
+		"PackageCode":  "TCACA_code_026_BaESVICNoi",
+		"CycleEndTime": "2026-12-01 08:00:00",
+	}})
+	require.NotNil(t, subscription)
+	require.Equal(t, "TCACA_code_026_BaESVICNoi", subscription.Name)
+
+	blank := codeBuddySubscription([]map[string]any{{
+		"PackageCode":  "TCACA_code_026_BaESVICNoi",
+		"PackageName":  "   ",
+		"CycleEndTime": "2026-12-01 08:00:00",
+	}})
+	require.NotNil(t, blank)
+	require.Equal(t, "TCACA_code_026_BaESVICNoi", blank.Name)
+}
+
+// Scenario: 订阅判定**与余额无关**——额度耗尽的付费订阅（Remain=0）仍要显示到期
+// 时间，而它**不进** Expiries（到期列表恒为"仅仍有余额的套餐"口径）。
+// 两条口径刻意分家：Expiries 答"积分什么时候作废"，Subscription 答"订阅什么时候到期"。
+func TestCodeBuddySubscriptionIndependentOfBalance(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageCode":"TCACA_code_002_AkiJS3ZHF5","PackageName":"CodeBuddy专业版","CycleCapacitySize":1000,"CycleCapacityRemain":0,"CycleEndTime":"2026-10-09 12:34:56"}
+	]}}}}`)
+	usage, err := parseCodeBuddyCreditsResponse(raw)
+	require.NoError(t, err)
+	require.NotNil(t, usage.Subscription, "额度耗尽的订阅仍必须展示到期时间")
+	require.Equal(t, "2026-10-09T04:34:56Z", usage.Subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	require.Empty(t, usage.Expiries, "Expiries 恒为仅含仍有余额的套餐——两条口径不得混")
+	require.NotNil(t, usage.Balance)
+	require.InDelta(t, 0.0, *usage.Balance, 1e-9)
+}
+
+// Scenario: 付费套餐在册但到期时刻全链不可解析 → 不产出 Subscription（也不报错，
+// 余额照常返回）。到期时间对订阅是必填展示值：宁可不显示这一行，
+// 也不能下发零值时刻（前端会渲染成 0001 年）。
+func TestCodeBuddySubscriptionSkippedWhenExpiryUnparseable(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageCode":"TCACA_code_027_0FCGVA6vSa","PackageName":"CodeBuddy旗舰版","CycleCapacitySize":1000,"CycleCapacityRemain":800,"DeductionEndTime":"","ExpiredTime":"not-a-time"}
+	]}}}}`)
+	usage, err := parseCodeBuddyCreditsResponse(raw)
+	require.NoError(t, err)
+	require.Nil(t, usage.Subscription)
+	require.NotNil(t, usage.Balance, "展示字段缺失不得影响余额解析")
+	require.InDelta(t, 800.0, *usage.Balance, 1e-9)
+}
+
 // Scenario: realm 分发的计费 base 与路径族（P0-3，**未经真机验证**）——
 // CN：www.codebuddy.cn + /v2/billing/meter/...（单候选）；
 // global：www.workbuddy.ai + 无 /v2 优先（两候选，404 回落）。

@@ -263,11 +263,92 @@ func parseCodeBuddyCreditsResponse(raw []byte) (*UpstreamBalanceUsage, error) {
 	}
 	usage := &UpstreamBalanceUsage{Unit: "credits", Status: "ok"}
 	usage.Balance = &total
+	// 订阅与余额**两条独立通道**：订阅只看付费套餐码，不看余额（额度耗尽的订阅
+	// 仍要显示到期时间），与上面"仅仍有余额的套餐进 Expiries"的口径刻意不同。
+	usage.Subscription = codeBuddySubscription(accounts)
 	if len(expiries) > 0 {
 		sort.Slice(expiries, func(i, j int) bool { return expiries[i].At.Before(expiries[j].At) })
 		usage.Expiries = expiries
 	}
 	return usage, nil
+}
+
+// codeBuddyPaidSubscriptionCodes 付费订阅 PackageCode，**按官方 activePlan 优先级
+// 降序**排列（先命中者胜）。判定口径来自官方桌面客户端提取件
+// `.scratch/wb-stream-hang/client-extract/renderer__assets__common-DmYVkoTi.js`
+// 的 CommodityCode 枚举与 getCurrentPlan：
+//
+//	activePlan = flagship || advanced || youth || proPlan（proPlan 等价于
+//	proYear/proMon/proMonPlus 取优先级最高一个，本列表已按同一优先级展开）。
+//
+// 刻意**不含**体验版/试用/签到/加量/活动包（free/gift/freeMon/freeMonIntl/
+// proTrialMon/proTrialYear/extra*/activity/bonus*）——那些不触发"订阅到期时间"
+// 展示（用户口径："如果购买了订阅"）。
+var codeBuddyPaidSubscriptionCodes = []string{
+	"TCACA_code_027_0FCGVA6vSa", // flagship 旗舰版
+	"TCACA_code_026_BaESVICNoi", // advanced 进阶版
+	"TCACA_code_023_4xbGhMrE6q", // youth 青春版
+	"TCACA_code_002_AkiJS3ZHF5", // proMon 专业版月付
+	"TCACA_code_005_maRGyrHhw1", // proMonPlus 专业版月付 Plus
+	"TCACA_code_003_FAnt7lcmRT", // proYear 专业版年付
+}
+
+// codeBuddySubscription 从套餐列表里挑出当前付费订阅（无付费订阅 → nil）。
+//
+// 与 codeBuddyPackageExpiry 同理：到期时间是**展示字段**，宁可整行不显示，也不能
+// 因为它让整次余额查询失败。因此找不到可解析的到期时刻 → 返回 nil，
+// 而不是下发一个零值时刻（前端会渲染成 0001-01-01）。
+func codeBuddySubscription(accounts []map[string]any) *UpstreamBalanceSubscription {
+	for _, code := range codeBuddyPaidSubscriptionCodes {
+		for _, item := range accounts {
+			if strings.TrimSpace(codeBuddyStr(item["PackageCode"])) != code {
+				continue
+			}
+			expiresAt, ok := codeBuddySubscriptionExpiry(item)
+			if !ok {
+				// 命中的套餐拿不到到期时刻：保守忽略（不再往下退到低优先级套餐，
+				// 否则会把下一档套餐的到期时间冒充成用户订阅的到期时间）。
+				return nil
+			}
+			name := strings.TrimSpace(codeBuddyStr(item["PackageName"]))
+			if name == "" {
+				// CN 实测有 PackageName；缺失时退套餐码（不猜中文名）。
+				name = code
+			}
+			return &UpstreamBalanceSubscription{
+				PackageCode: code,
+				Name:        name,
+				ExpiresAt:   expiresAt,
+				// AutoRenewFlag 是数字/字符串两形态，非 1 一律按"非自动续费"。
+				AutoRenew: int(codeBuddyFloatAny(item["AutoRenewFlag"])) == 1,
+			}
+		}
+	}
+	return nil
+}
+
+// codeBuddySubscriptionExpiryKeys 订阅到期时刻的取值链，**按官方客户端口径排序**
+// （`endTime = isDaily ? CycleEndTime : DeductionEndTime`；ExpiredTime 为兼容兜底）：
+// 取第一个**可解析**的键，不是"有键就用"——上游给过空串/占位串时不能因此
+// 让整行订阅信息消失。
+var codeBuddySubscriptionExpiryKeys = []string{"DeductionEndTime", "ExpiredTime", "CycleEndTime"}
+
+// codeBuddySubscriptionExpiry 订阅到期时刻：按 codeBuddySubscriptionExpiryKeys 顺序
+// 取第一个可解析值。时间串与余额套餐同格式（墙钟，UTC+8 硬编码解释，与本机时区
+// 无关）；全链缺失/解析失败 → false（调用方保守忽略整行，绝不下发零值时刻）。
+func codeBuddySubscriptionExpiry(item map[string]any) (time.Time, bool) {
+	for _, key := range codeBuddySubscriptionExpiryKeys {
+		text := strings.TrimSpace(codeBuddyStr(item[key]))
+		if text == "" {
+			continue
+		}
+		parsed, err := time.ParseInLocation(codeBuddyBillingTimeLayout, text, codeBuddyBillingLoc)
+		if err != nil {
+			continue
+		}
+		return parsed, true
+	}
+	return time.Time{}, false
 }
 
 // codeBuddyPackageExpiry 单套餐到期时刻。字段缺失/空/解析失败 → false（到期时间是

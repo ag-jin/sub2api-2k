@@ -1419,6 +1419,17 @@ export interface UpstreamBalanceExpiry {
   amount: number
 }
 
+export interface UpstreamBalanceSubscription {
+  /** 上游套餐码（CommodityCode，付费订阅码） */
+  package_code: string
+  /** 套餐名（后端透传上游 PackageName，缺失时退 package_code） */
+  name?: string
+  /** 订阅到期时刻（ISO8601，后端按上游 UTC+8 墙钟解释后输出） */
+  expires_at: string
+  /** 是否自动续费（上游 AutoRenewFlag==1） */
+  auto_renew?: boolean
+}
+
 export interface UpstreamBalanceSnapshot {
   balance?: number | null
   remaining?: number | null
@@ -1432,6 +1443,8 @@ export interface UpstreamBalanceSnapshot {
   error?: string | null
   /** 到期列表（仅 codebuddy 积分产出；仅含仍有余额的套餐，升序） */
   expiries?: UpstreamBalanceExpiry[] | null
+  /** 当前付费订阅（仅 codebuddy 且确有付费订阅时产出；判定与余额无关） */
+  subscription?: UpstreamBalanceSubscription | null
   /** 本次响应是否来自缓存；cached_age_seconds 为缓存年龄（秒，0=实时） */
   cached?: boolean
   cached_age_seconds?: number
