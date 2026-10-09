@@ -1,0 +1,71 @@
+# dev 测试构建（临时，仅 test/* 分支）：
+# 不打 tag、不建 GitHub Release——只产出 linux/amd64 二进制 artifact，
+# 供 dev 环境部署验证（用户指示：dev 测试不走发版方式、不在本地编译）。
+name: devtest-build
+
+on:
+  push:
+    branches:
+      - 'test/dev-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Build linux/amd64 binary
+        working-directory: backend
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          VERSION="0.1.212-card-devtest.${GITHUB_SHA::8}"
+          go build -tags=embed -trimpath \
+            -ldflags="-s -w \
+              -X main.Version=${VERSION} \
+              -X main.Commit=${GITHUB_SHA} \
+              -X main.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+              -X main.BuildType=release" \
+            -o ../out/sub2api-devtest-linux-amd64 ./cmd/server
+          sha256sum ../out/sub2api-devtest-linux-amd64 | tee ../out/sub2api-devtest-linux-amd64.sha256
+
+      - name: Upload dev test binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: sub2api-devtest-linux-amd64
+          path: out/
+          retention-days: 7
