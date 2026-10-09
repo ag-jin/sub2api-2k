@@ -278,8 +278,13 @@ func parseCodeBuddyCreditsResponse(raw []byte) (*UpstreamBalanceUsage, error) {
 // `.scratch/wb-stream-hang/client-extract/renderer__assets__common-DmYVkoTi.js`
 // 的 CommodityCode 枚举与 getCurrentPlan：
 //
-//	activePlan = flagship || advanced || youth || proPlan（proPlan 等价于
-//	proYear/proMon/proMonPlus 取优先级最高一个，本列表已按同一优先级展开）。
+//	activePlan = flagship || advanced || youth || proPlan || trialPlan
+//
+// ⚠️ pro 系内部（proMon/proMonPlus/proYear）的顺序 002→005→003 是**本任务的
+// 确定性 tie-break，不是官方口径**：客户端的 proPlan 是对上游响应数组做 find
+// （首个命中即胜，数组未按套餐码排序），官方对 pro 系**没有**内部优先级。同持
+// 两个 pro 系套餐时本实现展示的套餐可能与官方客户端不同（场景罕见，不影响到期
+// 时间正确性——只影响"命中哪一个"）。
 //
 // 刻意**不含**体验版/试用/签到/加量/活动包（free/gift/freeMon/freeMonIntl/
 // proTrialMon/proTrialYear/extra*/activity/bonus*）——那些不触发"订阅到期时间"
@@ -333,22 +338,19 @@ func codeBuddySubscription(accounts []map[string]any) *UpstreamBalanceSubscripti
 // 让整行订阅信息消失。
 var codeBuddySubscriptionExpiryKeys = []string{"DeductionEndTime", "ExpiredTime", "CycleEndTime"}
 
+// codeBuddySubscriptionMinExpiryYear 订阅到期时刻的合理性下界（年份）。上游是
+// Dart 栈，零值 DateTime 会序列化成 "0001-01-01 00:00:00"，Unix 纪元占位则是
+// "1970-01-01 08:00:00"——两者都能被 layout **成功解析**，只判解析错误挡不住，
+// 前端会真的渲染出"到期 1/1/1"。计费请求的时间窗下界就是 now（过去到期的套餐
+// 上游根本不返回），所以任何真实到期时刻都在 2026+；下界取 2024 已留足冗余。
+const codeBuddySubscriptionMinExpiryYear = 2024
+
 // codeBuddySubscriptionExpiry 订阅到期时刻：按 codeBuddySubscriptionExpiryKeys 顺序
-// 取第一个可解析值。时间串与余额套餐同格式（墙钟，UTC+8 硬编码解释，与本机时区
-// 无关）；全链缺失/解析失败 → false（调用方保守忽略整行，绝不下发零值时刻）。
+// 取第一个可解析且年份不早于 codeBuddySubscriptionMinExpiryYear 的值（墙钟，
+// UTC+8 硬编码解释，与本机时区无关）；全链无合理值 → false（调用方保守忽略
+// 整行，绝不下发零值/占位时刻）。
 func codeBuddySubscriptionExpiry(item map[string]any) (time.Time, bool) {
-	for _, key := range codeBuddySubscriptionExpiryKeys {
-		text := strings.TrimSpace(codeBuddyStr(item[key]))
-		if text == "" {
-			continue
-		}
-		parsed, err := time.ParseInLocation(codeBuddyBillingTimeLayout, text, codeBuddyBillingLoc)
-		if err != nil {
-			continue
-		}
-		return parsed, true
-	}
-	return time.Time{}, false
+	return codeBuddyFirstBillingTime(item, codeBuddySubscriptionExpiryKeys, codeBuddySubscriptionMinExpiryYear)
 }
 
 // codeBuddyPackageExpiry 单套餐到期时刻。字段缺失/空/解析失败 → false（到期时间是
@@ -358,15 +360,31 @@ func codeBuddySubscriptionExpiry(item map[string]any) (time.Time, bool) {
 // ——两者是不同字段（见 codeBuddyBillingTimeLayout 注释）。
 // 时间串按 UTC+8 硬编码解释，与本机时区无关。
 func codeBuddyPackageExpiry(item map[string]any) (time.Time, bool) {
-	text := strings.TrimSpace(codeBuddyStr(item["CycleEndTime"]))
-	if text == "" {
-		return time.Time{}, false
+	// minYear=0：不加年份下界——Expiries 列表是既有行为（v0.1.194 起），
+	// 下界守卫只给订阅通道新增，不顺手改这里的口径。
+	return codeBuddyFirstBillingTime(item, []string{"CycleEndTime"}, 0)
+}
+
+// codeBuddyFirstBillingTime 按键链取第一个可解析的上游墙钟时间（TrimSpace 后
+// 空串与解析失败都跳过、试下一键）。minYear>0 时额外要求 parsed.Year() >= minYear
+// （挡零值/纪元占位串），不满足同样试下一键。订阅与套餐到期**共用这一个解析器**，
+// 两条通道的口径此后不可能漂移。
+func codeBuddyFirstBillingTime(item map[string]any, keys []string, minYear int) (time.Time, bool) {
+	for _, key := range keys {
+		text := strings.TrimSpace(codeBuddyStr(item[key]))
+		if text == "" {
+			continue
+		}
+		parsed, err := time.ParseInLocation(codeBuddyBillingTimeLayout, text, codeBuddyBillingLoc)
+		if err != nil {
+			continue
+		}
+		if minYear > 0 && parsed.Year() < minYear {
+			continue
+		}
+		return parsed, true
 	}
-	parsed, err := time.ParseInLocation(codeBuddyBillingTimeLayout, text, codeBuddyBillingLoc)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return parsed, true
+	return time.Time{}, false
 }
 
 // codeBuddyExtractResourceAccounts 下钻 data → data.Response → data.Response.Data

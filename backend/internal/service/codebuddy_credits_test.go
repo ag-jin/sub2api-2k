@@ -615,6 +615,148 @@ func TestCodeBuddySubscriptionSkippedWhenExpiryUnparseable(t *testing.T) {
 	require.InDelta(t, 800.0, *usage.Balance, 1e-9)
 }
 
+// Scenario: 高优先级付费套餐拿不到合理到期时刻时**整行忽略、不下沉**到低优先级
+// 付费套餐——否则会把低档套餐的到期时间冒充成用户订阅的到期时间。这条钉住
+// codeBuddySubscription 里 `return nil`（而非 continue）的刻意选择：改回 continue
+// 不会让任何其他测试变红，但语义会静默漂移。
+func TestCodeBuddySubscriptionNoFallThroughToLowerPriorityPlan(t *testing.T) {
+	t.Parallel()
+
+	subscription := codeBuddySubscription([]map[string]any{
+		{
+			"PackageCode":      "TCACA_code_027_0FCGVA6vSa", // flagship，最高优先级
+			"PackageName":      "CodeBuddy旗舰版",
+			"DeductionEndTime": "not-a-time",
+			"CycleEndTime":     "",
+		},
+		{
+			"PackageCode":  "TCACA_code_002_AkiJS3ZHF5", // proMon，可解析
+			"PackageName":  "CodeBuddy专业版",
+			"CycleEndTime": "2026-12-01 08:00:00",
+		},
+	})
+	require.Nil(t, subscription, "旗舰版到期不可解析时不得拿专业版的到期顶上")
+}
+
+// Scenario: 上游 Dart 栈的零值/纪元**占位日期**能被 layout 成功解析（"0001-01-01
+// 00:00:00"、"1970-01-01 08:00:00"）——只判解析错误挡不住，会真的渲染出"到期
+// 1/1/1"。年份下界（codeBuddySubscriptionMinExpiryYear）把占位串当"不可解析"
+// 处理：链上有占位串时继续退下一键，全链只有占位串时整行不产出。
+func TestCodeBuddySubscriptionPlaceholderDatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("DeductionEndTime 是零值占位 → 退到 CycleEndTime", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": "0001-01-01 00:00:00",
+			"CycleEndTime":     "2026-12-01 08:00:00",
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-12-01T00:00:00Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+
+	t.Run("纪元占位串同样被拒", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": "1970-01-01 08:00:00",
+			"CycleEndTime":     "2026-12-01 08:00:00",
+		}})
+		require.NotNil(t, subscription)
+		require.Equal(t, "2026-12-01T00:00:00Z", subscription.ExpiresAt.UTC().Format(time.RFC3339))
+	})
+
+	t.Run("全链只有占位串 → 不产出订阅", func(t *testing.T) {
+		t.Parallel()
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":      "TCACA_code_002_AkiJS3ZHF5",
+			"DeductionEndTime": "0001-01-01 00:00:00",
+			"ExpiredTime":      "0001-01-01 00:00:00",
+			"CycleEndTime":     "1970-01-01 08:00:00",
+		}})
+		require.Nil(t, subscription, "占位日期不是到期时间，不得下发")
+	})
+}
+
+// Scenario: AutoRenewFlag 上游有数字与字符串两形态（官方客户端按 Number(...) 容忍
+// 两态），字符串 "1" 必须识别为自动续费、非 1 值（"0"/2/缺省）按非自动续费。
+func TestCodeBuddySubscriptionAutoRenewFlagStringForm(t *testing.T) {
+	t.Parallel()
+
+	subscription := codeBuddySubscription([]map[string]any{{
+		"PackageCode":   "TCACA_code_002_AkiJS3ZHF5",
+		"CycleEndTime":  "2026-12-01 08:00:00",
+		"AutoRenewFlag": "1",
+	}})
+	require.NotNil(t, subscription)
+	require.True(t, subscription.AutoRenew, `字符串 "1" 必须识别为自动续费`)
+
+	off := codeBuddySubscription([]map[string]any{{
+		"PackageCode":   "TCACA_code_002_AkiJS3ZHF5",
+		"CycleEndTime":  "2026-12-01 08:00:00",
+		"AutoRenewFlag": "0",
+	}})
+	require.NotNil(t, off)
+	require.False(t, off.AutoRenew)
+}
+
+// Scenario: 付费码集与官方 CommodityCode 枚举的**不变量**——官方枚举（提取件
+// renderer__assets__common-DmYVkoTi.js:23849-23871，共 20 码）必须恰好划分为
+// "付费订阅码（codeBuddyPaidSubscriptionCodes）"与"其余（非付费，逐码断言不产出
+// 订阅）"，不允许既不在付费列表又没被当非付费覆盖的码。上游枚举扩充时这条会
+// 以计数差不匹配的方式报警，而不是静默把新付费码归入非付费。
+func TestCodeBuddyPaidSubscriptionCodeSetInvariant(t *testing.T) {
+	t.Parallel()
+
+	official := map[string]bool{
+		"TCACA_code_001_PqouKr6QWV": true, // free
+		"TCACA_code_002_AkiJS3ZHF5": true, // proMon
+		"TCACA_code_003_FAnt7lcmRT": true, // proYear
+		"TCACA_code_005_maRGyrHhw1": true, // proMonPlus
+		"TCACA_code_006_DbXS0lrypC": true, // gift
+		"TCACA_code_007_nzdH5h4Nl0": true, // activity
+		"TCACA_code_008_cfWoLwvjU4": true, // freeMon
+		"TCACA_code_009_0XmEQc2xOf": true, // extra
+		"TCACA_code_023_4xbGhMrE6q": true, // youth
+		"TCACA_code_026_BaESVICNoi": true, // advanced
+		"TCACA_code_027_0FCGVA6vSa": true, // flagship
+		"TCACA_code_028_NtpWi0jzXs": true, // bonus28
+		"TCACA_code_029_6wCGEWquYy": true, // bonus29
+		"TCACA_code_030_BjSt89qTvr": true, // bonus30
+		"TCACA_code_035_ArVxJcGDsm": true, // freeMonIntl
+		"TCACA_code_036_lupO5WgNdG": true, // extraIntl
+		"TCACA_code_037_WxOD3MpI2o": true, // bonusIntl
+		"TCACA_code_038_OhvqZtiPKr": true, // extra38
+		"TCACA_code_039_KRcQj7wUat": true, // proTrialMon
+		"TCACA_code_040_mi9rCYg46x": true, // proTrialYear
+	}
+
+	paid := map[string]bool{}
+	for _, code := range codeBuddyPaidSubscriptionCodes {
+		require.False(t, paid[code], "付费码重复：%s", code)
+		require.True(t, official[code], "付费码不在官方枚举里（写错码？）：%s", code)
+		paid[code] = true
+	}
+
+	// 枚举的其余码全部按非付费处理：不产出订阅。
+	nonPaidCount := 0
+	for code := range official {
+		if paid[code] {
+			continue
+		}
+		nonPaidCount++
+		subscription := codeBuddySubscription([]map[string]any{{
+			"PackageCode":  code,
+			"CycleEndTime": "2026-12-01 08:00:00",
+		}})
+		require.Nil(t, subscription, "官方枚举里未被划入付费的码不得产出订阅（码 %s）", code)
+	}
+	require.Equal(t, len(official)-len(paid), nonPaidCount)
+	require.Equal(t, 6, len(paid), "付费码集是 6 档（flagship/advanced/youth/proMon/proMonPlus/proYear）")
+	require.Equal(t, 20, len(official), "官方枚举现值 20 码；上游扩充时请同步更新本测试与付费列表")
+}
+
 // Scenario: realm 分发的计费 base 与路径族（P0-3，**未经真机验证**）——
 // CN：www.codebuddy.cn + /v2/billing/meter/...（单候选）；
 // global：www.workbuddy.ai + 无 /v2 优先（两候选，404 回落）。
