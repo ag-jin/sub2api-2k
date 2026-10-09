@@ -134,30 +134,50 @@ func TestCodeBuddyCheckinAllSummarizesFourStates(t *testing.T) {
 
 // Scenario：跳过是"我们不发的"，不是"签到出错"——它**不得**计入 Failed。
 // 这条单独钉一遍，因为混在一起会让失败率虚高、掩盖真实故障。
+//
+// 2026-10-09 口径修正（spec `.scratch/codebuddy-task-eligibility/spec.md`）：
+// **停调 / 临时停调冷却不再挡签到**——可调度性是对话流量资格，签到是账号维护
+// 与收益动作（对齐 token 保活"停用是摘对话流量，不是冻结"的语义）；0 积分账号
+// 的签到更是唯一的回血解冻路径。只有**凭据缺失**仍跳过。
 func TestCodeBuddyCheckinAllSkipIsNotFailure(t *testing.T) {
 	stub := newCountingCheckinStub(func(_ string) (int, string) {
 		return http.StatusOK, `{"code":0,"data":{"credit":1,"streak_days":1}}`
 	})
 	server := newTestServerWith(t, stub)
 
-	// 停调账号（IsSchedulable=false）→ 应跳过而非失败。
+	// 手动停调（schedulable=false）→ 照常签到。
 	paused := codebuddyAccount(11, "paused")
 	paused.Schedulable = false
 
-	// 缺 token → 跳过。
-	noToken := codebuddyAccount(12, "no-token")
-	noToken.Credentials = map[string]any{"uid": "u12"}
+	// 临时停调冷却（0 积分门写块）→ 照常签到（签到正是解冻路径）。
+	zeroCredit := codebuddyAccount(12, "zero-credit")
+	zeroCredit.TempUnschedulableUntil = ptrTime(time.Now().Add(time.Hour))
+	zeroCredit.TempUnschedulableReason = "codebuddy_zero_credit"
 
-	repo := newCodebuddyAdminTestRepo(paused, noToken)
+	// 402 分级冷却（账号级冷却通道写块）→ 照常签到。
+	cooldown := codebuddyAccount(13, "cooldown")
+	cooldown.TempUnschedulableUntil = ptrTime(time.Now().Add(time.Hour))
+	cooldown.TempUnschedulableReason = "codebuddy_account_cooldown:402"
+
+	// 缺 token → 仍然跳过（凭据类判据保留）。
+	noToken := codebuddyAccount(14, "no-token")
+	noToken.Credentials = map[string]any{"uid": "u14"}
+
+	repo := newCodebuddyAdminTestRepo(paused, zeroCredit, cooldown, noToken)
 	svc := NewCodeBuddyAdminService(&codebuddyAdminStubAdmin{repo: repo, nextID: 100}, repo, nil).
 		WithTestBaseURL(server)
 
 	response, err := svc.CheckinAll(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, 2, response.Skipped)
+	require.Equal(t, 4, response.Total)
+	require.Equal(t, 3, response.Succeeded, "停调/临时停调账号照常签到")
+	require.Equal(t, 1, response.Skipped, "只剩缺 token 一条被跳过")
 	require.Zero(t, response.Failed, "跳过不得计入失败")
-	require.Zero(t, response.Succeeded)
-	require.Zero(t, stub.hitCount(), "全部跳过时不得发出任何上游请求")
+	require.Equal(t, 3, stub.hitCount(), "三个有凭据的账号都要发出上游请求")
+
+	require.Len(t, response.SkippedNotes, 1)
+	require.Equal(t, int64(14), response.SkippedNotes[0].AccountID)
+	require.Contains(t, response.SkippedNotes[0].Message, "access token")
 }
 
 // Scenario：无候选账号时返回零值汇总而不是 nil（调用方不必判空）。

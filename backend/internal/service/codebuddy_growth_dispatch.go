@@ -211,8 +211,10 @@ func codeBuddyGrowthTodayLocalDay() string {
 // ListCodeBuddyGrowthCandidates 列出成长链候选账号（含跳过标记）。
 //
 // 与签到/活跃上报候选同形（复用 `AccountRepository.ListByPlatform`，不新增仓储方法）。
-// 跳过判据：已停调 / 临时停调冷却中 / 缺 access token / 缺 uid。
-// 最后一条是 A5 的坑 1 教训：**缺 uid 的账号发上报必被静默丢弃**，
+// 跳过判据：缺 access token / 缺 uid —— 由 codeBuddyTaskSkipReason 统一给出
+// （**不再看可调度性**：已停调 / 临时停调冷却的账号照常做成长任务，见该 helper
+// 的口径说明；账号过期守卫也在其中）。
+// uid 判据是 A5 的坑 1 教训：**缺 uid 的账号发上报必被静默丢弃**，
 // 而成长链里夜猫子与领养都要发上报，所以在这里就标出来。
 func (s *CodeBuddyAdminService) ListCodeBuddyGrowthCandidates(
 	ctx context.Context,
@@ -236,16 +238,10 @@ func (s *CodeBuddyAdminService) ListCodeBuddyGrowthCandidates(
 		if !account.IsCodeBuddy() {
 			continue
 		}
-		candidate := codeBuddyGrowthCandidate{AccountID: account.ID, Name: account.Name}
-		switch {
-		case !account.IsSchedulable():
-			candidate.SkipReason = "账号已停调"
-		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
-			candidate.SkipReason = "账号处于临时停调冷却期"
-		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
-			candidate.SkipReason = "账号缺少 access token"
-		case strings.TrimSpace(account.GetCredential("uid")) == "":
-			candidate.SkipReason = "账号缺少 uid（需上报的通道会被上游静默丢弃）"
+		candidate := codeBuddyGrowthCandidate{
+			AccountID:  account.ID,
+			Name:       account.Name,
+			SkipReason: codeBuddyTaskSkipReason(account, now, "账号缺少 uid（需上报的通道会被上游静默丢弃）"),
 		}
 		candidates = append(candidates, candidate)
 		if len(candidates) >= limit {

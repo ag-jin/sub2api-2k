@@ -579,11 +579,49 @@ const (
 	codeBuddyCheckinBatchMaxAccounts = 500
 )
 
+// codeBuddyTaskSkipReason 计算三处**自动任务**候选（签到 / 成长链 / 活跃上报）
+// 共用的跳过原因；返回空串表示该账号可进入任务池。
+//
+// # 新口径（2026-10-09 修正，spec `.scratch/codebuddy-task-eligibility/spec.md`）
+//
+// 任务候选只看**凭据类**判据（缺 access token / 缺 uid）与**账号已过期**，
+// **不看可调度性**：`schedulable=false` 与 `TempUnschedulableUntil` 冷却（含
+// `codebuddy_zero_credit` 0 积分块、`codebuddy_account_cooldown:` 分级冷却块）
+// 是**对话流量资格**；签到/成长/活跃上报是账号维护与收益动作——与 token 保活
+// 「停用是摘对话流量，不是冻结」（见 codebuddy_token_keepalive.go 头注释）同一语义。
+// 0 积分账号被停调时签到更是**唯一的回血与解冻路径**（见 unfreezeAfterCheckin，
+// :491 一带）。
+//
+// 账号过期守卫的依据：`AutoPauseExpiredAccounts`（repository/account_repo.go:2708）
+// 到期只把 `schedulable` 置 FALSE，**从不改 `status`**；而 `ListByPlatform`
+// 只过滤 `platform + status='active'`，故已到期账号仍会出现在候选里。
+// `AutoPauseOnExpired=true` 表示 admin 明确设定"到期即退役"，这类号不该再签到，
+// 因此按 IsSchedulable 的同一过期判据保留一条守卫（admin 主动停用/删除的账号
+// 走 status，已被 repo 过滤）。
+//
+// uidReason 为空串表示该任务不需要 uid（签到）；非空时缺 uid 用该文案跳过
+// （成长与活跃上报各自保留原有文案）。
+func codeBuddyTaskSkipReason(account *Account, now time.Time, uidReason string) string {
+	if account.AutoPauseOnExpired && account.ExpiresAt != nil && !now.Before(*account.ExpiresAt) {
+		return "账号已过期"
+	}
+	if strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "" {
+		return "账号缺少 access token"
+	}
+	if uidReason != "" && strings.TrimSpace(account.GetCredential("uid")) == "" {
+		return uidReason
+	}
+	return ""
+}
+
 // ListCodeBuddyCheckinCandidates 列出签到候选账号（含跳过标记）。
 //
 // 复用既有的 AccountRepository.ListByPlatform（它已经只返回 StatusActive 账号），
 // 不新增仓储方法。候选一律返回，"不该发"的用 SkipReason 标出来而不是就地丢掉：
 // 调度的汇总需要如实反映"这个账号为什么没签上"。
+//
+// 跳过判据只保留凭据类 + 账号已过期（共用 codeBuddyTaskSkipReason）：
+// **已停调 / 临时停调冷却的账号照常签到**，见该 helper 的口径说明。
 func (s *CodeBuddyAdminService) ListCodeBuddyCheckinCandidates(ctx context.Context, limit int) ([]CodeBuddyCheckinCandidate, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, infraerrors.InternalServer("CODEBUDDY_ACCOUNT_REPO_UNAVAILABLE", "codebuddy account repository not configured")
@@ -603,14 +641,10 @@ func (s *CodeBuddyAdminService) ListCodeBuddyCheckinCandidates(ctx context.Conte
 		if !account.IsCodeBuddy() {
 			continue
 		}
-		candidate := CodeBuddyCheckinCandidate{AccountID: account.ID, Name: account.Name}
-		switch {
-		case !account.IsSchedulable():
-			candidate.SkipReason = "账号已停调"
-		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
-			candidate.SkipReason = "账号处于临时停调冷却期"
-		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
-			candidate.SkipReason = "账号缺少 access token"
+		candidate := CodeBuddyCheckinCandidate{
+			AccountID:  account.ID,
+			Name:       account.Name,
+			SkipReason: codeBuddyTaskSkipReason(account, now, ""),
 		}
 		candidates = append(candidates, candidate)
 		if len(candidates) >= limit {

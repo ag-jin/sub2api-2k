@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +23,9 @@ const codeBuddyActivityReportCount = 5
 // 但**多一条 uid 检查**：上报事件必须带 userId（= uid），缺失时上游 200 静默丢弃
 // （见 platform/codebuddy activity_report.go 文件头）。宁可在这里标 skipped，
 // 也不要发一个注定被丢弃的请求。
+//
+// 跳过判据由 codeBuddyTaskSkipReason 统一给出（凭据类 + 账号过期）：
+// **已停调 / 临时停调冷却的账号照常上报**，见该 helper 的口径说明。
 func (s *CodeBuddyAdminService) ListCodeBuddyActivityCandidates(ctx context.Context, limit int) ([]CodeBuddyCheckinCandidate, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, infraerrors.InternalServer("CODEBUDDY_ACCOUNT_REPO_UNAVAILABLE", "codebuddy account repository not configured")
@@ -43,17 +45,10 @@ func (s *CodeBuddyAdminService) ListCodeBuddyActivityCandidates(ctx context.Cont
 		if !account.IsCodeBuddy() {
 			continue
 		}
-		candidate := CodeBuddyCheckinCandidate{AccountID: account.ID, Name: account.Name}
-		switch {
-		case !account.IsSchedulable():
-			candidate.SkipReason = "账号已停调"
-		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
-			candidate.SkipReason = "账号处于临时停调冷却期"
-		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
-			candidate.SkipReason = "账号缺少 access token"
-		case strings.TrimSpace(account.GetCredential("uid")) == "":
-			// uid 缺失 = 事件必被静默丢弃，直接跳过（坑 1 的前置拦截）。
-			candidate.SkipReason = "账号缺少 uid（上报必被上游静默丢弃）"
+		candidate := CodeBuddyCheckinCandidate{
+			AccountID:  account.ID,
+			Name:       account.Name,
+			SkipReason: codeBuddyTaskSkipReason(account, now, "账号缺少 uid（上报必被上游静默丢弃）"),
 		}
 		candidates = append(candidates, candidate)
 		if len(candidates) >= limit {
