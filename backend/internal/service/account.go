@@ -1838,6 +1838,11 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 		return a.GetCredential("api_key")
 	}
 	if a.IsCodeBuddy() && a.Type == AccountTypeAPIKey {
+		// 「API 线路」账号（credentials.api_key 非空）出站 Bearer 是 api_key；
+		// 腾讯 auth JSON 账号维持 access_token。
+		if a.IsCodeBuddyAPIMode() {
+			return a.GetCredential("api_key")
+		}
 		return a.GetCredential("access_token")
 	}
 	return a.GetOpenAIApiKey()

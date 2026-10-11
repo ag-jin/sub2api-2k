@@ -99,3 +99,15 @@ func TestRedactCredentials_AllKnownSensitiveKeys(t *testing.T) {
 		require.True(t, status["has_"+k], "key %s 应在 status 中标记为已配置", k)
 	}
 }
+
+// CodeBuddy「API 线路」账号的凭据在 admin 视图同样不得回显 api_key：
+// 只保留 base_url 等非敏感键 + has_api_key 状态位（与 anthropic apikey 同口径）。
+func TestRedactCredentials_CodeBuddyAPIModeMasksAPIKey(t *testing.T) {
+	out, status := RedactCredentials(map[string]any{
+		"api_key":  "sk-relay",
+		"base_url": "http://relay.example/v1",
+	})
+	require.NotContains(t, out, "api_key")
+	require.Equal(t, "http://relay.example/v1", out["base_url"])
+	require.True(t, status["has_api_key"])
+}

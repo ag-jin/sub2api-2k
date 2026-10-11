@@ -474,7 +474,13 @@ func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Cont
 // 强制 stream=true + developer→system + 专用身份头）向真实上游发一个最小流式请求，
 // 断言 200 即视为连通；非 200 时错误信息透出上游 code/msg。与真实转发
 // openai_gateway_cc_pipeline.go（IsCodeBuddy 分支）保持同一端点/头/体约束。
+//
+// 「API 线路」账号（credentials.api_key 非空）走中转的 OpenAI 协议探测，见
+// testCodeBuddyAPIModeConnection。
 func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	if account.IsCodeBuddyAPIMode() {
+		return s.testCodeBuddyAPIModeConnection(c, account)
+	}
 	ctx := c.Request.Context()
 	testModelID := strings.TrimSpace(modelID)
 	if testModelID == "" {
@@ -580,6 +586,69 @@ func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Ac
 	}
 
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
+}
+
+// testCodeBuddyAPIModeConnection 探测「API 线路」账号的连通性：GET {base_url}/models
+// （Bearer=api_key），HTTP 200 即视为连通。中转实测支持该端点，且不实现腾讯的
+// /v2/chat/completions，故此处不能沿用腾讯探测口径。
+func (s *AccountTestService) testCodeBuddyAPIModeConnection(c *gin.Context, account *Account) error {
+	ctx := c.Request.Context()
+	authToken := strings.TrimSpace(account.GetCredential("api_key"))
+	if authToken == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		return s.sendErrorAndEnd(c, "No base URL available for CodeBuddy API account")
+	}
+	apiURL, err := s.validateUpstreamBaseURL(strings.TrimRight(baseURL, "/") + CodeBuddyAPIModelsPath)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+	s.sendEvent(c, TestEvent{Type: "test_start"})
+	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过 /models 测试连接"})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create CodeBuddy API request")
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	account.ApplyHeaderOverrides(req.Header)
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/models) request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		detail := strings.TrimSpace(string(body))
+		// 中转多为 OpenAI 错误信封（{"error":{"message":...}}），优先透出 message。
+		if msg := gjson.Get(detail, "error.message").String(); msg != "" {
+			detail = "error=" + msg
+		}
+		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/models) returned %d: %s", resp.StatusCode, detail))
+	}
+	text := "CodeBuddy API 线路连通（/models 返回 200）"
+	if models := len(gjson.Get(string(body), "data").Array()); models > 0 {
+		text = fmt.Sprintf("CodeBuddy API 线路连通（/models 返回 %d 个模型）", models)
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: text})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection

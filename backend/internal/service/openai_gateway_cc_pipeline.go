@@ -160,8 +160,23 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 // openAIChatCompletionsTargetURL 解析账号的（非 Grok）Chat Completions 上游端点。
 func (s *OpenAIGatewayService) openAIChatCompletionsTargetURL(account *Account) (string, error) {
 	baseURL := account.GetOpenAIBaseURL()
-	// CodeBuddy 的对话端点为 /v2/chat/completions（非 /v1），见 account_codebuddy.go。
+	// CodeBuddy 有两种线路：API 线路（credentials.api_key 非空，自定义 base_url
+	// 指向 OpenAI 兼容中转）打 /chat/completions；腾讯 auth JSON 账号打
+	// /v2/chat/completions（见 account_codebuddy.go）。
 	if account != nil && account.IsCodeBuddy() {
+		if account.IsCodeBuddyAPIMode() {
+			// API 线路必须显式配置 base_url：GetOpenAIBaseURL 的腾讯默认域对中转
+			// 账号是错误目标，且会把中转 api_key 发去腾讯域，故缺失即失败。
+			apiBaseURL := strings.TrimSpace(account.GetCredential("base_url"))
+			if apiBaseURL == "" {
+				return "", fmt.Errorf("invalid base_url: codebuddy api account %d requires base_url", account.ID)
+			}
+			validated, err := s.validateUpstreamBaseURL(strings.TrimRight(apiBaseURL, "/") + CodeBuddyAPIChatCompletionsPath)
+			if err != nil {
+				return "", fmt.Errorf("invalid base_url: %w", err)
+			}
+			return validated, nil
+		}
 		if baseURL == "" {
 			baseURL = DefaultCodeBuddyBaseURL
 		}

@@ -20,6 +20,13 @@ import (
 // CodeBuddyChatCompletionsPath CodeBuddy 的 Chat Completions 端点路径（v2，非 v1）。
 const CodeBuddyChatCompletionsPath = "/v2/chat/completions"
 
+// CodeBuddyAPIChatCompletionsPath「API 线路」账号的对话端点路径：中转为 OpenAI
+// 协议（base_url 自带 /v1），不是腾讯的 /v2/chat/completions。
+const CodeBuddyAPIChatCompletionsPath = "/chat/completions"
+
+// CodeBuddyAPIModelsPath「API 线路」账号的模型列表/连通性探测端点路径。
+const CodeBuddyAPIModelsPath = "/models"
+
 // codeBuddyTokenRefreshPath CodeBuddy 的 token 刷新端点路径。
 const codeBuddyTokenRefreshPath = "/v2/plugin/auth/token/refresh"
 
@@ -65,7 +72,9 @@ func CodeBuddyStaticModelIDs() []string {
 
 // codeBuddyPreservableConfigKeys 非 token 类、允许保留的管理员配置键。
 var codeBuddyPreservableConfigKeys = []string{
-	"base_url", "model_mapping",
+	// api_key 非空 = 「API 线路」账号（自定义 base_url 指向 OpenAI 兼容中转，
+	// 出站 Bearer=api_key，见 IsCodeBuddyAPIMode）；auth JSON 账号不携带该键。
+	"api_key", "base_url", "model_mapping",
 	"header_override_enabled", "header_overrides",
 	"expires_in", "refresh_expires_in", "refresh_expires_at", "last_refresh_time",
 	// 出站头规范化的账号级覆盖（见 codebuddy_upstream_identity.go）：
@@ -256,6 +265,20 @@ func BuildCodeBuddyRefreshedCredentials(nowMs int64, domain string, data map[str
 }
 
 // --- CodeBuddy credential accessors ---
+
+// IsCodeBuddyAPIMode 报告账号是否走「API 线路」模式：platform=codebuddy 且
+// credentials.api_key 非空。
+//
+// API 线路账号的自定义 base_url 指向 OpenAI 兼容中转，出站走
+// POST {base}/chat/completions、GET {base}/models，Bearer=api_key；腾讯
+// auth JSON 账号（access_token/refresh_token）链路保持原样。判定只认 api_key：
+// auth JSON 归一化不会产生该键，故两种模式天然互斥。
+func (a *Account) IsCodeBuddyAPIMode() bool {
+	if a == nil || a.Platform != PlatformCodeBuddy {
+		return false
+	}
+	return strings.TrimSpace(a.GetCredential("api_key")) != ""
+}
 
 // GetCodeBuddyAccessToken 返回刷新后的访问令牌（credentials.access_token）。
 func (a *Account) GetCodeBuddyAccessToken() string {
