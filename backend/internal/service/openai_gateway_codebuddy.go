@@ -295,7 +295,9 @@ func aggregateCodeBuddyCCResponseWithFallback(r io.Reader, fallbackModel string)
 
 // handleCodeBuddyAccountUpstreamError 登记 CodeBuddy 账号对确认性 401/403 的错误态。
 // 上游 401 的“重读 DB 凭据→重试一次”兜底已由 sendCCUpstreamRequest 包装实现；
-// 重试仍被拒绝（或 token 未变化）时走到这里：判死 → StatusError + 提示重录。
+// 重试仍被拒绝（或 token 未变化）时走到这里：判死 → StatusError + 提示修复凭据
+// （文案按线路模式分流：腾讯 auth JSON 账号提示重录 auth JSON；API 线路账号提示
+// 替换 credentials.api_key——它没有 auth JSON 可重录）。
 // 上游业务码命中码表时（A4，仅管理面），ErrorMessage 追加可读说明；
 // 网关客户端 message 不改（精确匹配资产）。
 func (s *OpenAIGatewayService) handleCodeBuddyAccountUpstreamError(ctx context.Context, account *Account, statusCode int, upstreamMsg string, upstreamBizCode ...int) {
@@ -309,9 +311,13 @@ func (s *OpenAIGatewayService) handleCodeBuddyAccountUpstreamError(ctx context.C
 	if len(upstreamBizCode) > 0 {
 		bizCode = upstreamBizCode[0]
 	}
+	hint := "re-import the auth JSON on the account"
+	if account.IsCodeBuddyAPIMode() {
+		hint = "replace credentials.api_key on the account"
+	}
 	message := fmt.Sprintf(
-		"CodeBuddy credentials rejected by upstream (HTTP %d)%s%s — re-import the auth JSON on the account",
-		statusCode, codeBuddyRedactedMessage(upstreamMsg), codeBuddyBizCodeSuffix(bizCode),
+		"CodeBuddy credentials rejected by upstream (HTTP %d)%s%s — %s",
+		statusCode, codeBuddyRedactedMessage(upstreamMsg), codeBuddyBizCodeSuffix(bizCode), hint,
 	)
 	if err := s.accountRepo.SetError(ctx, account.ID, message); err != nil {
 		logger.L().Warn("codebuddy account error state persist failed",

@@ -67,8 +67,15 @@ func clampCodeBuddyUsageReset(resetAt, now time.Time) time.Time {
 // TriggerCodeBuddyModelUsageLimit 把 (账号, 该模型) 停调到 6004 重置时刻。
 // 返回 ok=false 表示未识别（调用方继续通用错误链）；ok=true 表示调用方应
 // 立即 failover 当前请求。持久化失败仍返回 true：绝不把请求放回同一账号。
+//
+// 「API 线路」账号（credentials.api_key 非空）直接返回 false：6004 是腾讯平台
+// 的业务码，对其触发只会写入无根据的 (账号,模型) 停调（最长 24h）。与
+// ApplyCodeBuddyBizCodeCooldown / TriggerCodeBuddyAccountCooldown 的跳过一致。
 func (s *RateLimitService) TriggerCodeBuddyModelUsageLimit(ctx context.Context, account *Account, model string, statusCode int, responseBody []byte) (time.Time, bool) {
 	if s == nil || s.accountRepo == nil || account == nil || !account.IsCodeBuddy() || model == "" {
+		return time.Time{}, false
+	}
+	if account.IsCodeBuddyAPIMode() {
 		return time.Time{}, false
 	}
 	parsedAt, ok := ParseCodeBuddyModelUsageLimit(statusCode, responseBody)

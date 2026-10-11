@@ -591,6 +591,9 @@ func (s *AccountTestService) testCodeBuddyConnection(c *gin.Context, account *Ac
 // testCodeBuddyAPIModeConnection 探测「API 线路」账号的连通性：GET {base_url}/models
 // （Bearer=api_key），HTTP 200 即视为连通。中转实测支持该端点，且不实现腾讯的
 // /v2/chat/completions，故此处不能沿用腾讯探测口径。
+//
+// 停顿守卫与 testCodeBuddyConnection 同款且同样不可省略：本路径标 OpenAI profile
+// （responseHeaderTimeout=0），中转「接住连接不吐数据」时会无限挂着，面板只能干等。
 func (s *AccountTestService) testCodeBuddyAPIModeConnection(c *gin.Context, account *Account) error {
 	ctx := c.Request.Context()
 	authToken := strings.TrimSpace(account.GetCredential("api_key"))
@@ -627,13 +630,46 @@ func (s *AccountTestService) testCodeBuddyAPIModeConnection(c *gin.Context, acco
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+
+	// 上游等待与读取都必须有上限（同 testCodeBuddyConnection 的守卫模式，关键顺序
+	// 也一致）：守卫必须在 DoWithTLS **之前**建立——「等响应头」阶段一旦停顿立即
+	// cancel 上游 ctx，DoWithTLS 随之返回；读取阶段守卫包在响应体上刷新计时。
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	defer stallCancel()
+	stallIdle := s.accountTestStallTimeout()
+	stallGuard := newUpstreamStallGuard(stallCtx, stallIdle, stallCancel)
+	defer stallGuard.stop()
+	req = req.WithContext(stallCtx)
+
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		if stallGuard.Fired() && ctx.Err() == nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf(
+				"CodeBuddy API (/models) 上游 %s 内未返回响应头（已中止，避免无限等待）",
+				stallIdle.Round(time.Second)))
+		}
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf(
+				"CodeBuddy API (/models) 上游在 %s 内未返回响应（已中止，避免无限等待）",
+				stallIdle.Round(time.Second)))
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/models) request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// 响应头已到达即视为一次真实产出，重置空闲计时后再进入读取阶段。
+	stallGuard.touch()
+	resp.Body = stallGuard.wrap(resp.Body)
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		if stallGuard.Fired() && ctx.Err() == nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf(
+				"CodeBuddy API (/models) 上游 %s 内未返回数据（已中止，避免无限等待）",
+				stallIdle.Round(time.Second)))
+		}
+		return s.sendErrorAndEnd(c, fmt.Sprintf("CodeBuddy API (/models) failed to read response: %s", readErr.Error()))
+	}
 	if resp.StatusCode != http.StatusOK {
 		detail := strings.TrimSpace(string(body))
 		// 中转多为 OpenAI 错误信封（{"error":{"message":...}}），优先透出 message。

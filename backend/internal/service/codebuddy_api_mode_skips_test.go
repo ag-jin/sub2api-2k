@@ -210,3 +210,24 @@ func TestApplyCodeBuddyBizCodeCooldown_SkipsAPIMode(t *testing.T) {
 	assert.False(t, handled, "API 线路账号不套用腾讯业务码冷却")
 	assert.False(t, repo.called)
 }
+
+// 6004（模型用量超限）同样只属腾讯平台：API 线路账号命中 429+`{"code":6004}`
+// 不得写入 (账号,模型) 级停调（否则最长 24h 无根据停调中转账号的该模型）。
+func TestTriggerCodeBuddyModelUsageLimit_SkipsAPIMode(t *testing.T) {
+	repo := &codeBuddyUsageLimitRepoStub{}
+	rls := &RateLimitService{accountRepo: repo}
+
+	api := apiModeAccount(nil)
+	_, ok := rls.TriggerCodeBuddyModelUsageLimit(context.Background(), api, "deepseek-v4.1-flash",
+		http.StatusTooManyRequests, []byte(codeBuddyUsageLimitBodyFixture))
+	assert.False(t, ok, "API 线路账号不得触发腾讯 6004 模型级停调")
+	assert.Empty(t, repo.modelRateLimited, "不得写入 (账号,模型) 级停调")
+
+	// 对照：腾讯 auth JSON 账号照常按 (账号,模型) 停调（行为不变的回归锚点）。
+	oauth := &Account{ID: 802, Platform: PlatformCodeBuddy, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"access_token": "at"}}
+	_, ok = rls.TriggerCodeBuddyModelUsageLimit(context.Background(), oauth, "deepseek-v4.1-flash",
+		http.StatusTooManyRequests, []byte(codeBuddyUsageLimitBodyFixture))
+	require.True(t, ok, "腾讯 auth JSON 账号 6004 仍按 (账号,模型) 停调")
+	assert.Len(t, repo.modelRateLimited, 1)
+}

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,4 +87,93 @@ func TestAccountTestService_CodeBuddyAPIMode_ModelsProbeNon200Fails(t *testing.T
 	out := rec.Body.String()
 	assert.Contains(t, out, "returned 401", "应透出上游状态码")
 	assert.Contains(t, out, "invalid api key", "应透出上游错误信息")
+}
+
+// ── 停顿守卫（与 testCodeBuddyConnection 同款，见
+// account_test_service_codebuddy_test.go 的断流修复回归 F）─────────────────
+//
+// API 线路探测走 GET /models（OpenAI profile：responseHeaderTimeout=0）。中转
+// 「接住连接但不吐数据」时，若没有停顿守卫，面板会无限干等。下面两条分别锁定
+// 两个停顿阶段：响应头已发但永久静默（读取阶段）、以及一个字节都不回（等响应头
+// 阶段）——后者正是生产事故的报错形态。
+
+// apiModeTestAccount 构造指向 fake 上游的 API 线路账号。
+func apiModeTestAccount(id int64, baseURL string) *Account {
+	return &Account{
+		ID:       id,
+		Platform: PlatformCodeBuddy,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-relay",
+			"base_url": baseURL,
+		},
+	}
+}
+
+// runCodeBuddyTestBounded 在后台跑连通测试，断言在 30s 内返回（上游静默时
+// 守卫未生效则无限挂起——这正是用户看到「点了没反应」的形态）。
+func runCodeBuddyTestBounded(t *testing.T, svc *AccountTestService, c *gin.Context, accountID int64) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- svc.TestAccountConnection(c, accountID, "", "hi", "") }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("API 线路测连通在上游静默时无限挂起——面板会一直等到用户放弃")
+	}
+}
+
+func TestAccountTestService_CodeBuddyAPIMode_StalledUpstreamIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// 响应头已发出，此后永久静默：不产字节、不结束。
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	account := apiModeTestAccount(803, srv.URL+"/v1")
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamDataIntervalTimeout = 1 // 1s 空闲即判定停顿（绕过校验边界，直测行为）
+	svc := newCodeBuddyTestServiceWithConfig(account, cfg)
+
+	c, rec := newTestContext()
+	runCodeBuddyTestBounded(t, svc, c, account.ID)
+
+	out := rec.Body.String()
+	require.Contains(t, out, `"type":"error"`,
+		"必须以可见 error 事件收尾，而不是静默结束；实际输出: %s", out)
+	require.Contains(t, out, "上游",
+		"错误文案应说明是上游未产生数据，而不是笼统 context canceled；实际输出: %s", out)
+	assert.NotContains(t, out, `"success":true`,
+		"上游未产出任何数据时不得误报成功；实际输出: %s", out)
+}
+
+func TestAccountTestService_CodeBuddyAPIMode_HeaderStallIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 接住连接但一个字节都不回：卡在「等响应头」阶段（生产事故形态）。
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	account := apiModeTestAccount(804, srv.URL+"/v1")
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.StreamDataIntervalTimeout = 1
+	svc := newCodeBuddyTestServiceWithConfig(account, cfg)
+
+	c, rec := newTestContext()
+	runCodeBuddyTestBounded(t, svc, c, account.ID)
+
+	out := rec.Body.String()
+	require.Contains(t, out, `"type":"error"`,
+		"必须以可见 error 事件收尾；实际输出: %s", out)
+	assert.Contains(t, out, "未返回响应头",
+		"错误文案应归因为上游未返回响应头；实际输出: %s", out)
 }
