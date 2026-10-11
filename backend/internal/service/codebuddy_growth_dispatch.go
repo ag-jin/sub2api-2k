@@ -14,6 +14,10 @@ import (
 var errCodeBuddyGrowthRepoUnavailable = infraerrors.InternalServer(
 	"CODEBUDDY_GROWTH_REPO_UNAVAILABLE", "codebuddy account repository not configured")
 
+// codeBuddyGrowthAPIModeUnsupported API 线路账号（credentials.api_key）不参与
+// 腾讯成长链：所有通道都打腾讯域，对中转账号是纯噪声。
+const codeBuddyGrowthAPIModeUnsupported = "API 线路账号不支持腾讯成长链任务"
+
 // 成长链的**通道分发**（A6 批 P5）：把"跑哪些通道"翻译成具体动作调用。
 //
 // ## 分级在这里的落点
@@ -64,6 +68,11 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannels(
 	summary := CodeBuddyGrowthAccountSummary{}
 	if s == nil || account == nil || !account.IsCodeBuddy() {
 		summary.Error = "not a codebuddy account"
+		return summary
+	}
+	// API 线路账号没有腾讯成长链身份（全部通道都打腾讯域），整体跳过。
+	if account.IsCodeBuddyAPIMode() {
+		summary.Error = codeBuddyGrowthAPIModeUnsupported
 		return summary
 	}
 	summary.AccountID = account.ID
@@ -242,6 +251,8 @@ func (s *CodeBuddyAdminService) ListCodeBuddyGrowthCandidates(
 			candidate.SkipReason = "账号已停调"
 		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
 			candidate.SkipReason = "账号处于临时停调冷却期"
+		case account.IsCodeBuddyAPIMode():
+			candidate.SkipReason = "API 线路账号不支持腾讯成长链任务"
 		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
 			candidate.SkipReason = "账号缺少 access token"
 		case strings.TrimSpace(account.GetCredential("uid")) == "":

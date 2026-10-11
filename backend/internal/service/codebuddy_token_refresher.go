@@ -75,8 +75,10 @@ func (r *CodeBuddyTokenRefresher) CacheKey(account *Account) string {
 
 // CanRefresh 报告账号是否能由本刷新器处理：codebuddy 的 auth JSON 账号为
 // AccountTypeAPIKey（非 OAuth），凭是否存在 refresh_token 判定。
+// 「API 线路」账号（credentials.api_key）**无条件**跳过：其 base_url 指向
+// OpenAI 兼容中转，刷新侧打的是腾讯 /v2/plugin/auth/token/refresh。
 func (r *CodeBuddyTokenRefresher) CanRefresh(account *Account) bool {
-	return account != nil && account.IsCodeBuddy() &&
+	return account != nil && account.IsCodeBuddy() && !account.IsCodeBuddyAPIMode() &&
 		strings.TrimSpace(account.GetCodeBuddyRefreshToken()) != ""
 }
 
@@ -101,7 +103,7 @@ const CodeBuddyAccessTokenRefreshWindow = 3 * 24 * time.Hour
 // 窗口按平台取：CodeBuddy 用 CodeBuddyAccessTokenRefreshWindow，其余平台沿用
 // 传入的全局窗口（凭据寿命不同，不能共用一个窗口）。
 func (r *CodeBuddyTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
-	if account == nil || strings.TrimSpace(account.GetCodeBuddyRefreshToken()) == "" {
+	if account == nil || account.IsCodeBuddyAPIMode() || strings.TrimSpace(account.GetCodeBuddyRefreshToken()) == "" {
 		return false
 	}
 	if strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "" {

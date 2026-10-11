@@ -52,6 +52,8 @@ var (
 	errCodeBuddyActivityInvalidAccount = errors.New("codebuddy activity: account is not a codebuddy account")
 	errCodeBuddyActivityMissingUID     = errors.New("codebuddy activity: account uid missing (upstream would silently drop the event)")
 	errCodeBuddyActivityMissingToken   = errors.New("codebuddy activity: account has no access token")
+	// API 线路账号（credentials.api_key）不做腾讯活跃上报。
+	errCodeBuddyActivityAPIModeUnsupported = errors.New("codebuddy activity: API 线路账号不支持腾讯活跃上报")
 )
 
 // gjsonGetInt 从上游响应里取整数字段（缺失返回 0）。
@@ -104,6 +106,11 @@ func (s *CodeBuddyAdminService) ReportCodeBuddyActivity(
 	result := CodeBuddyActivityReportResult{Expected: count}
 	if s == nil || account == nil || !account.IsCodeBuddy() {
 		result.Err = errCodeBuddyActivityInvalidAccount
+		return result
+	}
+	// API 线路账号没有腾讯身份（uid/access_token 是腾讯侧概念），上报必是噪声。
+	if account.IsCodeBuddyAPIMode() {
+		result.Err = errCodeBuddyActivityAPIModeUnsupported
 		return result
 	}
 	result.AccountID = account.ID

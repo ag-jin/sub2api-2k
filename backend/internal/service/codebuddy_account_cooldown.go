@@ -47,6 +47,11 @@ func (s *RateLimitService) triggerCodeBuddyAccountCooldown(
 	if s == nil || s.accountRepo == nil || acct == nil || !acct.IsCodeBuddy() {
 		return time.Time{}, false
 	}
+	// 「API 线路」账号不套用腾讯计费语义（402/14018 积分耗尽、404 路由抖动）：
+	// 中转的错误码与腾讯码表无关，通用错误处理照旧（本函数之外）。
+	if acct.IsCodeBuddyAPIMode() {
+		return time.Time{}, false
+	}
 	quotaExhausted := statusCode == http.StatusPaymentRequired ||
 		(len(body) > 0 && gjson.GetBytes(body, "code").Int() == codeBuddyBizCodeQuotaExhausted)
 

@@ -150,6 +150,11 @@ func (s *CodeBuddyAdminService) ApplyCodeBuddyBizCodeCooldown(
 	if s == nil || s.accountRepo == nil || account == nil || !account.IsCodeBuddy() {
 		return false
 	}
+	// 「API 线路」账号不套用腾讯业务码（14018 积分耗尽 / 11140 / 14017 / 6004）：
+	// 中转的错误码与腾讯码表无关，冷却会变成无根据的停调。
+	if account.IsCodeBuddyAPIMode() {
+		return false
+	}
 	decision := CodeBuddyBizCodeCooldown(bizCode)
 	if !decision.Handled {
 		return false

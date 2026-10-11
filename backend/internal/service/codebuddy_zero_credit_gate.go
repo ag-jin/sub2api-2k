@@ -299,8 +299,13 @@ func (s *CodeBuddyZeroCreditGate) clearProbeBackoff(accountID int64) {
 
 // codeBuddyZeroCreditProbeTarget 本门可探测的账号形态：codebuddy + active +
 // 有 access token。无 token 时探测必然失败，直接跳过（不浪费一次出站）。
+// 「API 线路」账号（credentials.api_key）不在内：没有腾讯积分可查，探测只会
+// 拿着中转 key 打腾讯计费域。
 func codeBuddyZeroCreditProbeTarget(account *Account) bool {
 	if account == nil || !account.IsCodeBuddy() || !account.IsActive() {
+		return false
+	}
+	if account.IsCodeBuddyAPIMode() {
 		return false
 	}
 	return strings.TrimSpace(account.GetCodeBuddyAccessToken()) != ""

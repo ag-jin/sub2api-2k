@@ -521,8 +521,12 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 
 	// CodeBuddy 平台：缺失 Credits fetcher 时保持原有 "不支持用量查询" 语义
 	// 显式短路，避免落入 getUpstreamBalance 用空 api_key 向 {base}/usage 发
-	// 无意义请求。
+	// 无意义请求。「API 线路」账号（credentials.api_key）同理短路：没有腾讯
+	// 积分可查，查询会拿着中转 key 打腾讯计费域。
 	if account.IsCodeBuddy() {
+		if account.IsCodeBuddyAPIMode() {
+			return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", "codebuddy API 线路账号不支持腾讯积分查询")
+		}
 		if s.codebuddyCreditsFetcher == nil {
 			return nil, infraerrors.BadRequest("USAGE_UNSUPPORTED", fmt.Sprintf("account type %s does not support usage query", account.Type))
 		}

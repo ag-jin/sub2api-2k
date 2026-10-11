@@ -49,6 +49,8 @@ func (s *CodeBuddyAdminService) ListCodeBuddyActivityCandidates(ctx context.Cont
 			candidate.SkipReason = "账号已停调"
 		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
 			candidate.SkipReason = "账号处于临时停调冷却期"
+		case account.IsCodeBuddyAPIMode():
+			candidate.SkipReason = "API 线路账号不支持腾讯活跃上报"
 		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
 			candidate.SkipReason = "账号缺少 access token"
 		case strings.TrimSpace(account.GetCredential("uid")) == "":

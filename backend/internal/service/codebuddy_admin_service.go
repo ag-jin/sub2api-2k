@@ -433,6 +433,11 @@ func (s *CodeBuddyAdminService) Checkin(ctx context.Context, accountID int64) (*
 		return nil, infraerrors.BadRequest("CODEBUDDY_CHECKIN_PLATFORM_UNSUPPORTED",
 			"account is not a codebuddy account")
 	}
+	// API 线路账号（credentials.api_key）没有腾讯计费域凭据，签到是纯噪声请求。
+	if account.IsCodeBuddyAPIMode() {
+		return nil, infraerrors.BadRequest("CODEBUDDY_CHECKIN_API_MODE_UNSUPPORTED",
+			"codebuddy API 线路账号不支持签到（无腾讯计费域凭据）")
+	}
 	accessToken := account.GetCodeBuddyAccessToken()
 	if accessToken == "" {
 		return nil, infraerrors.BadRequest("CODEBUDDY_CHECKIN_NO_TOKEN",
@@ -507,6 +512,10 @@ func (s *CodeBuddyAdminService) unfreezeAfterCheckin(
 // 未注入 fetcher 时返回 ok=false（解冻判定跳过，而不是误判为 0 分）。
 func (s *CodeBuddyAdminService) queryCodeBuddyCreditsRemain(ctx context.Context, account *Account) (float64, bool) {
 	if s == nil || s.creditsFetcher == nil || account == nil {
+		return 0, false
+	}
+	// API 线路账号没有腾讯积分，查余额会打错域（且凭据是中转 key）。
+	if account.IsCodeBuddyAPIMode() {
 		return 0, false
 	}
 	token := account.GetCodeBuddyAccessToken()
@@ -609,6 +618,8 @@ func (s *CodeBuddyAdminService) ListCodeBuddyCheckinCandidates(ctx context.Conte
 			candidate.SkipReason = "账号已停调"
 		case account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil):
 			candidate.SkipReason = "账号处于临时停调冷却期"
+		case account.IsCodeBuddyAPIMode():
+			candidate.SkipReason = "API 线路账号不支持腾讯签到"
 		case strings.TrimSpace(account.GetCodeBuddyAccessToken()) == "":
 			candidate.SkipReason = "账号缺少 access token"
 		}

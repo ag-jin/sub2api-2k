@@ -64,6 +64,12 @@ func (s *CodeBuddyAdminService) RunCodeBuddyGrowthChannelNow(
 		result.Error = "not a codebuddy account"
 		return result
 	}
+	// API 线路账号没有腾讯成长链身份：所有通道都打腾讯域，手动入口同样拒绝
+	// （给出明确原因，而不是让人以为执行了）。
+	if account.IsCodeBuddyAPIMode() {
+		result.Error = codeBuddyGrowthAPIModeUnsupported
+		return result
+	}
 	// 聚合键先判：`travel` 是**业务域聚合键**，不在通道规格表里
 	// （`CodeBuddyGrowthChannelSpecByKey` 查不到它），所以必须放在规格查询**之前**，
 	// 否则永远落到下面的泛化 "unknown growth channel" 分支，
