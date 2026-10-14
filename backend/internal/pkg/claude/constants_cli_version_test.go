@@ -15,6 +15,14 @@ import (
 //	"Claude Code <ver> does not support this model; version 2.1.251 or newer is required."
 const fable51MinCLIVersion = "2.1.251"
 
+// opus55MinCLIVersion 是上游对 claude-opus-5-5 的客户端版本闸门下限。
+// 低于该版本时上游直接 400（2026-10-14 生产实测，账号 517，ops_error_logs
+// 123475-77）：
+//
+//	invalid_request
+//	"Claude Code <ver> does not support this model; version 2.1.280 or newer is required."
+const opus55MinCLIVersion = "2.1.280"
+
 // TestCLICurrentVersionMatchesDefaultUserAgent 锁定"常量与 UA 同源"这条约束。
 // 两者不一致会被 Anthropic 判为第三方客户端，且只改一处是历史上的常见疏漏，
 // 所以这里从 UA 里反解版本号来比对，而不是并列两个字面量。
@@ -43,6 +51,18 @@ func TestCLICurrentVersionSatisfiesFable51Gate(t *testing.T) {
 	require.GreaterOrEqual(t, compareSemver(t, CLICurrentVersion, fable51MinCLIVersion), 0,
 		"CLICurrentVersion %s is below the claude-fable-5-1 gate %s",
 		CLICurrentVersion, fable51MinCLIVersion)
+}
+
+// TestCLICurrentVersionSatisfiesOpus55Gate 锁定伪装版本不低于 claude-opus-5-5
+// 的闸门下限。anthropic OAuth 账号 + 非 Claude Code 客户端（ZCode 等）走 mimic
+// 路径时出站 UA 即该基线，低于闸门则此类客户端对新模型全部 400
+// （未修复基线 2.1.258 在生产实测命中此 400，即本测试的 A 侧证据）。
+func TestCLICurrentVersionSatisfiesOpus55Gate(t *testing.T) {
+	t.Parallel()
+
+	require.GreaterOrEqual(t, compareSemver(t, CLICurrentVersion, opus55MinCLIVersion), 0,
+		"CLICurrentVersion %s is below the claude-opus-5-5 gate %s",
+		CLICurrentVersion, opus55MinCLIVersion)
 }
 
 // compareSemver 比较两个三段 semver，返回 -1 / 0 / 1。
