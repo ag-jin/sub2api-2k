@@ -113,6 +113,14 @@ const props = defineProps<{
 
 const { t } = useI18n()
 
+// 账号接入模式（credentials.account_mode 原值，缺省空串）：与 cnQuotaCellVisible 的
+// account-object 口径同源。上游 catalog 化时删掉了本 helper 所在的槽位，合并必须保留——
+// 智谱签名熔断徽标靠它判定「登录托管的 coding 账号」。
+const readMode = (): string => {
+  const mode = props.account.credentials?.account_mode
+  return typeof mode === 'string' ? mode : ''
+}
+
 const visible = computed(() => cnQuotaCellVisible(props.account))
 
 // 运行态标记：keeper 探针 401/自愈失败写 extra["zhipu_needs_relogin"]（design M2/M3），

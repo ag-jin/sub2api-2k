@@ -138,20 +138,29 @@ jobs:
           set -uo pipefail
           mkdir -p ../test-logs
           sha256sum cmd/server/wire_gen.go | awk '{print $1}' > ../test-logs/wire_gen.before.sha
-          go generate ./cmd/server
-          gen_rc=$?
+          # 显式 wire 命令 + -mod=mod：cmd/server/main.go:3 的 go:generate 指令没有 -mod=mod，
+          # 干净检出下 go.sum 缺 wire 命令自身的工具依赖校验和
+          # （missing go.sum entry for github.com/google/subcommands），go generate 会直接失败。
+          # -mod=mod 只在 CI 内补记工具依赖（不提交）；改动清单随 artifact 对账。
+          # 不要手改 go.sum 去登记工具临时依赖。
+          gen_rc=0
+          go run -mod=mod github.com/google/wire/cmd/wire ./cmd/server 2>&1 | tee ../test-logs/wire_generate.log || gen_rc=$?
+          echo "wire generate rc=$gen_rc"
           cp cmd/server/wire_gen.go ../test-logs/wire_gen.regenerated.go 2>/dev/null || true
           after=$(sha256sum cmd/server/wire_gen.go | awk '{print $1}')
           echo "$after" > ../test-logs/wire_gen.after.sha
           before=$(cat ../test-logs/wire_gen.before.sha)
           echo "wire_gen.go sha256 before=$before after=$after gen_rc=$gen_rc"
+          git --no-pager diff -- go.mod go.sum > ../test-logs/go_mod_churn.diff 2>/dev/null || true
+          if [ -s ../test-logs/go_mod_churn.diff ]; then
+            echo "::notice::CI 内 -mod=mod 补记了工具依赖（go.mod/go.sum，不提交）；见 artifact go_mod_churn.diff"
+          fi
+          git --no-pager diff -- cmd/server/wire_gen.go > ../test-logs/wire_gen.diff 2>/dev/null || true
           if [ "$gen_rc" != "0" ]; then
-            git --no-pager diff -- cmd/server/wire_gen.go > ../test-logs/wire_gen.diff 2>/dev/null || true
-            echo "::error::WIRE_GENERATE_FAILED: go generate ./cmd/server failed (rc=$gen_rc); download the 'wire-regenerated' artifact for the log"
+            echo "::error::WIRE_GENERATE_FAILED: wire generation failed (rc=$gen_rc); see artifact 'wire-regenerated' / wire_generate.log"
             exit 1
           fi
           if [ "$before" != "$after" ]; then
-            git --no-pager diff -- cmd/server/wire_gen.go > ../test-logs/wire_gen.diff 2>/dev/null || true
             echo "::error::WIRE_GEN_STALE: CI regeneration differs from committed wire_gen.go; download the 'wire-regenerated' artifact to fix"
             exit 1
           fi

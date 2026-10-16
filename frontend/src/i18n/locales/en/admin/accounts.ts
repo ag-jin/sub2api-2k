@@ -119,6 +119,8 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        command_code: 'Command Code',
+        cline: 'Cline',
       },
       opencode: {
         baseUrlHint: 'OpenCode Go API base URL. OpenCode supports Messages and Chat Completions, not Responses.',

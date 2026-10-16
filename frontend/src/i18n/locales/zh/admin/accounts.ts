@@ -322,6 +322,8 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        command_code: 'Command Code',
+        cline: 'Cline',
       },
       opencode: {
         baseUrlHint: 'OpenCode Go API 地址。OpenCode 支持 Messages 和 Chat Completions，不支持 Responses。',

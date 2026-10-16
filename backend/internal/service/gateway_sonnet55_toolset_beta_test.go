@@ -109,7 +109,7 @@ func TestSonnet55ToolsetBetaFilteredAfterAccountOverrideAndOnVertex(t *testing.T
 			credKeyHeaderOverrides:       map[string]any{"anthropic-beta": claude.BetaFineGrainedToolStreaming + ",context-1m-2025-08-07"},
 		}}
 	native := &OpenAIGatewayService{}
-	nativeReq, _, err := native.buildNativeAnthropicUpstreamRequest(context.Background(), c, nativeAccount, body,
+	nativeReq, _, _, err := native.buildNativeAnthropicUpstreamRequest(context.Background(), c, nativeAccount, body,
 		"key", "https://api.anthropic.com/v1/messages")
 	require.NoError(t, err)
 	nativeHeader := getHeaderRaw(nativeReq.Header, "anthropic-beta")
