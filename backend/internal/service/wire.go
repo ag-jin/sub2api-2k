@@ -1309,6 +1309,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodeBuddyCheckinScheduler,
 	ProvideCodeBuddyActivityScheduler,
 	ProvideCodeBuddyGrowthScheduler,
+	ProvideCodeBuddyTokenKeepaliveScheduler,
 	ProvideCodeBuddyZeroCreditGate,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
