@@ -763,7 +763,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 		return s.billingService.CalculateCostUnified(CostInput{
 			Ctx: ctx, Model: billingModel, GroupID: groupID, Group: apiKey.Group,
 			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, PricingAt: pricingAt,
-			ServiceTier: serviceTier, Resolver: s.resolver, Resolved: resolved,
+			ServiceTier: serviceTier, ReasoningEffort: reasoningEffort, Resolver: s.resolver, Resolved: resolved,
 			LongContextBillingEnabled: longContextBillingGate,
 		})
 	}

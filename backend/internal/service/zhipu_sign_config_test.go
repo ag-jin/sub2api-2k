@@ -467,7 +467,8 @@ func TestZhipuSignConfigUpdateAppliesToSignerOnTheNextSign(t *testing.T) {
 	ctx := context.Background()
 	upstream := newZhipuSignTestHandshakeUpstream()
 	signer := zcodesign.NewSigner("https://open.bigmodel.cn", "0.16.9", time.Hour, upstream)
-	svc, hotSigner := ProvideZhipuSignRuntime(zhipuSignTestGatewayConfig(), newZhipuSignSettingRepoStub(nil), nil, signer)
+	zhipuSignRuntime := ProvideZhipuSignRuntime(zhipuSignTestGatewayConfig(), newZhipuSignSettingRepoStub(nil), nil, signer)
+	svc, hotSigner := zhipuSignRuntime.ConfigService, zhipuSignRuntime.Signer
 
 	before := http.Header{}
 	require.NoError(t, hotSigner.Sign(ctx, zhipuSignConfigTestAPIKey, "session-before", before))
@@ -505,6 +506,24 @@ func TestZhipuSignConfigUpdateAppliesToSignerOnTheNextSign(t *testing.T) {
 	}, "\n")
 	require.True(t, ed25519.Verify(publicKey, []byte(message), signature),
 		"签名必须覆盖新版本（版本是签名消息的一部分）")
+}
+
+// TestZhipuSignRuntimeExtractorsShareSingleton 锁定 wire 装配的单一实例语义：
+// extract provider 必须返回 runtime 内的同一配置面，注入网关的最终签名器（热更新
+// 装饰器）也必须指向它；否则真实装配会出现 manager / signer 重复构造或配置面断链。
+func TestZhipuSignRuntimeExtractorsShareSingleton(t *testing.T) {
+	t.Parallel()
+
+	upstream := newZhipuSignTestHandshakeUpstream()
+	signer := zcodesign.NewSigner("https://open.bigmodel.cn", "0.16.9", time.Hour, upstream)
+	runtime := ProvideZhipuSignRuntime(zhipuSignTestGatewayConfig(), newZhipuSignSettingRepoStub(nil), nil, signer)
+
+	require.Same(t, runtime.ConfigService, ProvideZhipuSignConfigService(runtime),
+		"extract provider 必须返回 runtime 内的同一配置面实例")
+	hot, ok := runtime.Signer.(*zhipuSignHotReloadSigner)
+	require.True(t, ok, "接 SetOptions 的签名器必须包成热更新装饰器")
+	require.Same(t, runtime.ConfigService, hot.config,
+		"最终签名器与配置面必须同源（管理端改配置 → 下一个签名请求生效）")
 }
 
 // zhipuSignRuntimeStub 是签名器接缝的测试替身：记录推送的选项并返回预设缓存状态。

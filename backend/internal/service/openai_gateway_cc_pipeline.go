@@ -223,6 +223,28 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(account *Account) (apiKey
 	return apiKey, targetURL, nil
 }
 
+// openCodeSessionFallbackHint 为没有任何稳定会话标识的客户端提供确定性兜底会话 ID：
+// 同一对话（首条 user 消息不变）跨轮稳定，跨 API Key / 账号 / 对话互不相同。
+//
+// 优先级（与上游 resolveOpenCodeSessionID 的扫描顺序一致）：客户端显式头 >
+// 请求体 prompt_cache_key / metadata.user_id > 账号级 header_override 里的
+// x-opencode-session > 本兜底。hint 追加在真实请求体之后，且 headers 已带会话头
+// （账号覆写）时直接不生成——否则 hint 会在 bodies 阶段先命中、把运营者显式配置
+// 的会话 ID 顶掉。全部来源都缺失时 helper 才会退化到每轮新 UUID（上游 prompt
+// cache 必然 miss），兜底只在此时生效。
+func openCodeSessionFallbackHint(c *gin.Context, account *Account, headers http.Header, body []byte) []byte {
+	if account == nil || !account.IsOpenCodeGo() {
+		return nil
+	}
+	if strings.TrimSpace(existingOpenCodeSessionHeader(headers)) != "" {
+		return nil
+	}
+	return openCodeSessionHintBody(generateSessionUUID(fmt.Sprintf(
+		"sub2api:opencode-session:u%d:a%d:%s",
+		getAPIKeyIDFromContext(c), account.ID, extractFirstUserText(body),
+	)))
+}
+
 // sendCCUpstreamRequest 构建并发送 CC 上游请求：分离的上游 context、OpenAI HTTP
 // profile、标准头（含流式 Accept 切换）、客户端 header 白名单透传、自定义 UA 与
 // 账号级 header 覆写，最后经代理发出。传输层失败（DNS/TCP/TLS，无 HTTP 响应）
@@ -402,7 +424,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	// 账号级请求头覆写：放在所有内置默认头（含 Grok CLI 身份头）之后应用，
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
 	account.ApplyHeaderOverrides(upstreamReq.Header)
-	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header, body)
+	// 会话头 hint 追加在真实请求体之后；headers 已带会话头（账号覆写）时不生成，
+	// 保证运营者显式配置与客户端显式标识都优先于确定性兜底。
+	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header, body, openCodeSessionFallbackHint(c, account, upstreamReq.Header, body))
 
 	// 智谱签名 V4 必须最后应用（design M3；票 22 冻结的调用位置约定）：ts/nonce/sig
 	// 与 session 必须同源一致，任何在其之后的覆写都会把签名拆散。zhipu 数据面挂点

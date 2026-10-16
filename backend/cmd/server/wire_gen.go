@@ -157,8 +157,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokTokenProvider := service.ProvideGrokTokenProvider(accountRepository, geminiTokenCache, grokOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	zhipuClientSigner := service.ProvideZhipuClientSigner(configConfig, httpUpstream)
 	// 票 28：签名配置面（system_settings 覆盖 + 管理端校验写入）与配置热更新装饰器。
-	// 装饰器在每次 Sign 前推送生效配置（SetOptions），故注入网关的是它而不是裸 Signer。
-	zhipuSignConfigService, zhipuClientSignerWithHotReload := service.ProvideZhipuSignRuntime(configConfig, settingRepository, accountRepository, zhipuClientSigner)
+	// 装饰器在每次 Sign 前推送生效配置（SetOptions），故注入网关的是 runtime.Signer 而不是裸 Signer。
+	zhipuSignRuntime := service.ProvideZhipuSignRuntime(configConfig, settingRepository, accountRepository, zhipuClientSigner)
+	zhipuSignConfigService := service.ProvideZhipuSignConfigService(zhipuSignRuntime)
 	// 票 24：L1 指标 / fail 策略 / 账号级熔断引擎。计数器走 Redis 桶（未配置 Redis 时
 	// 构造函数返回 nil 接口，引擎退化为进程内存并只告警一次），并把只读熔断状态接回
 	// 票 28 的管理端状态投影。
@@ -169,7 +170,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	zhipuAccountMonitorService := service.ProvideZhipuAccountMonitorService(accountRepository, httpUpstream, configConfig, zhipuSignAlerts, zhipuSignConfigService)
 	// 票 09/27：登录凭据周期探测 keeper（构造即启动；L2 对账挂在每轮探测末尾）。
 	zhipuCredentialKeeper := service.ProvideZhipuCredentialKeeper(accountRepository, zhipuAccountMonitorService, emailService, settingRepository, configConfig)
-	openAIGatewayService := service.ProvideOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, serviceUserPlatformQuotaRepository, zhipuClientSignerWithHotReload, zhipuSignAlerts)
+	openAIGatewayService := service.ProvideOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, serviceUserPlatformQuotaRepository, zhipuSignRuntime, zhipuSignAlerts)
 	geminiOAuthClient := repository.NewGeminiOAuthClient(configConfig)
 	geminiCliCodeAssistClient := repository.NewGeminiCliCodeAssistClient()
 	driveClient := repository.NewGeminiDriveClient()

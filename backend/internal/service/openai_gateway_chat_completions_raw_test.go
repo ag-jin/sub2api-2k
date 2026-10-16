@@ -1349,6 +1349,58 @@ func TestForwardAsRawChatCompletions_OpenCodeSessionDistinctAcrossConversationsA
 	require.NotEqual(t, a, d, "different API keys must get different session ids")
 }
 
+// TestOpenCodeSessionFallbackHint 钉住确定性兜底会话 ID 的约束：账号 header_override
+// 已带 x-opencode-session 时不得生成（运营者显式配置优先），否则同一对话跨轮稳定、
+// 跨对话 / API Key / 账号互不相同，非 OpenCode 平台一律不生成。
+func TestOpenCodeSessionFallbackHint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	turn1 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"}],"stream":false}`)
+	turn2 := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same first message"},{"role":"assistant","content":"reply"},{"role":"user","content":"follow up"}],"stream":false}`)
+	otherConversation := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"another conversation"}],"stream":false}`)
+
+	newContext := func(apiKeyID int64) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(turn1))
+		if apiKeyID > 0 {
+			c.Set("api_key", &APIKey{ID: apiKeyID})
+		}
+		return c
+	}
+	hintSessionID := func(hint []byte) string {
+		require.NotNil(t, hint)
+		return gjson.GetBytes(hint, "prompt_cache_key").String()
+	}
+
+	account := opencodeRawChatCompletionsTestAccount()
+
+	// 账号级 header_override 已配置会话头：兜底必须让位，不生成 hint。
+	overrideHeaders := http.Header{}
+	overrideHeaders.Set(openCodeSessionHeader, "override-session")
+	require.Nil(t, openCodeSessionFallbackHint(newContext(1), account, overrideHeaders, turn1),
+		"账号覆写存在时不得生成兜底 hint")
+
+	// 无任何显式来源：同一对话跨轮稳定，且是 UUID。
+	first := hintSessionID(openCodeSessionFallbackHint(newContext(1), account, http.Header{}, turn1))
+	require.Len(t, first, 36, "兜底会话 ID 应为 UUID")
+	require.Equal(t, first, hintSessionID(openCodeSessionFallbackHint(newContext(1), account, http.Header{}, turn2)),
+		"同一对话跨轮必须稳定")
+
+	// 对话 / API Key / 账号任一变化即变化。
+	require.NotEqual(t, first, hintSessionID(openCodeSessionFallbackHint(newContext(1), account, http.Header{}, otherConversation)),
+		"不同对话必须不同")
+	require.NotEqual(t, first, hintSessionID(openCodeSessionFallbackHint(newContext(2), account, http.Header{}, turn1)),
+		"不同 API Key 必须不同")
+	otherAccount := opencodeRawChatCompletionsTestAccount()
+	otherAccount.ID = account.ID + 1
+	require.NotEqual(t, first, hintSessionID(openCodeSessionFallbackHint(newContext(1), otherAccount, http.Header{}, turn1)),
+		"不同账号必须不同")
+
+	// 非 OpenCode 平台不生成。
+	require.Nil(t, openCodeSessionFallbackHint(newContext(1), rawChatCompletionsTestAccount(), http.Header{}, turn1),
+		"非 OpenCode 平台不得生成会话 hint")
+}
+
 func TestForwardAsRawChatCompletions_NonOpenCodeHasNoSessionHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

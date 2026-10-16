@@ -1199,7 +1199,7 @@ func ProvideOpenAIGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
-	zhipuSigner zhipuClientSigner,
+	zhipuSignRuntime *ZhipuSignRuntime,
 	zhipuSignAlerts *ZhipuSignAlerts,
 ) *OpenAIGatewayService {
 	svc := NewOpenAIGatewayService(
@@ -1208,7 +1208,9 @@ func ProvideOpenAIGatewayService(
 		billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider,
 		resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo,
 	)
-	svc.zhipuSigner = zhipuSigner
+	if zhipuSignRuntime != nil {
+		svc.zhipuSigner = zhipuSignRuntime.Signer
+	}
 	svc.zhipuSignAlerts = zhipuSignAlerts
 	return svc
 }
@@ -1286,6 +1288,7 @@ var ProviderSet = wire.NewSet(
 	ProvideZhipuClientSigner,
 	ProvideZhipuSignAlerts,
 	ProvideZhipuSignRuntime,
+	ProvideZhipuSignConfigService,
 	ProvideZhipuAccountMonitorService,
 	ProvideZhipuCredentialKeeper,
 	ProvideImageStorageSettingService,

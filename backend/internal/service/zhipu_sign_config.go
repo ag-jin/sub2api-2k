@@ -588,23 +588,50 @@ func (s *zhipuSignHotReloadSigner) Invalidate(apiKeyID string) {
 	s.inner.Invalidate(apiKeyID)
 }
 
+// ZhipuSignRuntime 是签名配置面与注入网关的最终签名器的单一装配单元（票 28）。
+//
+// wire 只允许 provider 返回 (T, error) 或 (T, func())，而这两个实例必须同源，
+// 又不能拆成两个 provider（否则 manager / signer 会被重复构造），因此由单一
+// provider 返回本结构，再由 extract provider（ProvideZhipuSignConfigService）
+// 把配置面交给各消费方；注入网关的签名器随本结构传递（见 ProvideOpenAIGatewayService）。
+type ZhipuSignRuntime struct {
+	// ConfigService 是管理端配置面、L2 对账与状态投影共享的单例（#28）。
+	ConfigService *ZhipuSignConfigService
+	// Signer 是注入网关的最终签名器：能接 SetOptions 时是热更新装饰器，否则原样透传。
+	Signer zhipuClientSigner
+}
+
 // ProvideZhipuSignRuntime 装配签名配置面与热更新装饰器（票 28）。
 //
-// 返回的装饰器签名器替换 ProvideZhipuClientSigner 的返回值注入网关（cmd/server/wire_gen.go），
-// 于是「配置热更新」落在签名器接缝上：#22/#23 的文件一行未改。
+// accountRepo 取 AccountRepository（wire 可解析的仓储接口，方法集覆盖
+// zhipuSignAccountLister）：窄接口 zhipuSignAccountLister 在 wire 里没有
+// provider / bind，不能作为 provider 入参。
+//
+// 返回结构里的装饰器签名器替换 ProvideZhipuClientSigner 的返回值注入网关
+// （cmd/server/wire_gen.go），于是「配置热更新」落在签名器接缝上：#22/#23 的文件一行未改。
 //
 // signer 未提供（nil）或不是 #20 的 *zcodesign.Signer（拿不到 SetOptions/KeyStatus 的
 // 替身）时，装饰器退化为原样透传：与管理端配置能不能读写成败无关，保持「零行为变化」。
 func ProvideZhipuSignRuntime(
 	cfg *config.Config,
 	settingRepo SettingRepository,
-	accountRepo zhipuSignAccountLister,
+	accountRepo AccountRepository,
 	signer zhipuClientSigner,
-) (*ZhipuSignConfigService, zhipuClientSigner) {
+) *ZhipuSignRuntime {
 	runtime, wired := signer.(zhipuSignRuntime)
 	svc := NewZhipuSignConfigService(cfg, settingRepo, accountRepo, runtime)
 	if !wired || signer == nil {
-		return svc, signer
+		return &ZhipuSignRuntime{ConfigService: svc, Signer: signer}
 	}
-	return svc, &zhipuSignHotReloadSigner{inner: signer, config: svc}
+	return &ZhipuSignRuntime{ConfigService: svc, Signer: &zhipuSignHotReloadSigner{inner: signer, config: svc}}
+}
+
+// ProvideZhipuSignConfigService 从单例 ZhipuSignRuntime 取出配置面。
+// 独立 provider 只为让 wire 能把 *ZhipuSignConfigService 注入 alerts / 监控 / 管理端；
+// 它与注入网关的最终签名器同源，不重复构造。
+func ProvideZhipuSignConfigService(runtime *ZhipuSignRuntime) *ZhipuSignConfigService {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.ConfigService
 }
