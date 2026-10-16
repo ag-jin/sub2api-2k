@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -233,12 +234,14 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
+	if req.Platform == PlatformTypeSafe && req.Type != AccountTypeAPIKey {
+		return nil, errors.New("typesafe accounts only support apikey credentials")
+	}
 	// CodeBuddy（腾讯 Copilot）账号类别锁定 apikey（同 AdminService.CreateAccount：
 	// 网关凭据分派按 Type 路由，oauth 会走 openAITokenProvider 而失败）。
 	if req.Platform == PlatformCodeBuddy && req.Type != AccountTypeAPIKey {
 		return nil, fmt.Errorf("CodeBuddy accounts must be created with type=apikey")
 	}
-
 	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
 		if err := s.validateGroupIDsExist(ctx, req.GroupIDs); err != nil {
@@ -531,6 +534,9 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformGrok:
 		// Grok OAuth credentials are validated via token exchange/refresh and request-path probes.
 		return nil
+	case PlatformTypeSafe:
+		// TypeSafe credentials are API keys; inference failures drive health and cooldown state.
+		return nil
 	case PlatformOpenCode, PlatformOpenCodeGo:
 		// OpenCode uses a static API key; the first gateway request validates it upstream.
 		return nil
@@ -538,9 +544,14 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		// 国产 OpenAI 兼容供应商：凭证为 API Key，实际可用性经余额/额度探测与转发路径验证。
 		return nil
 	case PlatformCodeBuddy:
-		// CodeBuddy：auth JSON 静态凭证，实际可用性经刷新链路与转发路径验证。
+		// CodeBuddy：auth JSON / API 线路静态凭证，实际可用性经刷新链路与转发路径验证。
 		return nil
 	default:
+		if IsMultiProtocolAPIKeyProvider(account.Platform) {
+			// 多协议 API Key 供应商（国产厂商与聚合平台）：凭证为 API Key，实际可用性
+			// 经余额/额度探测与转发路径验证。
+			return nil
+		}
 		return fmt.Errorf("unsupported platform: %s", account.Platform)
 	}
 }

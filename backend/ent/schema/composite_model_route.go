@@ -1,6 +1,8 @@
 package schema
 
 import (
+	"fmt"
+
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
@@ -45,6 +47,14 @@ func (CompositeModelRoute) Fields() []ent.Field {
 		field.String("target_platform").
 			MaxLen(50).
 			Default(domain.PlatformOpenAI).
+			Validate(func(s string) error {
+				// 目标平台须为平台清单中可作组合目标的平台（迁移 242 删除 CHECK 后
+				// 由此校验；只服务独立分组的本地存量平台 codebuddy / opencode 不在其列）。
+				if !domain.IsCompositeTargetPlatform(s) {
+					return fmt.Errorf("target_platform %q is not a composite target platform", s)
+				}
+				return nil
+			}).
 			Comment("Concrete provider platform."),
 		field.String("upstream_model").
 			MaxLen(200).

@@ -99,10 +99,13 @@ func (a *Account) IsHeaderOverrideEligible() bool {
 	if a == nil {
 		return false
 	}
-	switch a.Platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCode, PlatformOpenCodeGo, PlatformCodeBuddy:
+	switch {
+	case a.Platform == PlatformAnthropic, a.Platform == PlatformOpenAI, IsMultiProtocolAPIKeyProvider(a.Platform),
+		// 存量 opencode（card 血统）与 CodeBuddy 未登记 provider profile，
+		// 但同为 API Key 形态上游，一并开放覆写。
+		a.Platform == PlatformOpenCode, a.Platform == PlatformCodeBuddy:
 		return a.Type == AccountTypeAPIKey
-	case PlatformGrok:
+	case a.Platform == PlatformGrok:
 		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeOAuth
 	default:
 		return false

@@ -64,19 +64,19 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	clientStream := responsesReq.Stream
 
 	// 3. Convert Responses → Anthropic
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
-	if err != nil {
-		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
-	}
-
-	// 4. Model mapping（OpenAI 网关统一入口的映射语义）
+	// Resolve the mapped model before choosing its thinking/tool protocol.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	anthropicReq.Model = upstreamModel
-
-	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	if err := validateClaude55Request(body, upstreamModel); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	responsesReq.Model = upstreamModel
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	if err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
 
 	// 5. Force upstream streaming（客户端原始终决定响应格式；
 	// 上游恒为流式，非流式由缓冲路径组装）。
@@ -118,6 +118,14 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	// 与 /v1/messages 直通路径共用同一发送口（含智谱签名自愈，票 23）；
 	// 签名挂点唯一（buildNativeAnthropicUpstreamRequest），错误语义不变。
 	// 上游新增的 sessionBodies（opencode 会话头 payload）经发送口原样透传。
+	//
+	// 计费 effort 取"实际上送"的 Anthropic 请求体（上游 forwardedBody 语义）：顶层
+	// output_config 不受 beta sanitize 约束、max_tokens clamp 与 effort 无关，故与
+	// 构建后的上送体等价。
+	// Bill the Anthropic effort actually sent upstream (for example xhigh → max).
+	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(anthropicBody, "output_config.effort").String())
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, anthropicBody, upstreamModel)
+
 	resp, err := s.sendNativeAnthropicUpstreamRequest(ctx, c, account, anthropicBody, apiKey, targetURL, proxyURL, reqStream, body)
 	if err != nil {
 		return nil, err
@@ -235,12 +243,14 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
 			idx := *event.Index
-			if idx < len(finalResp.Content) {
+			if idx >= 0 && idx < len(finalResp.Content) {
 				switch event.Delta.Type {
 				case "text_delta":
 					finalResp.Content[idx].Text += event.Delta.Text
 				case "thinking_delta":
 					finalResp.Content[idx].Thinking += event.Delta.Thinking
+				case "signature_delta":
+					finalResp.Content[idx].Signature += event.Delta.Signature
 				case "input_json_delta":
 					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
 				}
@@ -262,6 +272,9 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 	}
 
+	if isClaude55SignedThinkingModel(upstreamModel) {
+		finalResp.Model = upstreamModel
+	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel
 
@@ -320,6 +333,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
+	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(upstreamModel)
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
 
 	var usage ClaudeUsage
@@ -392,6 +406,12 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		if event.Type == "message_start" && event.Message != nil {
 			mergeAnthropicUsage(&usage, event.Message.Usage)
 		}
+
+		// Keep terminal Responses usage aligned with the normalized billing
+		// buckets. Normalize converter input too so raw overlapping totals cannot
+		// overwrite the state when message_start/message_delta handlers run.
+		syncAnthropicResponsesUsage(state, usage)
+		normalizeAnthropicEventUsageForResponses(event, usage)
 
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
 		if clientDisconnected {

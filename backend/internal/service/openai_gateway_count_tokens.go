@@ -104,7 +104,7 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 			return nil
 		}
 		if s.rateLimitService != nil {
-			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, prepared.UpstreamModel)
 		}
 		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
@@ -150,7 +150,7 @@ func prepareNativeOpenAIInputTokensCountRequest(body []byte, account *Account) (
 }
 
 func shouldEstimateOpenAIInputTokensLocally(account *Account) bool {
-	if account == nil || account.IsGrok() || account.IsCNProvider() || account.Type == AccountTypeUpstream {
+	if account == nil || account.IsGrok() || account.RoutesProtocolByInbound() || account.Type == AccountTypeUpstream {
 		return true
 	}
 	if account.Type != AccountTypeAPIKey {
@@ -264,8 +264,8 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		return fmt.Errorf("count_tokens: missing account")
 	}
 
-	// 国产供应商、OpenCode 与 CodeBuddy（全部协议，含 anthropic）：一律本地估算，不发上游请求。
-	// 依据（2026-08 核实）：各家的 Anthropic 兼容层均未提供
+	// 多协议 API Key 供应商（国产厂商与聚合平台，全部协议，含 anthropic）：一律本地估算，不发上游请求。
+	// 依据（2026-08 核实）：三家的 Anthropic 兼容层均未提供
 	// /v1/messages/count_tokens——DeepSeek 官方 anthropic_api 文档无此端点
 	// （且注明 anthropic-version 头被忽略），聚合网关 OpenModel 明确标注
 	// count_tokens 为 "Anthropic only"，Kimi/智谱亦无任何文档承诺。转发上游
@@ -275,7 +275,9 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	// CodeBuddy 同属此类（2026-09-30 补）：上游只有 /v2/chat/completions，无 token
 	// 计数端点。此前路由层对 buddy 分组直接 400，而 Claude Code 等 Anthropic 协议
 	// 客户端启动即调本端点——buddy 分组因此完全无法被 Claude 协议客户端使用。
-	if account.IsCNProvider() || account.IsOpenCodeGo() || account.IsCodeBuddy() {
+	// 注册表判定为数据驱动主来源；CodeBuddy 与 OpenCode 平台族谓词（含存量
+	// "opencode" 落库值）保留，注册表登记到位后为冗余保险，不影响判定语义。
+	if account.IsMultiProtocolAPIKey() || account.IsCodeBuddy() || account.IsOpenCodeGo() {
 		estimated, err := estimateAnthropicCountTokensLocally(body)
 		if err != nil {
 			writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
@@ -350,7 +352,7 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		}
 
 		if s.rateLimitService != nil {
-			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, prepared.UpstreamModel)
 		}
 
 		if isOpenAIInputTokensUnsupported(resp.StatusCode, respBody) {

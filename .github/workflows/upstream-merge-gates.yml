@@ -1,0 +1,448 @@
+name: Upstream Merge Gates
+
+# 上游 702 提交大同步（v0.1.215-card）的独立合并门禁。
+# 不改动、不取消既有 CI（backend-ci.yml / security-scan.yml 按原样同时运行）。
+#
+# 补既有 CI 缺失：go build ./...、go vet、改动文件 gofmt、冲突标记、wire 生成一致性、
+# card 线自有前端关键 spec、以及三项上游修复的定向红绿。
+# 前端 build 与 `-tags=embed` 制品构建归 release.yml（dry-run / tag），本文件不做。
+#
+# 证据性质（写发版记录必须照此表述）：
+#   - current：当前提交上，上游测试原样通过。
+#   - mutated：同一提交内由 CI 机械回退「仅该 bug」的修复前行为（两处 timeout 15→10/5、
+#     sendError 旧错误帧且无 `event: error`/无 MarkResponseCommitted、terminal 提前返回关闭），
+#     测试与断言一行不改，必须转红且红在预期用例上。这是「修复前行为等价回退」证据，
+#     不是字面基线提交证据；运行前有编译前置门，编译错误不得当行为红灯。
+#   - #6473/#7300 的旧新对照另由 dev 运行时 A/B（同一 dev 18090，旧 214 → 新 215 制品）承担。
+
+on:
+  push:
+    branches:
+      - 'fix/upstream-v0217-215'
+      - 'release/v0.1.215-card'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-merge-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: 0d62e1bc2c6b456f62c0b8293b3a1581488453b3
+
+jobs:
+  # ── 既有 CI 缺的静态门禁 ────────────────────────────────────────────────────
+  build-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Go version
+        run: go version
+
+      - name: Conflict-marker / unmerged-index check
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files --unmerged)" ]; then
+            echo "::error::UNMERGED_INDEX"
+            git ls-files --unmerged
+            exit 1
+          fi
+          if git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . > /tmp/conflict-markers.txt 2>/dev/null; then
+            echo "::error::CONFLICT_MARKERS_PRESENT: merge not fully resolved"
+            cat /tmp/conflict-markers.txt
+            exit 1
+          fi
+          echo "no conflict markers / unmerged entries"
+
+      - name: gofmt check (changed Go files only)
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$BASELINE_SHA"
+          fi
+          git diff --name-only --diff-filter=ACMR "$BASELINE_SHA" HEAD -- '*.go' > /tmp/changed-go.txt
+          echo "changed go files: $(wc -l < /tmp/changed-go.txt)"
+          if [ ! -s /tmp/changed-go.txt ]; then
+            echo "no changed Go files; gofmt check trivially clean"
+            exit 0
+          fi
+          unformatted="$(xargs -a /tmp/changed-go.txt gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::GOFMT_UNFORMATTED"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean on changed files"
+
+      - name: go build ./...
+        working-directory: backend
+        run: go build ./...
+
+      - name: go vet ./...
+        working-directory: backend
+        run: go vet ./...
+
+      - name: go vet (unit-tagged, targeted packages)
+        working-directory: backend
+        run: go vet -tags=unit ./internal/service/... ./internal/handler/... ./internal/repository/...
+
+      # card 线部署资产与 Release 语义必须活过合并；上游 main.go 无 --migrate-only、
+      # 上游 goreleaser 是 prerelease:auto（vX-card 会被标成 prerelease）。
+      - name: Fork deploy-asset preservation check
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          grep -q -- '-migrate-only' backend/cmd/server/main.go || fail "main.go lost --migrate-only (card preflight would break)"
+          grep -q 'runMigrationsOnly' backend/cmd/server/main.go || fail "main.go lost runMigrationsOnly"
+          [ -f deploy/card-db-migrate-preflight.sh ] || fail "deploy/card-db-migrate-preflight.sh missing from tree"
+          [ -f deploy/systemd/card-db-migrate-preflight.conf ] || fail "deploy/systemd/card-db-migrate-preflight.conf missing from tree"
+          grep -q -- '--migrate-only' deploy/card-db-migrate-preflight.sh || fail "preflight script no longer calls --migrate-only"
+          grep -qE '^[[:space:]]+- deploy/\*' .goreleaser.yaml || fail ".goreleaser.yaml archives files lost deploy/*"
+          grep -qE '^[[:space:]]+prerelease:[[:space:]]*false[[:space:]]*$' .goreleaser.yaml || fail ".goreleaser.yaml release.prerelease must stay false for vX-card tags"
+          grep -qE '^[[:space:]]+prerelease:[[:space:]]*false[[:space:]]*$' .goreleaser.simple.yaml || fail ".goreleaser.simple.yaml release.prerelease must stay false"
+          echo "fork deploy-asset preservation: OK"
+
+  # ── wire 生成一致性：wire 只在 CI 跑（本机禁止 go run wire）─────────────────
+  # wire.Build 的完整性只在生成期校验，手工接线可能"编译能过但接线漂移"：
+  # 除 go build ./... 外，这里在 CI 重跑 wire 并与已提交 wire_gen.go 比对；
+  # 漂移时把重生成结果与其 diff 作为 artifact 上传，供主会话下载后修正提交。
+  wire-consistency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Regenerate wire and compare
+        working-directory: backend
+        run: |
+          set -uo pipefail
+          mkdir -p ../test-logs
+          sha256sum cmd/server/wire_gen.go | awk '{print $1}' > ../test-logs/wire_gen.before.sha
+          go generate ./cmd/server
+          gen_rc=$?
+          cp cmd/server/wire_gen.go ../test-logs/wire_gen.regenerated.go 2>/dev/null || true
+          after=$(sha256sum cmd/server/wire_gen.go | awk '{print $1}')
+          echo "$after" > ../test-logs/wire_gen.after.sha
+          before=$(cat ../test-logs/wire_gen.before.sha)
+          echo "wire_gen.go sha256 before=$before after=$after gen_rc=$gen_rc"
+          if [ "$gen_rc" != "0" ]; then
+            git --no-pager diff -- cmd/server/wire_gen.go > ../test-logs/wire_gen.diff 2>/dev/null || true
+            echo "::error::WIRE_GENERATE_FAILED: go generate ./cmd/server failed (rc=$gen_rc); download the 'wire-regenerated' artifact for the log"
+            exit 1
+          fi
+          if [ "$before" != "$after" ]; then
+            git --no-pager diff -- cmd/server/wire_gen.go > ../test-logs/wire_gen.diff 2>/dev/null || true
+            echo "::error::WIRE_GEN_STALE: CI regeneration differs from committed wire_gen.go; download the 'wire-regenerated' artifact to fix"
+            exit 1
+          fi
+          echo "wire_gen.go reproduces the committed wiring"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wire-regenerated
+          path: test-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── 定向红绿回归：current 必绿 / mutated（仅 bug 回退）必红 ─────────────────
+  targeted-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, mutated]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Apply bug-only mutation (variant=mutated)
+        if: matrix.variant == 'mutated'
+        run: |
+          python3 - <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          HANDLING = Path("backend/internal/service/openai_gateway_response_handling.go")
+          PASSTHROUGH = Path("backend/internal/service/openai_gateway_passthrough.go")
+          UPSTREAM = Path("backend/internal/repository/http_upstream.go")
+
+          applied = []
+
+          def exact(path, old, new, want):
+              text = path.read_text(encoding="utf-8")
+              got = text.count(old)
+              if got != want:
+                  sys.exit("MUTATION_ANCHOR_MISSING: %s want %d got %d for %r" % (path, want, got, old[:80]))
+              path.write_text(text.replace(old, new), encoding="utf-8")
+              applied.append("%s x%d: %r -> %r" % (path, want, old[:60], new[:60]))
+
+          def regex(path, pattern, repl, want, check):
+              text = path.read_text(encoding="utf-8")
+              new_text, n = re.subn(pattern, repl, text, count=want)
+              if n != want or not re.search(check, new_text):
+                  sys.exit("MUTATION_ANCHOR_MISSING: %s pattern %r replaced %d/%d" % (path, pattern, n, want))
+              path.write_text(new_text, encoding="utf-8")
+              applied.append("%s x%d: %r" % (path, n, pattern))
+
+          # 1) #7402 修复前：OpenAI H2 与长流共用 10s/5s
+          regex(UPSTREAM, r"(openAIHTTP2ReadIdleTimeout\s*=\s*)15(\s*\*\s*time\.Second)",
+                r"\g<1>10\g<2>", 1,
+                r"openAIHTTP2ReadIdleTimeout\s*=\s*10\s*\*\s*time\.Second")
+          regex(UPSTREAM, r"(openAIHTTP2PingTimeout\s*=\s*)15(\s*\*\s*time\.Second)",
+                r"\g<1>5\g<2>", 1,
+                r"openAIHTTP2PingTimeout\s*=\s*5\s*\*\s*time\.Second")
+
+          # 2) #7300 修复前：嵌套错误封套、无 `event: error`、无 MarkResponseCommitted
+          exact(HANDLING, '{"type":"error","sequence_number":0,"code":',
+                '{"type":"error","sequence_number":0,"error":{"type":"upstream_error","code":', 1)
+          exact(HANDLING, 'strconv.Quote(message) + `,"param":null}`',
+                'strconv.Quote(message) + `}}`', 1)
+          exact(HANDLING, 'writePendingString("event: error\\ndata: " + payload + "\\n\\n")',
+                'writePendingString("data: " + payload + "\\n\\n")', 1)
+          exact(HANDLING,
+                "\t\t// The handler must not append its generic failure after this error event.\n\t\tMarkResponseCommitted(c)\n",
+                "", 1)
+
+          # 3) #6473 修复前：terminal 后不提前收尾（guarded/async 与 passthrough 两条路径）
+          exact(HANDLING, "if sawTerminalEvent && !eventInProgress &&",
+                "if false && sawTerminalEvent && !eventInProgress &&", 2)
+          exact(PASSTHROUGH,
+                'if (sawDone || sawTerminalEvent) && line == "" && (!codexFailureTerminal || !sawBareError) {',
+                'if false && (sawDone || sawTerminalEvent) && line == "" && (!codexFailureTerminal || !sawBareError) {', 1)
+
+          for row in applied:
+              print("mutated:", row)
+          print("MUTATION_APPLIED_OK")
+          PY
+
+      - name: Show mutation diff (evidence)
+        if: matrix.variant == 'mutated'
+        run: |
+          git --no-pager diff --stat
+          git --no-pager diff | head -200
+
+      - name: Hook sanity (test functions present)
+        run: |
+          set -euo pipefail
+          mkdir -p test-logs
+          grep -q 'func TestBuildUpstreamTransport_HTTP2PingPolicy' backend/internal/repository/http_upstream_http2_ping_test.go
+          grep -q 'func TestOpenAIResponseFlush_TerminalEventEndsStreamWithoutEOF' backend/internal/service/openai_gateway_response_flush_test.go
+          grep -q 'func TestOpenAIStreamingReadErrorAfterOutputUsesResponsesErrorSchema' backend/internal/service/openai_gateway_service_test.go
+          echo "hook sanity ok"
+
+      - name: Compile preflight (both variants must compile)
+        working-directory: backend
+        run: |
+          set -o pipefail
+          mkdir -p ../test-logs
+          go vet -tags=unit ./internal/repository/ ./internal/service/ 2>&1 | tee ../test-logs/compile.log
+          echo "compile preflight ok (variant=${{ matrix.variant }})"
+
+      - name: Run H2 delayed-ACK regression (#7402)
+        working-directory: backend
+        run: |
+          set +e
+          go test -tags=unit -count=1 -v -timeout=20m \
+            -run 'TestBuildUpstreamTransport_HTTP2PingPolicy|TestEnableHTTP2KeepAlive_EnablesPingHealthCheck' \
+            ./internal/repository/ > ../test-logs/h2_delayed_ack.log 2>&1
+          echo $? > ../test-logs/h2_delayed_ack.exit
+          tail -n 30 ../test-logs/h2_delayed_ack.log
+          exit 0
+
+      - name: Run terminal-EOF regression (#6473)
+        working-directory: backend
+        run: |
+          set +e
+          go test -tags=unit -count=1 -v -timeout=20m \
+            -run 'TestOpenAIResponseFlush_TerminalEventEndsStreamWithoutEOF' \
+            ./internal/service/ > ../test-logs/terminal_eof.log 2>&1
+          echo $? > ../test-logs/terminal_eof.exit
+          tail -n 30 ../test-logs/terminal_eof.log
+          exit 0
+
+      - name: Run error-frame regression (#7300)
+        working-directory: backend
+        run: |
+          set +e
+          go test -tags=unit -count=1 -v -timeout=20m \
+            -run 'TestOpenAIStreaming(ReadErrorAfterOutputUsesResponsesErrorSchema|Timeout|TooLong)' \
+            ./internal/service/ > ../test-logs/error_frame.log 2>&1
+          echo $? > ../test-logs/error_frame.exit
+          tail -n 30 ../test-logs/error_frame.log
+          exit 0
+
+      - name: Verify expected outcome (variant=${{ matrix.variant }})
+        run: |
+          set -uo pipefail
+          mkdir -p test-logs
+          fail() { echo "::error::$*"; exit 1; }
+          rc() { cat "test-logs/$1.exit" 2>/dev/null || echo missing; }
+
+          if grep -qE '\[build failed\]|undefined: |cannot use |too many errors' test-logs/h2_delayed_ack.log test-logs/terminal_eof.log test-logs/error_frame.log 2>/dev/null; then
+            fail "COMPILE_ERROR_IN_TEST_LOG: red is not behavior evidence; see compile.log"
+          fi
+
+          if [ "${{ matrix.variant }}" = "current" ]; then
+            [ "$(rc h2_delayed_ack)" = "0" ] || fail "current: #7402 H2 delayed-ACK tests must pass (rc=$(rc h2_delayed_ack))"
+            [ "$(rc terminal_eof)" = "0" ] || fail "current: #6473 terminal-EOF test must pass (rc=$(rc terminal_eof))"
+            [ "$(rc error_frame)" = "0" ] || fail "current: #7300 error-frame tests must pass (rc=$(rc error_frame))"
+            echo "variant current: all three target groups PASS"
+          else
+            [ "$(rc h2_delayed_ack)" != "0" ] || fail "mutated: H2 tests unexpectedly PASSED; mutation ineffective or test not asserting"
+            grep -E "FAIL: TestBuildUpstreamTransport_HTTP2PingPolicy/" test-logs/h2_delayed_ack.log >/dev/null \
+              || fail "mutated: H2 red for the wrong reason (no EXPECTED subtest failure)"
+            if grep -E "FAIL: TestBuildUpstreamTransport_HTTP2PingPolicy/长流" test-logs/h2_delayed_ack.log >/dev/null; then
+              fail "mutated: long-stream control subtest failed; mutation not limited to the OpenAI deadline bug"
+            fi
+            [ "$(rc terminal_eof)" != "0" ] || fail "mutated: terminal-EOF test unexpectedly PASSED"
+            grep -F "still waiting for upstream EOF" test-logs/terminal_eof.log >/dev/null \
+              || fail "mutated: terminal-EOF red for the wrong reason"
+            [ "$(rc error_frame)" != "0" ] || fail "mutated: error-frame tests unexpectedly PASSED"
+            grep -E "FAIL: TestOpenAIStreamingReadErrorAfterOutputUsesResponsesErrorSchema" test-logs/error_frame.log >/dev/null \
+              || fail "mutated: error-frame red for the wrong reason (missing EXPECTED test failure)"
+            echo "variant mutated: all three target groups RED for the expected reasons"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: targeted-regression-${{ matrix.variant }}
+          path: test-logs/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── card 线自有前端关键 spec（合并后 Makefile critical 列表不含它们）────────
+  # 候选清单「文件必须存在」；再用合并后 Makefile FRONTEND_CRITICAL_VITEST 去重，
+  # 避免与既有 CI（上游 critical 列表 + typecheck/lint）重复。
+  frontend-local-critical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve fork-custom critical spec list
+        run: |
+          set -euo pipefail
+          mkdir -p test-logs
+          cat > /tmp/local-critical-candidates.txt <<'SPECS'
+          src/api/__tests__/admin.accounts.platformCounts.spec.ts
+          src/api/__tests__/admin.pricingPlans.spec.ts
+          src/api/__tests__/admin.zhipu.spec.ts
+          src/components/account/__tests__/AccountCard.spec.ts
+          src/components/account/__tests__/AccountUsageCell.codebuddy.spec.ts
+          src/components/account/__tests__/AccountUsageCell.codebuddyEarnings.spec.ts
+          src/components/account/__tests__/AccountUsageCell.spec.ts
+          src/components/account/__tests__/CNProviderQuotaCell.spec.ts
+          src/components/account/__tests__/CreateAccountModal.codebuddyQr.spec.ts
+          src/components/account/__tests__/OAuthAuthorizationFlow.spec.ts
+          src/components/account/__tests__/credentialsBuilder.cnAdaptive.spec.ts
+          src/components/admin/account/__tests__/AccountActionMenu.codebuddyCheckin.spec.ts
+          src/components/admin/account/__tests__/AccountBulkActionsBar.checkin.spec.ts
+          src/components/admin/account/__tests__/AccountGrowthModal.spec.ts
+          src/components/admin/channel/__tests__/ZhipuSignV4Section.spec.ts
+          src/components/admin/pricing-plan/__tests__/PricingPlanDialog.spec.ts
+          src/components/admin/pricing-plan/__tests__/PricingPlansView.spec.ts
+          src/components/common/__tests__/MonitorQuotaView.spec.ts
+          src/components/common/__tests__/ZhipuEffectiveRateHealthCard.spec.ts
+          src/components/layout/__tests__/AppSidebar.platformChildren.spec.ts
+          src/components/layout/__tests__/AppSidebar.platformCounts.spec.ts
+          src/components/modelPlaza/__tests__/ModelPlazaContent.spec.ts
+          src/components/modelPlaza/__tests__/PlazaFilterBar.spec.ts
+          src/components/modelPlaza/__tests__/PlazaModelPricingTable.spec.ts
+          src/composables/__tests__/usePlatformFeatures.spec.ts
+          src/composables/__tests__/useZhipuOAuth.spec.ts
+          src/i18n/__tests__/accountsPlatformNavLocales.spec.ts
+          src/i18n/__tests__/codebuddyLocales.spec.ts
+          src/i18n/__tests__/zhipuSignHealthAlertLocales.spec.ts
+          src/i18n/__tests__/zhipuSignLocales.spec.ts
+          src/views/admin/__tests__/AccountsView.batchUsagePlatforms.spec.ts
+          src/views/admin/__tests__/AccountsView.platformFilter.spec.ts
+          src/views/admin/ops/components/__tests__/OpsAlertEventsCard.zhipuSign.spec.ts
+          src/views/admin/ops/components/__tests__/ZhipuSignAlertDetail.spec.ts
+          src/views/admin/ops/utils/__tests__/zhipuSignAlertPresentation.spec.ts
+          SPECS
+          missing=0
+          while read -r f; do
+            [ -z "$f" ] && continue
+            if [ ! -f "frontend/$f" ]; then
+              echo "::error::FRONTEND_LOCAL_SPEC_MISSING: $f (card 线测试被合并吃掉或路径变更)"
+              missing=1
+            fi
+          done < /tmp/local-critical-candidates.txt
+          [ "$missing" = "0" ] || exit 1
+          sed -n '/^FRONTEND_CRITICAL_VITEST/,/^$/p' Makefile \
+            | grep -oE 'src/[^ \\]+\.spec\.ts' | sort -u > /tmp/makefile-critical.txt
+          echo "makefile critical specs: $(wc -l < /tmp/makefile-critical.txt)"
+          grep -vxF -f /tmp/makefile-critical.txt /tmp/local-critical-candidates.txt \
+            | sed '/^$/d' | sort -u > frontend/.local-critical-specs.txt
+          n="$(wc -l < frontend/.local-critical-specs.txt)"
+          echo "local-only critical specs to run: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::FRONTEND_LOCAL_CRITICAL_EMPTY: no local-only spec resolved; refusing to run the whole suite implicitly"
+            exit 1
+          fi
+          cat frontend/.local-critical-specs.txt
+          if [ -f frontend/src/components/modelPlaza/__tests__/PlazaGroupSection.spec.ts ]; then
+            echo "src/components/modelPlaza/__tests__/PlazaGroupSection.spec.ts" >> frontend/.local-critical-specs.txt
+            echo "optional PlazaGroupSection.spec.ts included"
+          else
+            echo "::notice::PlazaGroupSection.spec.ts absent after merge resolution (optional gap)"
+          fi
+
+      - name: Run fork-custom critical vitest
+        working-directory: frontend
+        run: |
+          set -o pipefail
+          pnpm exec vitest run $(tr '\n' ' ' < .local-critical-specs.txt) 2>&1 \
+            | tee ../test-logs/frontend_local_critical.log
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: frontend-local-critical
+          path: test-logs/
+          if-no-files-found: warn
+          retention-days: 7

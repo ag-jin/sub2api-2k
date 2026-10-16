@@ -67,13 +67,26 @@ func (s *OpenAIGatewayService) newStreamHeaderWriter(c *gin.Context, upstream ht
 // （下游 handleXxxErrorResponse 需要再次读取），返回原始错误体与脱敏后的
 // 上游错误消息。
 func (s *OpenAIGatewayService) readOpenAIUpstreamError(resp *http.Response) ([]byte, string) {
-	respBody := s.readUpstreamErrorBody(resp)
+	respBody, upstreamMsg, _ := s.readOpenAIUpstreamErrorWithCompleteness(resp)
+	return respBody, upstreamMsg
+}
+
+func (s *OpenAIGatewayService) readOpenAIUpstreamErrorWithCompleteness(resp *http.Response) ([]byte, string, bool) {
+	limit := openAIUpstreamErrorBodyReadLimitForConfig(nil)
+	if s != nil {
+		limit = openAIUpstreamErrorBodyReadLimitForConfig(s.cfg)
+	}
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	complete := readErr == nil && int64(len(respBody)) <= limit
+	if int64(len(respBody)) > limit {
+		respBody = respBody[:limit]
+	}
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-	return respBody, upstreamMsg
+	return respBody, upstreamMsg, complete
 }
 
 // failoverOpenAIUpstreamHTTPError 对 >=400 的上游响应做 failover 判定：命中时
@@ -322,6 +335,11 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	grokCacheIdentity string,
 	firstTokenTimeout time.Duration,
 ) (*http.Response, *openAIFirstOutputHeaderGuard, bool, error) {
+	// DeepSeek thinking mode 要求历史 assistant 回传 reasoning_content。
+	// Responses→CC 回退在加密-only / 缺 reasoning item 且缓存未命中时会漏掉该
+	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
+	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
+	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	var firstTokenGuard *openAIFirstOutputHeaderGuard
 	if firstTokenTimeout > 0 {
@@ -363,20 +381,6 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 	}
 	if userAgent != "" {
 		upstreamReq.Header.Set("user-agent", userAgent)
-	} else if account.IsOpenCode() {
-		// opencode GO 拒绝通用 HTTP 库 UA（其文档 where-can-i-use-it 明确要求
-		// 自有 agent 名），Go 栈默认 Go-http-client/1.1 不可接受，补自有身份。
-		upstreamReq.Header.Set("user-agent", openCodeUpstreamUserAgent)
-	}
-
-	// opencode GO 强制 x-opencode-session 会话头，缺头一律 400。无状态网关拿不到
-	// 客户端真实会话 ID，复用 Claude 伪装路径同款"会话级稳定种子"近似：同一对话
-	// （首条 user 消息不变）跨轮稳定，跨 API Key / 账号 / 对话互不相同。
-	if account.IsOpenCode() {
-		upstreamReq.Header.Set("x-opencode-session", generateSessionUUID(fmt.Sprintf(
-			"sub2api:opencode-session:u%d:a%d:%s",
-			getAPIKeyIDFromContext(c), account.ID, extractFirstUserText(body),
-		)))
 	}
 
 	// CodeBuddy 出站头规范化：身份头 + 归属头 + 会话头族 + 官方 UA/Origin/Referer
@@ -391,6 +395,10 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequestOnce(
 		}
 		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	}
+	// 官方 OpenCode / Command Code 上游收敛为规范客户端 UA：客户端透传的编程库
+	// UA 会命中其前置 Cloudflare bot 拦截（CF 1010/403），并被计入账号 403 strike。
+	applyOpenCodeUpstreamUserAgent(account, targetURL, upstreamReq.Header)
+
 	// 账号级请求头覆写：放在所有内置默认头（含 Grok CLI 身份头）之后应用，
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
 	account.ApplyHeaderOverrides(upstreamReq.Header)

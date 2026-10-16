@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -456,6 +457,9 @@ func TestForwardAsRawChatCompletions_NormalizesGLMReasoningEffortForUpstream(t *
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
+	require.Equal(t, 3.0, reasoningEffortBillingMultiplier(*result.ReasoningEffort, map[string]float64{"xhigh": 2, "max": 3}))
 }
 
 func TestForwardAsRawChatCompletions_SilentRefusalTriggersFailover(t *testing.T) {
@@ -1647,4 +1651,40 @@ func TestForwardAsRawChatCompletions_CodeBuddyMidStreamStallIsBounded(t *testing
 	require.Contains(t, out, "started then hung", "首帧正文应已透传给客户端")
 	require.NotNil(t, gotErr, "停顿应作为错误上抛，供上层判失败/故障转移")
 	require.Contains(t, gotErr.Error(), "stalled", "错误应归因为上游停顿；实际: %v", gotErr)
+}
+
+func TestForwardAsRawChatCompletions_RestoresMappedResponseModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		for _, mapped := range []bool{false, true} {
+			for _, returned := range []string{"zhipu/glm-5.3", "glm-5.3-alias"} {
+				t.Run(fmt.Sprintf("stream=%v/mapped=%v/%s", stream, mapped, returned), func(t *testing.T) {
+					body := []byte(fmt.Sprintf(`{"model":"public","messages":[{"role":"user","content":"hello"}],"stream":%v}`, stream))
+					payload := `{"id":"chatcmpl_1","model":"` + returned + `","choices":[{"index":0,"delta":{"content":"keep alias"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+					upstreamBody, contentType := payload, "application/json"
+					if stream {
+						upstreamBody = "data: " + payload + "\n\ndata: [DONE]\n\n"
+						contentType = "text/event-stream"
+					}
+					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(upstreamBody))}}
+					svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+					account := rawChatCompletionsTestAccount()
+					expectedModel, expectedUpstream := returned, "public"
+					if mapped {
+						account.Credentials["model_mapping"] = map[string]any{"public": "ZHIPU/GLM-5.3"}
+						expectedModel = "public"
+						expectedUpstream = "ZHIPU/GLM-5.3"
+					}
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+					result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+					require.NoError(t, err)
+					require.Equal(t, expectedUpstream, gjson.GetBytes(upstream.lastBody, "model").String())
+					require.Contains(t, rec.Body.String(), strings.Replace(payload, `"model":"`+returned+`"`, `"model":"`+expectedModel+`"`, 1))
+					require.Equal(t, returned, result.UpstreamResponseModel)
+				})
+			}
+		}
+	}
 }

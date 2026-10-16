@@ -113,12 +113,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 
-const readMode = (): string => {
-  const mode = props.account.credentials?.account_mode
-  return typeof mode === 'string' ? mode : ''
-}
-
-const visible = computed(() => cnQuotaCellVisible(props.account.platform, readMode()))
+const visible = computed(() => cnQuotaCellVisible(props.account))
 
 // 运行态标记：keeper 探针 401/自愈失败写 extra["zhipu_needs_relogin"]（design M2/M3），
 // 重登成功后由重登链路清除。

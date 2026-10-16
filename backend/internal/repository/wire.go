@@ -84,6 +84,7 @@ var ProviderSet = wire.NewSet(
 	NewBatchImageRepository,
 	NewImageBedRepository,   // 站点图床上传记账（票 #36，原生 SQL + 迁移 240）
 	NewImageBedQuotaCounter, // 站点图床每 key 小时配额（Redis 计数，未配置 Redis 时降级）
+	NewGeminiCachedContentRepository,
 	NewIdempotencyRepository,
 	NewUsageCleanupRepository,
 	NewDashboardAggregationRepository,
@@ -99,6 +100,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughRepository,
 	NewTLSFingerprintProfileRepository,
 	NewPluginRepository,
+	NewPluginKVStore,
 	NewChannelRepository,
 	NewChannelMonitorRepository,
 	NewChannelMonitorV2Repository,
@@ -169,6 +171,7 @@ var ProviderSet = wire.NewSet(
 	NewClaudeOAuthClient,
 	NewHTTPUpstream,
 	NewOpenAIOAuthClient,
+	NewOpenAIReferralClient,
 	NewGrokOAuthClient,
 	NewGeminiOAuthClient,
 	NewGeminiCliCodeAssistClient,

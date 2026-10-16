@@ -191,12 +191,12 @@ func TestOpenAIUpstreamCostFactorsZhipuPeakFlipsOrder(t *testing.T) {
 	openAI := upstreamCostTestAccount(1, UpstreamBillingProbeStatusOK, 0.7, zhipuSchedulingTestTime(t, 13, 58), 30*time.Minute)
 	zhipu := zhipuSchedulerLoginManagedAccount(2)
 
-	offPeak := openAIUpstreamCostFactors([]*Account{openAI, zhipu}, zhipuSchedulingTestTime(t, 13, 59), defaultOpenAIOAuthSchedulingRateMultiplier)
+	offPeak := openAIUpstreamCostFactors([]*Account{openAI, zhipu}, zhipuSchedulingTestTime(t, 13, 59), floatPtr(defaultOpenAIOAuthSchedulingRateMultiplier))
 	require.Greater(t, offPeak[zhipu.ID], offPeak[openAI.ID], "闲时智谱 0.5 应优于固定 0.7")
 	require.Greater(t, offPeak[zhipu.ID], openAIUpstreamCostNeutralFactor)
 	require.Less(t, offPeak[openAI.ID], openAIUpstreamCostNeutralFactor)
 
-	peak := openAIUpstreamCostFactors([]*Account{openAI, zhipu}, zhipuSchedulingTestTime(t, 14, 0), defaultOpenAIOAuthSchedulingRateMultiplier)
+	peak := openAIUpstreamCostFactors([]*Account{openAI, zhipu}, zhipuSchedulingTestTime(t, 14, 0), floatPtr(defaultOpenAIOAuthSchedulingRateMultiplier))
 	require.Less(t, peak[zhipu.ID], peak[openAI.ID], "高峰智谱 1.0 应劣于固定 0.7（排序翻转）")
 	require.Less(t, peak[zhipu.ID], openAIUpstreamCostNeutralFactor)
 	require.Greater(t, peak[openAI.ID], openAIUpstreamCostNeutralFactor)
@@ -213,23 +213,23 @@ func TestOpenAISchedulingRateRoutesZhipuLoginManagedAndKeepsExistingBranches(t *
 	peak := zhipuSchedulingTestTime(t, 14, 0)
 
 	zhipuUnsigned := zhipuSchedulerLoginManagedAccount(1)
-	rate, ok := openAISchedulingRate(zhipuUnsigned, offPeak, 0.05)
+	rate, ok := openAISchedulingRate(zhipuUnsigned, offPeak, floatPtr(0.05))
 	require.True(t, ok)
 	require.Equal(t, 0.5, rate)
 
 	zhipuSigned := zhipuSchedulerLoginManagedAccount(2)
 	zhipuSigned.Credentials["zcode_client_sign"] = "v4"
-	rate, ok = openAISchedulingRate(zhipuSigned, peak, 0.05)
+	rate, ok = openAISchedulingRate(zhipuSigned, peak, floatPtr(0.05))
 	require.True(t, ok)
 	require.Equal(t, 0.67, rate)
 
 	openAIOAuth := zhipuSchedulerTestAccount(3, PlatformOpenAI, AccountTypeOAuth, nil)
-	rate, ok = openAISchedulingRate(openAIOAuth, peak, 0.05)
+	rate, ok = openAISchedulingRate(openAIOAuth, peak, floatPtr(0.05))
 	require.True(t, ok)
 	require.Equal(t, 0.05, rate)
 
 	openAIAPIKey := upstreamCostTestAccount(4, UpstreamBillingProbeStatusOK, 0.7, offPeak.Add(-time.Minute), 30*time.Minute)
-	rate, ok = openAISchedulingRate(openAIAPIKey, offPeak, 0.05)
+	rate, ok = openAISchedulingRate(openAIAPIKey, offPeak, floatPtr(0.05))
 	require.True(t, ok)
 	require.Equal(t, 0.7, rate)
 
@@ -239,7 +239,7 @@ func TestOpenAISchedulingRateRoutesZhipuLoginManagedAndKeepsExistingBranches(t *
 		zhipuSchedulerTestAccount(6, PlatformZhipu, AccountTypeAPIKey, map[string]any{"api_key": "hand"}),
 		zhipuSchedulerTestAccount(7, PlatformGrok, AccountTypeOAuth, nil),
 	} {
-		rate, ok = openAISchedulingRate(account, offPeak, 0.05)
+		rate, ok = openAISchedulingRate(account, offPeak, floatPtr(0.05))
 		require.False(t, ok, "无成本信号的账号不得产生倍率")
 		require.Zero(t, rate)
 	}
@@ -255,7 +255,7 @@ func TestOpenAIUpstreamCostFactorsZhipuSignedBeatsUnsigned(t *testing.T) {
 	signed.Credentials["zcode_client_sign"] = "v4"
 	unsigned := zhipuSchedulerLoginManagedAccount(2)
 
-	factors := openAIUpstreamCostFactors([]*Account{signed, unsigned}, offPeak, defaultOpenAIOAuthSchedulingRateMultiplier)
+	factors := openAIUpstreamCostFactors([]*Account{signed, unsigned}, offPeak, floatPtr(defaultOpenAIOAuthSchedulingRateMultiplier))
 	require.Greater(t, factors[signed.ID], openAIUpstreamCostNeutralFactor)
 	require.Less(t, factors[unsigned.ID], openAIUpstreamCostNeutralFactor)
 	require.Greater(t, factors[signed.ID], factors[unsigned.ID])
@@ -286,7 +286,7 @@ func TestOpenAILegacyUpstreamRateOrderIncludesOnlyEligiblePlatformRates(t *testi
 
 	order := newOpenAILegacyUpstreamRateOrder(
 		[]*Account{zhipuSigned, zhipuUnsigned, openAI, handFilledZhipu, kimi, deepseek, anthropic, grok, nil},
-		now, defaultOpenAIOAuthSchedulingRateMultiplier,
+		now, floatPtr(defaultOpenAIOAuthSchedulingRateMultiplier),
 	)
 	require.True(t, order.enabled)
 	require.Len(t, order.rates, 3)
@@ -357,13 +357,13 @@ func TestOpenAIUpstreamCostFactorsNonZhipuAccountsUnchanged(t *testing.T) {
 	openAIOAuth := zhipuSchedulerTestAccount(7, PlatformOpenAI, AccountTypeOAuth, nil)
 	ineligible := []*Account{kimi, deepseek, anthropic, grok, handFilledZhipu}
 
-	baseline := openAIUpstreamCostFactors([]*Account{kimi, deepseek, anthropic, grok, handFilledZhipu, openAIAPIKey, openAIOAuth}, now, 0.05)
+	baseline := openAIUpstreamCostFactors([]*Account{kimi, deepseek, anthropic, grok, handFilledZhipu, openAIAPIKey, openAIOAuth}, now, floatPtr(0.05))
 	// 两个有倍率的账号：{0.05, 0.7}，覆盖度 2/2，center = sqrt(0.035)。
 	center := math.Sqrt(0.05 * 0.7)
 	require.InDelta(t, 1/(1+0.05/center), baseline[openAIOAuth.ID], 1e-12)
 	require.InDelta(t, 1/(1+0.7/center), baseline[openAIAPIKey.ID], 1e-12)
 
-	withZhipu := openAIUpstreamCostFactors([]*Account{kimi, deepseek, anthropic, grok, handFilledZhipu, openAIAPIKey, openAIOAuth, zhipuSchedulerLoginManagedAccount(8)}, now, 0.05)
+	withZhipu := openAIUpstreamCostFactors([]*Account{kimi, deepseek, anthropic, grok, handFilledZhipu, openAIAPIKey, openAIOAuth, zhipuSchedulerLoginManagedAccount(8)}, now, floatPtr(0.05))
 	for _, account := range ineligible {
 		require.Equal(t, openAIUpstreamCostNeutralFactor, baseline[account.ID], "无 zhipu 候选集 %s", account.ID)
 		require.Equal(t, openAIUpstreamCostNeutralFactor, withZhipu[account.ID], "有 zhipu 候选集 %s", account.ID)
