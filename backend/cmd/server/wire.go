@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
@@ -46,6 +47,12 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 
 		// Server layer ProviderSet
 		server.ProviderSet,
+
+		// 管理端签名配置 handler 依赖窄接口 ZhipuSignAdminService，生产实现是
+		// *service.ZhipuSignConfigService（ConfigView / Update / Status）。bind 必须与
+		// 目标 provider 在同一可见集合，故放组合根（handler.ProviderSet 里看不到
+		// service.ProviderSet 的 provider）；不复制 provider，避免重复构造。
+		wire.Bind(new(admin.ZhipuSignAdminService), new(*service.ZhipuSignConfigService)),
 
 		// Privacy client factory for OpenAI training opt-out
 		providePrivacyClientFactory,

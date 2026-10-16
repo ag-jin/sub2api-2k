@@ -289,10 +289,6 @@ var ProviderSet = wire.NewSet(
 	admin.NewCodeBuddyAdminHandler,
 	admin.NewZhipuOAuthHandler,
 	admin.NewZhipuSignHandler,
-	// 管理端签名配置 handler 依赖窄接口 ZhipuSignAdminService；生产实现是
-	// *service.ZhipuSignConfigService（ConfigView / Update / Status，见
-	// service/zhipu_sign_config.go 与 service/zhipu_sign_status.go）。
-	wire.Bind(new(admin.ZhipuSignAdminService), new(*service.ZhipuSignConfigService)),
 	admin.NewCNProviderHandler,
 	admin.NewProxyHandler,
 	admin.NewRedeemHandler,
