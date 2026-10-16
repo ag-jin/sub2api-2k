@@ -156,20 +156,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokOAuthService := service.ProvideGrokOAuthService(proxyRepository, grokOAuthClient, configConfig, redisClient)
 	grokTokenProvider := service.ProvideGrokTokenProvider(accountRepository, geminiTokenCache, grokOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	zhipuClientSigner := service.ProvideZhipuClientSigner(configConfig, httpUpstream)
-	// 票 28：签名配置面（system_settings 覆盖 + 管理端校验写入）与配置热更新装饰器。
-	// 装饰器在每次 Sign 前推送生效配置（SetOptions），故注入网关的是 runtime.Signer 而不是裸 Signer。
 	zhipuSignRuntime := service.ProvideZhipuSignRuntime(configConfig, settingRepository, accountRepository, zhipuClientSigner)
-	zhipuSignConfigService := service.ProvideZhipuSignConfigService(zhipuSignRuntime)
-	// 票 24：L1 指标 / fail 策略 / 账号级熔断引擎。计数器走 Redis 桶（未配置 Redis 时
-	// 构造函数返回 nil 接口，引擎退化为进程内存并只告警一次），并把只读熔断状态接回
-	// 票 28 的管理端状态投影。
 	zhipuSignCounterCache := repository.NewZhipuSignCounterCache(redisClient)
+	zhipuSignConfigService := service.ProvideZhipuSignConfigService(zhipuSignRuntime)
 	zhipuSignAlerts := service.ProvideZhipuSignAlerts(configConfig, zhipuSignCounterCache, zhipuSignConfigService)
-	// 票 11/27：智谱登录态监控 + L2 费率对账器（同一装配点注入：构造对账器、接 #28
-	// 生效配置面、挂监控服务的周期入口与快照合并口）。
-	zhipuAccountMonitorService := service.ProvideZhipuAccountMonitorService(accountRepository, httpUpstream, configConfig, zhipuSignAlerts, zhipuSignConfigService)
-	// 票 09/27：登录凭据周期探测 keeper（构造即启动；L2 对账挂在每轮探测末尾）。
-	zhipuCredentialKeeper := service.ProvideZhipuCredentialKeeper(accountRepository, zhipuAccountMonitorService, emailService, settingRepository, configConfig)
 	openAIGatewayService := service.ProvideOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, serviceUserPlatformQuotaRepository, zhipuSignRuntime, zhipuSignAlerts)
 	geminiOAuthClient := repository.NewGeminiOAuthClient(configConfig)
 	geminiCliCodeAssistClient := repository.NewGeminiCliCodeAssistClient()
@@ -348,11 +338,11 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	batchImageDownloadService := service.NewBatchImageDownloadService(batchImageRepository, accountRepository, batchImageDownloadLimiter, configConfig)
 	batchImageCleanupService := service.ProvideBatchImageCleanupService(batchImageRepository, accountRepository, configConfig)
 	batchImageHandler := handler.ProvideBatchImageHandler(batchImagePublicService, batchImageDownloadService, batchImageCleanupService, openAIGatewayHandler)
-	imageBedRepository := repository.NewImageBedRepository(db)
-	imageBedQuotaCounter := repository.NewImageBedQuotaCounter(redisClient)
+	imageBedUploadRepository := repository.NewImageBedRepository(db)
 	imageBedOwnerResolver := service.ProvideImageBedOwnerResolver(apiKeyService)
+	imageBedQuotaCounter := repository.NewImageBedQuotaCounter(redisClient)
 	localImageBedStorage := repository.ProvideImageBedLocalStorage(configConfig)
-	imageBedService := service.ProvideImageBedService(imageBedRepository, imageStorageSettingService, imageBedOwnerResolver, imageBedQuotaCounter, configConfig, localImageBedStorage)
+	imageBedService := service.ProvideImageBedService(imageBedUploadRepository, imageStorageSettingService, imageBedOwnerResolver, imageBedQuotaCounter, configConfig, localImageBedStorage)
 	imageBedHandler := handler.ProvideImageBedHandler(imageBedService)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
 	openAIQuotaAutoResetService := service.ProvideOpenAIQuotaAutoResetService(accountRepository, openAIQuotaService, rateLimitService, idempotencyCoordinator, auditLogService, settingService, leaderLockCache)
@@ -373,6 +363,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	opsIngressRejectAggregator := service.ProvideOpsIngressRejectAggregator(opsRepository, opsService)
 	accountExpiryService := service.ProvideAccountExpiryService(accountRepository)
 	cnProviderBalanceCheckService := service.ProvideCNProviderBalanceCheckService(accountRepository, cnProviderBalanceService, cnProviderQuotaService, configConfig)
+	zhipuAccountMonitorService := service.ProvideZhipuAccountMonitorService(accountRepository, httpUpstream, configConfig, zhipuSignAlerts, zhipuSignConfigService)
+	zhipuCredentialKeeper := service.ProvideZhipuCredentialKeeper(accountRepository, zhipuAccountMonitorService, emailService, settingRepository, configConfig)
 	openAICodexVersionSyncService := service.ProvideOpenAICodexVersionSyncService(settingRepository, settingService, gitHubReleaseClient)
 	claudeCodeVersionSyncService := service.ProvideClaudeCodeVersionSyncService(settingRepository, settingService, gitHubReleaseClient)
 	proxyExpiryService := service.ProvideProxyExpiryService(proxyRepository)
@@ -386,14 +378,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
 	codeBuddyCheckinScheduler := service.ProvideCodeBuddyCheckinScheduler(codeBuddyAdminService, settingService, openAIGatewayService)
 	codeBuddyGrowthScheduler := service.ProvideCodeBuddyGrowthScheduler(codeBuddyAdminService, accountRepository, settingService)
-	// T3 token 保活调度：默认关闭（平台功能 codebuddy_token_keepalive 显式开启）。
-	// 条件凭据回写接口由 accountRepository 运行时类型实现，这里按既有模式断言取用。
-	codeBuddyKeepaliveScheduler := service.ProvideCodeBuddyTokenKeepaliveScheduler(
-		codeBuddyAdminService, accountRepository, settingService)
-	// 票 #37 0 积分主动门：默认开启（gateway.codebuddy.zero_credit_gate_enabled），
-	// 周期探测 codebuddy 账号积分，归零摘出、恢复放回。
+	codeBuddyTokenKeepaliveScheduler := service.ProvideCodeBuddyTokenKeepaliveScheduler(codeBuddyAdminService, accountRepository, settingService)
 	codeBuddyZeroCreditGate := service.ProvideCodeBuddyZeroCreditGate(accountRepository, httpUpstream, configConfig)
-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, zhipuCredentialKeeper, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, imageBedService, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler, codeBuddyKeepaliveScheduler, codeBuddyZeroCreditGate)
+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, zhipuCredentialKeeper, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, imageBedService, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, codeBuddyCheckinScheduler, codeBuddyActivityScheduler, codeBuddyGrowthScheduler, codeBuddyTokenKeepaliveScheduler, codeBuddyZeroCreditGate)
 	application := &Application{
 		Server:        httpServer,
 		PromptAudit:   promptService,
@@ -510,6 +497,12 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"ZhipuCredentialKeeper", func() error {
+				if zhipuCredentialKeeper != nil {
+					zhipuCredentialKeeper.Stop()
+				}
+				return nil
+			}},
 			{"OpsIngressRejectAggregator", func() error {
 				if opsIngressReject != nil {
 					opsIngressReject.Stop()
@@ -574,12 +567,14 @@ func provideCleanup(
 				return nil
 			}},
 			{"CodeBuddyTokenKeepaliveScheduler", func() error {
+
 				if codeBuddyKeepalive != nil {
 					codeBuddyKeepalive.Stop()
 				}
 				return nil
 			}},
 			{"CodeBuddyZeroCreditGate", func() error {
+
 				if codeBuddyZeroCreditGate != nil {
 					codeBuddyZeroCreditGate.Stop()
 				}
@@ -652,7 +647,7 @@ func provideCleanup(
 				return nil
 			}},
 			{"ImageBedService", func() error {
-				// 图床 TTL 清理定时器（构造即启动）：Stop 幂等，重复调用安全。
+
 				if imageBed != nil {
 					imageBed.Stop()
 				}
@@ -669,12 +664,6 @@ func provideCleanup(
 			{"CNProviderBalanceCheckService", func() error {
 				if cnProviderBalanceCheck != nil {
 					cnProviderBalanceCheck.Stop()
-				}
-				return nil
-			}},
-			{"ZhipuCredentialKeeper", func() error {
-				if zhipuCredentialKeeper != nil {
-					zhipuCredentialKeeper.Stop()
 				}
 				return nil
 			}},
