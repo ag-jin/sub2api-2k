@@ -282,6 +282,13 @@ func (r *accountRepository) updateOpenCodeGoUsageGroup(
 		if affected != int64(len(members)) {
 			return service.ErrOpenCodeGoUsageIdentityChanged
 		}
+		// Snapshot changes must invalidate every sibling's scheduler projection in the same transaction.
+		for _, memberID := range memberIDs {
+			id := memberID
+			if err := enqueueSchedulerOutbox(txCtx, client, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if dbent.TxFromContext(ctx) != nil {

@@ -59,12 +59,91 @@ func TestUpdateOpenCodeGoUsageSnapshotWritesSnapshotOnly(t *testing.T) {
 	mock.ExpectExec(`(?s)`+regexp.QuoteMeta("UPDATE accounts")).
 		WithArgs(string(expectedPayload), "key", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 同一事务内为该 id 入队 account-changed（调度缓存投影据此刷新快照；
+	// 顺序断言证明事件在 UPDATE 之后、COMMIT 之前）。
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).
+		WithArgs(service.SchedulerOutboxEventAccountChanged, account.ID, nil, nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	repo := newAccountRepositoryWithSQL(client, nil, nil)
 
 	err = repo.UpdateOpenCodeGoUsageSnapshot(context.Background(), account, snapshot)
 
 	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUpdateOpenCodeGoUsageSnapshotEnqueuesOutboxForGroupSiblings 覆盖 freshness 闭环：
+// 组内所有实际写入行（含 siblings）都必须入队 account-changed，且与 UPDATE 同事务
+// （顺序：UPDATE → 每 id 一条 outbox → COMMIT）。
+func TestUpdateOpenCodeGoUsageSnapshotEnqueuesOutboxForGroupSiblings(t *testing.T) {
+	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+	account := openCodeGoUsageRepositoryAccount()
+	siblingID := account.ID + 1
+	previousSnapshotJSON, err := json.Marshal(account.Extra[service.OpenCodeGoUsageSnapshotExtraKey])
+	require.NoError(t, err)
+
+	attemptedAt := time.Date(2026, time.August, 15, 9, 0, 0, 0, time.UTC)
+	snapshot := &service.OpenCodeGoUsageSnapshot{
+		Status:        service.OpenCodeGoUsageStatusOK,
+		LastAttemptAt: attemptedAt,
+		NextRefreshAt: attemptedAt.Add(time.Hour),
+	}
+	expectedPayload, err := json.Marshal(map[string]any{
+		service.OpenCodeGoUsageSnapshotExtraKey: snapshot,
+	})
+	require.NoError(t, err)
+
+	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
+	require.NoError(t, err)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("SELECT")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
+		WithArgs("key", account.ID, account.Platform, account.Type, string(credentials), nil).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "anchor_matches", "auto_refresh", "snapshot"}).
+			AddRow(account.ID, true, `true`, string(previousSnapshotJSON)).
+			AddRow(siblingID, false, `true`, string(previousSnapshotJSON)))
+	mock.ExpectExec(`(?s)`+regexp.QuoteMeta("UPDATE accounts")).
+		WithArgs(string(expectedPayload), "key", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).
+		WithArgs(service.SchedulerOutboxEventAccountChanged, account.ID, nil, nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).
+		WithArgs(service.SchedulerOutboxEventAccountChanged, siblingID, nil, nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	repo := newAccountRepositoryWithSQL(client, nil, nil)
+
+	require.NoError(t, repo.UpdateOpenCodeGoUsageSnapshot(context.Background(), account, snapshot))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUpdateOpenCodeGoUsageSnapshotCASFailureEmitsNoOutboxEvent 覆盖 CAS 失败语义：
+// 身份不匹配时必须在 UPDATE 前返回，事务回滚且不得发出任何 outbox 事件
+// （未注册 INSERT 期望 → 任何入队尝试都会以 unexpected call 失败）。
+func TestUpdateOpenCodeGoUsageSnapshotCASFailureEmitsNoOutboxEvent(t *testing.T) {
+	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+	account := openCodeGoUsageRepositoryAccount()
+	previousSnapshotJSON, err := json.Marshal(account.Extra[service.OpenCodeGoUsageSnapshotExtraKey])
+	require.NoError(t, err)
+
+	snapshot := &service.OpenCodeGoUsageSnapshot{
+		Status:        service.OpenCodeGoUsageStatusOK,
+		LastAttemptAt: time.Date(2026, time.August, 15, 9, 0, 0, 0, time.UTC),
+		NextRefreshAt: time.Date(2026, time.August, 15, 10, 0, 0, 0, time.UTC),
+	}
+	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
+	require.NoError(t, err)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("SELECT")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
+		WithArgs("key", account.ID, account.Platform, account.Type, string(credentials), nil).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "anchor_matches", "auto_refresh", "snapshot"}).
+			AddRow(account.ID, false, `true`, string(previousSnapshotJSON)))
+	mock.ExpectRollback()
+	repo := newAccountRepositoryWithSQL(client, nil, nil)
+
+	err = repo.UpdateOpenCodeGoUsageSnapshot(context.Background(), account, snapshot)
+	require.ErrorIs(t, err, service.ErrOpenCodeGoUsageIdentityChanged)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
