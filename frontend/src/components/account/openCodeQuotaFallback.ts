@@ -143,6 +143,22 @@ export function normalizeOpenCodeQuotaFallbackConfig(
 }
 
 /**
+ * 判断候选 source 是否已被其他行占用（trim 后精确比较）。
+ * 只做字符串比较；自映射/链式/循环仍由 validateOpenCodeQuotaFallbackConfig 在启用时拒绝。
+ */
+export function isOpenCodeQuotaFallbackSourceTaken(
+  candidate: string,
+  sources: Iterable<string>
+): boolean {
+  const normalized = candidate.trim()
+  if (!normalized) return false
+  for (const source of sources) {
+    if (source.trim() === normalized) return true
+  }
+  return false
+}
+
+/**
  * 写入 credentials（就地修改）：
  * - enabled && eligible → 写启用形态（规范化为完整行）；
  * - 否则 → 关闭形态：仅当已存在存量字段或表单已有映射内容时写 enabled:false（保留配置，不删除，

@@ -3,7 +3,7 @@
     class="rounded-lg border border-gray-200 dark:border-dark-600"
     data-testid="opencode-quota-fallback-editor"
   >
-    <div class="flex items-start justify-between gap-4 p-4" :class="{ 'pb-0': config.enabled }">
+    <div class="flex items-start justify-between gap-4 p-4" :class="{ 'pb-0': enabled }">
       <div class="min-w-0">
         <label class="input-label mb-0" :for="toggleId">
           {{ t('admin.accounts.openCodeQuotaFallback.title') }}
@@ -14,7 +14,7 @@
       </div>
       <Toggle
         :id="toggleId"
-        :model-value="config.enabled"
+        :model-value="enabled"
         :disabled="disabled"
         :aria-label="t('admin.accounts.openCodeQuotaFallback.title')"
         data-testid="opencode-quota-fallback-toggle"
@@ -22,7 +22,7 @@
       />
     </div>
 
-    <div v-if="config.enabled" class="space-y-4 p-4 pt-3">
+    <div v-if="enabled" class="space-y-4 p-4 pt-3">
       <div>
         <label class="input-label" :for="thresholdId">
           {{ t('admin.accounts.openCodeQuotaFallback.threshold') }}
@@ -30,7 +30,7 @@
         <div class="flex max-w-xs items-center gap-2">
           <input
             :id="thresholdId"
-            :value="config.threshold_percent"
+            :value="threshold"
             type="number"
             min="1"
             max="100"
@@ -62,10 +62,23 @@
         </div>
 
         <div v-if="rows.length > 0" class="space-y-2">
-          <div v-for="row in rows" :key="row.source" class="rounded-lg border border-gray-200 p-2.5 dark:border-dark-600">
+          <div v-for="row in rows" :key="row.uid" class="rounded-lg border border-gray-200 p-2.5 dark:border-dark-600">
             <div class="grid items-start gap-2 sm:grid-cols-[minmax(0,1fr)_1.25rem_minmax(0,1fr)_2rem]">
-              <div class="min-w-0 rounded-md bg-gray-50 px-2.5 py-2 font-mono text-sm text-gray-800 dark:bg-dark-800 dark:text-gray-200" :title="row.source">
-                <span class="block truncate">{{ row.source }}</span>
+              <div class="min-w-0">
+                <input
+                  :value="row.source"
+                  type="text"
+                  class="input min-w-0 font-mono text-sm"
+                  :list="sourceOptionsId"
+                  :disabled="disabled"
+                  :placeholder="t('admin.accounts.openCodeQuotaFallback.sourcePlaceholder')"
+                  :aria-label="t('admin.accounts.openCodeQuotaFallback.sourceColumn')"
+                  :aria-invalid="Boolean(row.sourceError)"
+                  :data-testid="`opencode-quota-fallback-source-${rowTestId(row)}`"
+                  @input="onSourceInput(row, $event)"
+                  @blur="commitSource(row)"
+                  @keydown.enter="onSourceEnter(row, $event)"
+                />
               </div>
               <div class="hidden justify-center pt-2.5 text-gray-400 dark:text-dark-400 sm:flex" aria-hidden="true">
                 <Icon name="arrowRight" size="sm" />
@@ -73,9 +86,9 @@
               <div class="min-w-0">
                 <Select
                   :model-value="row.target"
-                  :options="replacementOptions(row.source, row.target)"
+                  :options="replacementOptions(row)"
                   :disabled="disabled"
-                  :error="Boolean(rowError(row.source, row.target))"
+                  :error="Boolean(rowError(row))"
                   searchable
                   creatable
                   clearable
@@ -83,8 +96,8 @@
                   :search-placeholder="t('admin.accounts.openCodeQuotaFallback.targetPlaceholder')"
                   :empty-text="t('admin.accounts.openCodeQuotaFallback.candidatesEmpty')"
                   :aria-label="t('admin.accounts.openCodeQuotaFallback.targetColumn')"
-                  :data-testid="`opencode-quota-fallback-target-${row.source}`"
-                  @update:model-value="setTarget(row.source, $event)"
+                  :data-testid="`opencode-quota-fallback-target-${rowTestId(row)}`"
+                  @update:model-value="setTarget(row, $event)"
                 />
               </div>
               <button
@@ -92,24 +105,28 @@
                 class="flex h-9 w-9 items-center justify-center self-start rounded-lg text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-900/20"
                 :disabled="disabled"
                 :aria-label="t('admin.accounts.openCodeQuotaFallback.removeRow')"
-                :data-testid="`opencode-quota-fallback-remove-${row.source}`"
-                @click="removeMapping(row.source)"
+                :data-testid="`opencode-quota-fallback-remove-${rowTestId(row)}`"
+                @click="removeMapping(row)"
               >
                 <Icon name="trash" size="sm" />
               </button>
             </div>
-            <p v-if="rowError(row.source, row.target)" class="mt-1.5 text-xs leading-4 text-red-700 dark:text-red-300">
-              {{ rowError(row.source, row.target) }}
+            <p v-if="rowError(row)" class="mt-1.5 text-xs leading-4 text-red-700 dark:text-red-300">
+              {{ rowError(row) }}
             </p>
           </div>
         </div>
 
+        <datalist :id="sourceOptionsId" data-testid="opencode-quota-fallback-source-options">
+          <option v-for="option in normalizedModelOptions" :key="option" :value="option" />
+        </datalist>
+
         <div
-          v-else
+          v-if="rows.length === 0"
           class="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-center text-xs leading-4 text-gray-500 dark:border-dark-600 dark:bg-dark-800/60 dark:text-gray-400"
           data-testid="opencode-quota-fallback-empty"
         >
-          {{ modelOptions.length > 0
+          {{ normalizedModelOptions.length > 0
             ? t('admin.accounts.openCodeQuotaFallback.mappingHint')
             : t('admin.accounts.openCodeQuotaFallback.noSourceOptions') }}
         </div>
@@ -128,7 +145,7 @@
           <button
             type="button"
             class="inline-flex min-h-9 items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-sm text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
-            :disabled="disabled || availableSources.length === 0"
+            :disabled="disabled"
             data-testid="opencode-quota-fallback-add"
             @click="addMapping"
           >
@@ -137,10 +154,10 @@
           </button>
         </div>
 
-        <p v-if="candidatesState === 'loading'" class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        <p v-if="candidatesState === 'loading'" class="mt-2 text-xs text-gray-500 dark:text-gray-400" aria-live="polite">
           {{ t('admin.accounts.openCodeQuotaFallback.candidatesLoading') }}
         </p>
-        <p v-else-if="candidatesState === 'error'" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+        <p v-else-if="candidatesState === 'error'" class="mt-2 text-xs text-amber-700 dark:text-amber-300" aria-live="polite">
           {{ t('admin.accounts.openCodeQuotaFallback.candidatesError') }}
         </p>
       </div>
@@ -159,19 +176,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import {
   createOpenCodeQuotaFallbackConfig,
+  isOpenCodeQuotaFallbackSourceTaken,
   normalizeOpenCodeQuotaFallbackConfig,
   parseOpenCodeQuotaFallbackConfig,
   validateOpenCodeQuotaFallbackConfig,
   type OpenCodeQuotaFallbackCandidate,
   type OpenCodeQuotaFallbackConfig
 } from './openCodeQuotaFallback'
+
+interface EditableRow {
+  uid: number
+  /** 已提交到 model_mapping 的 key；空字符串表示尚未提交的草稿行。 */
+  persistedSource: string
+  /** 输入框中的文本，失焦/回车后才提交；编辑期间允许与 persistedSource 不同。 */
+  source: string
+  target: string
+  sourceError: '' | 'sourceRequired' | 'duplicateSource'
+}
 
 const props = withDefaults(defineProps<{
   modelValue: OpenCodeQuotaFallbackConfig
@@ -198,26 +226,32 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const toggleId = 'opencode-quota-fallback-enabled'
 const thresholdId = 'opencode-quota-fallback-threshold'
+const sourceOptionsId = `opencode-quota-fallback-source-options-${useId()}`
 
 const config = computed<OpenCodeQuotaFallbackConfig>(() =>
   parseOpenCodeQuotaFallbackConfig(props.modelValue) ?? createOpenCodeQuotaFallbackConfig()
 )
 
+const enabled = ref(config.value.enabled)
+const threshold = ref(config.value.threshold_percent)
+
+let nextRowUid = 1
+
+function createRow(persistedSource = '', target = ''): EditableRow {
+  return {
+    uid: nextRowUid++,
+    persistedSource,
+    source: persistedSource,
+    target,
+    sourceError: ''
+  }
+}
+
+const rows = ref<EditableRow[]>(
+  Object.entries(config.value.model_mapping).map(([source, target]) => createRow(source, target))
+)
+
 const normalizedModelOptions = computed(() => uniqueNonEmpty(props.modelOptions))
-
-// Preserve persisted rows that became absent from the latest normal-model list so opening and saving the modal
-// cannot silently erase an administrator's configuration. They remain visibly stale/editable until removed.
-const rows = computed(() => {
-  const configuredSources = Object.keys(config.value.model_mapping)
-  const sourceOrder = uniqueNonEmpty([...normalizedModelOptions.value, ...configuredSources])
-  return sourceOrder
-    .filter(source => Object.prototype.hasOwnProperty.call(config.value.model_mapping, source))
-    .map(source => ({ source, target: config.value.model_mapping[source] ?? '' }))
-})
-
-const availableSources = computed(() => normalizedModelOptions.value.filter(
-  source => !Object.prototype.hasOwnProperty.call(config.value.model_mapping, source)
-))
 
 const candidateByID = computed(() => {
   const result = new Map<string, OpenCodeQuotaFallbackCandidate>()
@@ -229,10 +263,86 @@ const candidateByID = computed(() => {
 })
 
 const configurationError = computed(() => {
-  const validation = validateOpenCodeQuotaFallbackConfig(config.value)
+  const validation = validateOpenCodeQuotaFallbackConfig({
+    enabled: enabled.value,
+    threshold_percent: threshold.value,
+    model_mapping: mappingFromRows()
+  })
   if (!validation) return ''
   return t(`admin.accounts.openCodeQuotaFallback.errors.${validation}`)
 })
+
+function configSignature(value: OpenCodeQuotaFallbackConfig): string {
+  const mapping = Object.keys(value.model_mapping)
+    .sort()
+    .map(source => [source, value.model_mapping[source] ?? ''])
+  return JSON.stringify([value.enabled === true, value.threshold_percent, mapping])
+}
+
+function mappingFromRows(): Record<string, string> {
+  const entries: Array<[string, string]> = []
+  for (const row of rows.value) {
+    if (!row.persistedSource) continue
+    entries.push([row.persistedSource, row.target])
+  }
+  return Object.fromEntries(entries)
+}
+
+const initialSignature = configSignature(config.value)
+let lastParentSignature = initialSignature
+let localCommittedSignature = initialSignature
+/** 本地完整配置（enabled/threshold/mapping）开始偏离父级时的父级签名，用于识别账号自动刷新后的“回退”。 */
+let signatureBeforeLocalEdit: string | null = null
+
+watch(
+  () => props.modelValue,
+  (value) => {
+    const incoming = parseOpenCodeQuotaFallbackConfig(value) ?? createOpenCodeQuotaFallbackConfig()
+    const incomingSignature = configSignature(incoming)
+    if (incomingSignature === localCommittedSignature) {
+      // 自身 emit 的回显或同值刷新：完整配置一致，不重建行，也不覆盖本地 enabled/threshold。
+      lastParentSignature = incomingSignature
+      return
+    }
+    if (signatureBeforeLocalEdit !== null && incomingSignature === signatureBeforeLocalEdit) {
+      // 父级被重置回编辑前的存量配置（例如账号自动刷新）：保留本地 enabled/threshold/映射，
+      // 并立即回写父级 ref，避免直接保存时丢掉编辑。
+      lastParentSignature = incomingSignature
+      emitFromRows()
+      return
+    }
+    applyExternalConfig(incoming)
+    lastParentSignature = incomingSignature
+    localCommittedSignature = incomingSignature
+    signatureBeforeLocalEdit = null
+  }
+)
+
+function applyExternalConfig(incoming: OpenCodeQuotaFallbackConfig) {
+  enabled.value = incoming.enabled
+  threshold.value = incoming.threshold_percent
+  const entries = Object.entries(incoming.model_mapping)
+  const incomingBySource = new Map(entries)
+  const seen = new Set<string>()
+  const nextRows: EditableRow[] = []
+  for (const row of rows.value) {
+    if (!row.persistedSource) {
+      // 未提交的草稿行不受外部刷新影响。
+      nextRows.push({ ...row })
+      continue
+    }
+    const target = incomingBySource.get(row.persistedSource)
+    if (target === undefined) continue
+    seen.add(row.persistedSource)
+    // 保留仍在编辑中的 source 文本；target 以外部配置为准。
+    nextRows.push({ ...row, target, sourceError: '' })
+  }
+  for (const [source, target] of entries) {
+    if (seen.has(source)) continue
+    nextRows.push(createRow(source, target))
+  }
+  rows.value = nextRows
+}
 
 function uniqueNonEmpty(values: string[] | undefined): string[] {
   const seen = new Set<string>()
@@ -253,46 +363,102 @@ function parseInputThreshold(value: string): number {
   return Number(value)
 }
 
-function update(next: Partial<OpenCodeQuotaFallbackConfig>) {
-  emit('update:modelValue', normalizeOpenCodeQuotaFallbackConfig({
-    enabled: config.value.enabled,
-    threshold_percent: config.value.threshold_percent,
-    model_mapping: { ...config.value.model_mapping },
-    ...next
-  }))
+function emitFromRows() {
+  const next = normalizeOpenCodeQuotaFallbackConfig({
+    enabled: enabled.value,
+    threshold_percent: threshold.value,
+    model_mapping: mappingFromRows()
+  })
+  const nextSignature = configSignature(next)
+  if (nextSignature !== localCommittedSignature) {
+    if (signatureBeforeLocalEdit === null) signatureBeforeLocalEdit = lastParentSignature
+    localCommittedSignature = nextSignature
+  }
+  if (nextSignature === signatureBeforeLocalEdit) signatureBeforeLocalEdit = null
+  emit('update:modelValue', next)
 }
 
-function setEnabled(enabled: boolean) {
+function setEnabled(value: boolean) {
   // Disabling is intentionally non-destructive: threshold and mappings remain available for a later re-enable.
-  update({ enabled })
+  enabled.value = value
+  emitFromRows()
 }
 
 function setThreshold(rawValue: string) {
-  update({ threshold_percent: parseInputThreshold(rawValue) })
+  threshold.value = parseInputThreshold(rawValue)
+  emitFromRows()
 }
 
 function addMapping() {
-  const source = availableSources.value[0]
-  if (!source) return
-  update({ model_mapping: { ...config.value.model_mapping, [source]: '' } })
+  if (props.disabled) return
+  // 新行只创建本地草稿：source/target 都不从目录或普通映射中预选。
+  rows.value.push(createRow())
 }
 
-function removeMapping(source: string) {
-  const mapping = { ...config.value.model_mapping }
-  delete mapping[source]
-  update({ model_mapping: mapping })
+function removeMapping(row: EditableRow) {
+  rows.value = rows.value.filter(candidate => candidate.uid !== row.uid)
+  if (row.persistedSource) emitFromRows()
 }
 
-function setTarget(source: string, value: string | number | boolean | null) {
+function onSourceInput(row: EditableRow, event: Event) {
+  row.source = (event.target as HTMLInputElement).value
+  row.sourceError = ''
+}
+
+function onSourceEnter(row: EditableRow, event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return
+  // 编辑器位于创建/编辑表单内：回车只提交当前行，不能触发外层表单的隐式提交。
+  event.preventDefault()
+  event.stopPropagation()
+  commitSource(row)
+}
+
+function commitSource(row: EditableRow) {
+  if (props.disabled) return
+  const next = row.source.trim()
+  if (!next) {
+    row.source = row.persistedSource
+    row.sourceError = row.persistedSource ? 'sourceRequired' : ''
+    return
+  }
+  if (row.persistedSource === next) {
+    row.source = next
+    row.sourceError = ''
+    return
+  }
+  if (isSourceTakenByOtherRow(row, next)) {
+    // 重复时不改写任何已提交 key：输入框回退到该行当前持久值，界面与将保存的 key 保持一致。
+    row.source = row.persistedSource
+    row.sourceError = 'duplicateSource'
+    return
+  }
+  row.source = next
+  row.sourceError = ''
+  row.persistedSource = next
+  emitFromRows()
+}
+
+function isSourceTakenByOtherRow(row: EditableRow, source: string): boolean {
+  const taken = rows.value
+    .filter(candidate => candidate.uid !== row.uid)
+    .map(candidate => candidate.source.trim() || candidate.persistedSource)
+  return isOpenCodeQuotaFallbackSourceTaken(source, taken)
+}
+
+function setTarget(row: EditableRow, value: string | number | boolean | null) {
   const target = typeof value === 'string' ? value.trim() : ''
-  update({ model_mapping: { ...config.value.model_mapping, [source]: target } })
+  if (row.target === target) return
+  row.target = target
+  // 草稿行在 source 提交前只保留本地 target，不写入旧 key。
+  if (row.persistedSource) emitFromRows()
 }
 
-function replacementOptions(source: string, selectedTarget: string): SelectOption[] {
+function replacementOptions(row: EditableRow): SelectOption[] {
+  const source = row.source.trim() || row.persistedSource
   const options: SelectOption[] = []
   for (const candidate of candidateByID.value.values()) {
     const isUnavailable = candidate.capability === 'unavailable'
-    const isSameAsSource = candidate.id === source
+    const isSameAsSource = Boolean(source) && candidate.id === source
     const label = candidate.label && candidate.label !== candidate.id
       ? `${candidate.label} (${candidate.id})`
       : candidate.id
@@ -305,14 +471,24 @@ function replacementOptions(source: string, selectedTarget: string): SelectOptio
     })
   }
   // A saved custom/stale ID stays visible, even when it is no longer in the latest catalog.
-  if (selectedTarget && !candidateByID.value.has(selectedTarget)) {
-    options.unshift({ value: selectedTarget, label: selectedTarget })
+  if (row.target && !candidateByID.value.has(row.target)) {
+    options.unshift({ value: row.target, label: row.target })
   }
   return options
 }
 
-function rowError(source: string, target: string): string {
-  if (!target || source === target) return t('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
+function rowError(row: EditableRow): string {
+  if (row.sourceError) {
+    return t(`admin.accounts.openCodeQuotaFallback.errors.${row.sourceError}`)
+  }
+  if (!row.persistedSource) return ''
+  if (!row.target || row.target === row.persistedSource) {
+    return t('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
+  }
   return ''
+}
+
+function rowTestId(row: EditableRow): string {
+  return row.persistedSource || `draft-${row.uid}`
 }
 </script>

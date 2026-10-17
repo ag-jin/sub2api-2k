@@ -5,6 +5,7 @@ import {
   applyOpenCodeQuotaFallbackConfig,
   createOpenCodeQuotaFallbackConfig,
   isOpenCodeQuotaFallbackEligible,
+  isOpenCodeQuotaFallbackSourceTaken,
   mergeOpenCodeQuotaFallbackCandidates,
   normalizeOpenCodeQuotaFallbackConfig,
   normalizeOpenCodeQuotaFallbackStatus,
@@ -311,6 +312,17 @@ describe('openCodeQuotaFallbackSourceOptions', () => {
   it('returns an empty list for absent mappings', () => {
     expect(openCodeQuotaFallbackSourceOptions(undefined)).toEqual([])
     expect(openCodeQuotaFallbackSourceOptions(null)).toEqual([])
+  })
+})
+
+describe('isOpenCodeQuotaFallbackSourceTaken', () => {
+  it('compares trimmed source IDs exactly and ignores empty candidates', () => {
+    expect(isOpenCodeQuotaFallbackSourceTaken(' b ', ['a', 'b'])).toBe(true)
+    expect(isOpenCodeQuotaFallbackSourceTaken(' c ', ['a', ' b '])).toBe(false)
+    expect(isOpenCodeQuotaFallbackSourceTaken('', ['a'])).toBe(false)
+    expect(isOpenCodeQuotaFallbackSourceTaken('   ', [])).toBe(false)
+    // 大小写不同是不同模型 ID，不做别名归一
+    expect(isOpenCodeQuotaFallbackSourceTaken('B', ['b'])).toBe(false)
   })
 })
 

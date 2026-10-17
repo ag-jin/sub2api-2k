@@ -1,3 +1,4 @@
+import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import OpenCodeQuotaFallbackEditor from '../OpenCodeQuotaFallbackEditor.vue'
@@ -23,14 +24,24 @@ const ToggleStub = {
 }
 
 const SelectStub = {
+  name: 'SelectStub',
   props: ['modelValue', 'options', 'disabled', 'error'],
   emits: ['update:modelValue'],
   template: `
-    <div data-testid="select-stub">
+    <div
+      data-select-stub="true"
+      :data-model-value="modelValue"
+      :data-option-values="(options || []).map(option => option.value).join(',')"
+    >
       <button type="button" data-testid="select-custom" @click="$emit('update:modelValue', 'custom-free-model')">custom</button>
       <button type="button" data-testid="select-clear" @click="$emit('update:modelValue', null)">clear</button>
     </div>
   `
+}
+
+type EditorProps = {
+  candidates?: Array<{ id: string; label?: string; capability: 'available' | 'unavailable' | 'unknown' }>
+  candidatesState?: 'idle' | 'loading' | 'ready' | 'error'
 }
 
 function fallback(overrides: Partial<OpenCodeQuotaFallbackConfig> = {}): OpenCodeQuotaFallbackConfig {
@@ -42,12 +53,17 @@ function fallback(overrides: Partial<OpenCodeQuotaFallbackConfig> = {}): OpenCod
   }
 }
 
-function mountEditor(config = fallback(), options = ['normal-a', 'normal-b']) {
+function mountEditor(
+  config = fallback(),
+  options: string[] = ['normal-a', 'normal-b'],
+  props: EditorProps = {}
+) {
   return mount(OpenCodeQuotaFallbackEditor, {
     props: {
       modelValue: config,
       modelOptions: options,
-      candidates: [{ id: 'free-a', capability: 'available' }]
+      candidates: [{ id: 'free-a', capability: 'available' as const }],
+      ...props
     },
     global: {
       stubs: {
@@ -57,6 +73,15 @@ function mountEditor(config = fallback(), options = ['normal-a', 'normal-b']) {
       }
     }
   })
+}
+
+function lastEmitted(wrapper: ReturnType<typeof mountEditor>): OpenCodeQuotaFallbackConfig | undefined {
+  const events = wrapper.emitted('update:modelValue') as Array<[OpenCodeQuotaFallbackConfig]> | undefined
+  return events?.[events.length - 1]?.[0]
+}
+
+function sourceInput(wrapper: ReturnType<typeof mountEditor>, testId: string) {
+  return wrapper.get<HTMLInputElement>(`[data-testid="opencode-quota-fallback-source-${testId}"]`)
 }
 
 describe('OpenCodeQuotaFallbackEditor', () => {
@@ -75,15 +100,257 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     })
   })
 
-  it('creates mappings with normal upstream IDs as keys', async () => {
+  it('re-enables with the same source and target after a close reopen round trip', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+    const disabled = lastEmitted(wrapper)!
+    expect(disabled).toEqual({
+      enabled: false,
+      threshold_percent: 98,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+
+    await wrapper.setProps({ modelValue: disabled })
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+  })
+
+  it('adds a blank editable row without preselecting a source or target', async () => {
+    const wrapper = mountEditor(fallback({ enabled: true }), [])
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+
+    const input = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    expect(input.element.value).toBe('')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    const select = wrapper.get('[data-select-stub]')
+    expect(select.attributes('data-model-value')).toBe('')
+    expect(select.attributes('data-option-values')).toBe('free-a')
+  })
+
+  it('accepts a manually typed normal upstream model ID when the catalog failed', async () => {
+    const wrapper = mountEditor(fallback({ enabled: true }), [], { candidatesState: 'error' })
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const input = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    await input.setValue('my-upstream-model')
+    await input.trigger('blur')
+
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'my-upstream-model': '' }
+    })
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.candidatesError')
+  })
+
+  it('commits the source on Enter and prevents implicit form submission', async () => {
+    const wrapper = mountEditor(fallback({ enabled: true }), [])
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const input = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    await input.setValue('typed-model')
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    input.element.dispatchEvent(event)
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'typed-model': '' }
+    })
+  })
+
+  it('writes a target chosen while the source is still a draft when the source is committed', async () => {
+    const wrapper = mountEditor(fallback({ enabled: true }), [])
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const input = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    await input.setValue('late-source')
+    await wrapper.get('[data-testid="select-custom"]').trigger('click')
+
+    // source 尚未提交时 target 只存本地草稿，不写旧 key。
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    await input.trigger('blur')
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'late-source': 'custom-free-model' }
+    })
+  })
+
+  it('suggests only normal model mapping values as source IDs', () => {
+    const wrapper = mountEditor(
+      fallback({ enabled: true }),
+      ['normal-a', 'normal-a', 'normal-b'],
+      { candidates: [{ id: 'catalog-only', capability: 'available' }] }
+    )
+
+    const options = wrapper.get('[data-testid="opencode-quota-fallback-source-options"]').findAll('option')
+    expect(options.map(option => option.attributes('value'))).toEqual(['normal-a', 'normal-b'])
+    expect(
+      wrapper.find('[data-testid="opencode-quota-fallback-source-options"] option[value="catalog-only"]').exists()
+    ).toBe(false)
+  })
+
+  it('edits an existing source and preserves its target', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    const input = sourceInput(wrapper, 'normal-a')
+    await input.setValue('normal-b')
+    await input.trigger('blur')
+
+    expect(lastEmitted(wrapper)?.model_mapping).toEqual({ 'normal-b': 'free-a' })
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-a"]').exists()).toBe(false)
+  })
+
+  it('rejects a duplicate source without overwriting either row', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a', 'normal-b': 'free-b' }
+    }))
+
+    const input = sourceInput(wrapper, 'normal-b')
+    await input.setValue('normal-a')
+    await input.trigger('blur')
+
+    expect(input.element.value).toBe('normal-b')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-a"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.duplicateSource')
+  })
+
+  it('reverts a cleared existing source and reports the required error', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    const input = sourceInput(wrapper, 'normal-a')
+    await input.setValue('   ')
+    await input.trigger('blur')
+
+    expect(input.element.value).toBe('normal-a')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.sourceRequired')
+  })
+
+  it('keeps an in-progress draft source when the parent echoes the same config', async () => {
     const wrapper = mountEditor(fallback({ enabled: true }))
 
     await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
-    expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual({
+    const input = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    await input.setValue('draft-source')
+
+    await wrapper.setProps({ modelValue: { enabled: true, threshold_percent: 98, model_mapping: {} } })
+
+    expect(input.element.value).toBe('draft-source')
+    expect(wrapper.find('[data-testid^="opencode-quota-fallback-source-draft-"]').exists()).toBe(true)
+  })
+
+  it('restores local edits when the parent resets to the pre-edit stored config', async () => {
+    const original = fallback({
       enabled: true,
-      threshold_percent: 98,
-      model_mapping: { 'normal-a': '' }
+      model_mapping: { 'normal-a': 'free-a' }
     })
+    const wrapper = mountEditor(original)
+
+    const input = sourceInput(wrapper, 'normal-a')
+    await input.setValue('normal-b')
+    await input.trigger('blur')
+    expect(lastEmitted(wrapper)?.model_mapping).toEqual({ 'normal-b': 'free-a' })
+
+    // 模拟账号自动刷新：父级 ref 被重写回编辑前的存量配置。
+    await wrapper.setProps({
+      modelValue: { enabled: true, threshold_percent: 98, model_mapping: { 'normal-a': 'free-a' } }
+    })
+
+    expect(lastEmitted(wrapper)?.model_mapping).toEqual({ 'normal-b': 'free-a' })
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(true)
+  })
+
+  it('restores local enabled and threshold edits when the parent resets to the pre-edit stored config', async () => {
+    const stored = fallback({
+      enabled: false,
+      threshold_percent: 98,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+    const wrapper = mountEditor(stored)
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+    const thresholdInput = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    await thresholdInput.setValue('95')
+    await thresholdInput.trigger('change')
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 95,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+    const emittedBeforeReset = wrapper.emitted('update:modelValue')?.length ?? 0
+
+    // 模拟账号自动刷新：父级 ref 被重写回编辑前的存量配置，本地开关/阈值不得被旧值覆盖。
+    await wrapper.setProps({
+      modelValue: { enabled: false, threshold_percent: 98, model_mapping: { 'normal-a': 'free-a' } }
+    })
+
+    // 必须以一次重新 emit 恢复父级 ref，否则父级保存时会写回旧开关/阈值。
+    expect(wrapper.emitted('update:modelValue')?.length ?? 0).toBe(emittedBeforeReset + 1)
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 95,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+    // 本地 enabled 仍为 true，阈值输入应继续可见且保留 95。
+    expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value)
+      .toBe('95')
+  })
+
+  it('keeps stored sources that are absent from the latest normal model options', () => {
+    const wrapper = mountEditor(
+      fallback({ enabled: true, model_mapping: { 'legacy-source': 'free-a' } }),
+      ['normal-a']
+    )
+
+    expect(sourceInput(wrapper, 'legacy-source').element.value).toBe('legacy-source')
+  })
+
+  it('keeps a saved target that is no longer in the catalog', () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'removed-target' }
+    }))
+
+    const select = wrapper.get('[data-select-stub]')
+    expect(select.attributes('data-model-value')).toBe('removed-target')
+    expect(select.attributes('data-option-values')?.split(',')).toContain('removed-target')
+  })
+
+  it('keeps valid and broken rows visible together instead of silently dropping the broken one', () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { good: 'free-a', bad: '' }
+    }))
+
+    expect(wrapper.findAll('input[data-testid^="opencode-quota-fallback-source-"]')).toHaveLength(2)
+    expect(wrapper.get('[data-testid="opencode-quota-fallback-validation"]').text())
+      .toContain('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
   })
 
   it('never silently clamps an out-of-range threshold', async () => {
@@ -126,7 +393,7 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     expect(inRange.find('[data-testid="opencode-quota-fallback-validation"]').exists()).toBe(false)
   })
 
-  it('accepts an administrator-entered precise ID and emits an upstream target refresh request', async () => {
+  it('accepts an administrator-entered precise target and emits an upstream target refresh request', async () => {
     const wrapper = mountEditor(fallback({
       enabled: true,
       model_mapping: { 'normal-a': '' }
@@ -141,7 +408,7 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     expect(wrapper.emitted('sync-targets')).toHaveLength(1)
   })
 
-  it('shows invalid configuration feedback for empty and identity mappings', () => {
+  it('shows invalid configuration feedback for empty, identity, chained and cyclic mappings', () => {
     const empty = mountEditor(fallback({ enabled: true }))
     expect(empty.get('[data-testid="opencode-quota-fallback-validation"]').text())
       .toContain('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
@@ -151,6 +418,20 @@ describe('OpenCodeQuotaFallbackEditor', () => {
       model_mapping: { 'normal-a': 'normal-a' }
     }))
     expect(same.get('[data-testid="opencode-quota-fallback-validation"]').text())
+      .toContain('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
+
+    const chain = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { a: 'b', b: 'c' }
+    }))
+    expect(chain.get('[data-testid="opencode-quota-fallback-validation"]').text())
+      .toContain('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
+
+    const cycle = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { a: 'b', b: 'a' }
+    }))
+    expect(cycle.get('[data-testid="opencode-quota-fallback-validation"]').text())
       .toContain('admin.accounts.openCodeQuotaFallback.errors.mappingInvalid')
   })
 
@@ -166,6 +447,6 @@ describe('OpenCodeQuotaFallbackEditor', () => {
 
     expect(wrapper.get('[data-testid="opencode-quota-fallback-validation"]').text())
       .toContain('Request rejected by server')
-    expect(wrapper.text()).toContain('normal-a')
+    expect(sourceInput(wrapper, 'normal-a').element.value).toBe('normal-a')
   })
 })
