@@ -200,6 +200,24 @@ func (s *RateLimitService) ApplyAccountSchedulingThreshold(ctx context.Context, 
 		return false
 	}
 
+	// 启用额度保护：阈值停调同样收敛为模型作用域的付费钱包冷却，避免整账号
+	// temp_unschedulable 把替代目标和免费模型连带排除（exploration §4.2 的全号
+	// 拦截）。写库失败时不写整账号停调，保持模型作用域语义。
+	if account.GetOpenCodeQuotaFallback().Enabled {
+		if !persistOpenCodeQuotaFallbackWalletLimit(ctx, s.accountRepo, account, *decision.Until, "account_scheduling_threshold:"+decision.Window) {
+			return false
+		}
+		slog.Info("account_scheduling_threshold_quota_fallback_wallet",
+			"account_id", account.ID,
+			"platform", decision.Platform,
+			"window", decision.Window,
+			"scope", decision.Scope,
+			"threshold_percent", decision.ThresholdPercent,
+			"used_percent", decision.UsedPercent,
+			"until", decision.Until.UTC())
+		return true
+	}
+
 	account.TempUnschedulableUntil = cloneTimePtr(decision.Until)
 	account.TempUnschedulableReason = reason
 	s.notifyAccountSchedulingBlocked(account, *decision.Until, "account_scheduling_threshold")

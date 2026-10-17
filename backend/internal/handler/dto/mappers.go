@@ -247,6 +247,8 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	if state := service.OpenCodeGoUsageStateFromAccount(a); state.Eligible {
 		openCodeGoUsage = state
 	}
+	// 只读状态块：仅 OpenCode 平台账号返回，由 cfg+快照现算（非 OpenCode 平台为 nil）。
+	openCodeQuotaFallback := service.OpenCodeQuotaFallbackStatusFromAccount(a)
 	out := &Account{
 		ID:                      a.ID,
 		Name:                    a.Name,
@@ -258,6 +260,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Extra:                   extra,
 		OllamaCloudUsage:        ollamaCloudUsage,
 		OpenCodeGoUsage:         openCodeGoUsage,
+		OpenCodeQuotaFallback:   openCodeQuotaFallback,
 		ProxyID:                 a.ProxyID,
 		ProxyFallbackOriginID:   a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName: a.ProxyFallbackOriginName,
@@ -468,7 +471,8 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		ID: a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
 		Credentials: a.Credentials, CredentialsStatus: a.CredentialsStatus, Extra: a.Extra,
 		OllamaCloudUsage: a.OllamaCloudUsage, OpenCodeGoUsage: a.OpenCodeGoUsage,
-		ProxyID: a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
+		OpenCodeQuotaFallback: a.OpenCodeQuotaFallback,
+		ProxyID:               a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
 		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier,
 		Status: a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,

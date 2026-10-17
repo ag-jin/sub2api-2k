@@ -48,6 +48,11 @@ func (a *Account) IsSchedulableForModelWithContext(ctx context.Context, requeste
 		}
 		return false
 	}
+	// OpenCode 额度保护：付费额度触发/未知时，未配置替代的付费模型不在本账号
+	// 候选内（模型级，不写整账号停调）；替代目标直连与未启用账号零变化。
+	if openCodeQuotaFallbackBlocksModel(a, requestedModel) {
+		return false
+	}
 	return true
 }
 

@@ -1613,6 +1613,16 @@
           :platform="form.platform"
           :plan="currentOpenCodeOrCNMode()"
         />
+        <OpenCodeQuotaFallbackEditor
+          v-if="showOpenCodeQuotaFallbackEditor"
+          v-model="quotaFallbackConfig"
+          :model-options="quotaFallbackModelOptions"
+          :candidates="quotaFallbackCandidates"
+          :candidates-state="quotaFallbackCandidatesState"
+          :disabled="submitting"
+          :error="quotaFallbackError"
+          @sync-targets="syncQuotaFallbackCandidates"
+        />
         <div>
           <label class="input-label">
             {{
@@ -4368,8 +4378,20 @@ import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import { applyExplicitCacheUpstreamCredentials, isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
+import OpenCodeQuotaFallbackEditor from '@/components/account/OpenCodeQuotaFallbackEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
+import {
+  applyOpenCodeQuotaFallbackConfig,
+  createOpenCodeQuotaFallbackConfig,
+  isOpenCodeQuotaFallbackEligible,
+  mergeOpenCodeQuotaFallbackCandidates,
+  openCodeQuotaFallbackCandidatesFromSync,
+  openCodeQuotaFallbackSourceOptions,
+  validateOpenCodeQuotaFallbackConfig,
+  type OpenCodeQuotaFallbackCandidate,
+  type OpenCodeQuotaFallbackConfig
+} from '@/components/account/openCodeQuotaFallback'
 import {
   applyAntigravityProjectID,
   applyHeaderOverride,
@@ -4789,6 +4811,27 @@ const apiProtocol = ref<CnApiProtocol>('adaptive')
 const openCodeGoProtocolRules = ref<OpenCodeGoProtocolRule[]>(
   cloneOpenCodeGoProtocolRules(defaultOpenCodeProtocolRules('zen'))
 )
+// OpenCode 额度保护（可选，默认关闭；仅 opencode/opencode_go 的 Go 模式 apikey 账号展示）。
+// 配置持久层 schema 与校验见 openCodeQuotaFallback.ts（冻结契约 2026-10-16）。
+const quotaFallbackConfig = ref<OpenCodeQuotaFallbackConfig>(createOpenCodeQuotaFallbackConfig())
+const quotaFallbackCandidates = ref<OpenCodeQuotaFallbackCandidate[]>([])
+const quotaFallbackCandidatesState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+// 上下文切换（平台/类型/模式/端点/Key）即失效候选目录；旧异步响应不得覆盖新上下文。
+let quotaFallbackCandidatesRequestVersion = 0
+watch(
+  [
+    () => form.platform,
+    () => form.type,
+    () => openCodeAccountMode.value,
+    () => apiKeyBaseUrl.value,
+    () => apiKeyValue.value
+  ],
+  () => {
+    quotaFallbackCandidatesRequestVersion += 1
+    quotaFallbackCandidates.value = []
+    quotaFallbackCandidatesState.value = 'idle'
+  }
+)
 // 智谱团队版 Coding Plan：组织/项目 ID，写入 credentials 供额度探测切换团队端点
 const zhipuOrganization = ref('')
 const zhipuProject = ref('')
@@ -4813,6 +4856,52 @@ const genericAccountModes = computed(() => providerAccountModes(form.platform))
 const routesByModel = computed(() => providerRoutesByModel(form.platform))
 function currentOpenCodeOrCNMode(): string {
   return isOpenCodeGoPlatform.value ? openCodeAccountMode.value : accountMode.value
+}
+// OpenCode 额度保护：apikey + opencode（legacy，Go 端点）或 opencode_go 的 Go 模式。
+// Zen 无 5h 窗口：不展示、不启用、不提交 enabled 策略。
+const openCodeQuotaFallbackMode = computed<string | undefined>(() =>
+  isOpenCodeGoPlatform.value ? openCodeAccountMode.value : undefined
+)
+const showOpenCodeQuotaFallbackEditor = computed(() =>
+  isOpenCodeQuotaFallbackEligible(form.platform, form.type, openCodeQuotaFallbackMode.value)
+)
+// source 候选 = 当前表单正常 model_mapping 的真正 targets（正常实际上游模型 ID）。
+const quotaFallbackModelOptions = computed(() =>
+  openCodeQuotaFallbackSourceOptions(
+    buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+  )
+)
+const quotaFallbackError = computed(() => {
+  const error = validateOpenCodeQuotaFallbackConfig(quotaFallbackConfig.value)
+  return error ? t(`admin.accounts.openCodeQuotaFallback.errors.${error}`) : null
+})
+// 目标候选：复用既有上游 models list 能力（建号前用 preview 版本）；仅管理员显式触发。
+async function syncQuotaFallbackCandidates() {
+  if (!showOpenCodeQuotaFallbackEditor.value || quotaFallbackCandidatesState.value === 'loading') return
+  const apiKey = apiKeyValue.value.trim()
+  if (!apiKey) {
+    quotaFallbackCandidatesState.value = 'error'
+    return
+  }
+  const requestVersion = ++quotaFallbackCandidatesRequestVersion
+  quotaFallbackCandidatesState.value = 'loading'
+  try {
+    const result = await adminAPI.accounts.syncUpstreamModelsPreview({
+      platform: form.platform,
+      type: form.type,
+      base_url: apiKeyBaseUrl.value.trim() || defaultCNBaseUrl(form.platform, currentOpenCodeOrCNMode(), apiProtocol.value),
+      api_key: apiKey
+    })
+    if (requestVersion !== quotaFallbackCandidatesRequestVersion) return
+    quotaFallbackCandidates.value = mergeOpenCodeQuotaFallbackCandidates(
+      quotaFallbackCandidates.value,
+      openCodeQuotaFallbackCandidatesFromSync(result)
+    )
+    quotaFallbackCandidatesState.value = 'ready'
+  } catch {
+    if (requestVersion !== quotaFallbackCandidatesRequestVersion) return
+    quotaFallbackCandidatesState.value = 'error'
+  }
 }
 // 智谱（票 34）：建号只走登录授权，不再有手动 API Key 模式。登录账号仍以
 // type=apikey 落库（03：IsZhipuLoginManaged = platform/type=apikey/auth_flow），
@@ -6027,6 +6116,9 @@ const resetForm = () => {
   openCodeAccountMode.value = 'zen'
   apiProtocol.value = 'adaptive'
   openCodeGoProtocolRules.value = cloneOpenCodeGoProtocolRules(defaultOpenCodeProtocolRules('zen'))
+  quotaFallbackConfig.value = createOpenCodeQuotaFallbackConfig()
+  quotaFallbackCandidates.value = []
+  quotaFallbackCandidatesState.value = 'idle'
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
@@ -6582,6 +6674,25 @@ const handleSubmit = async () => {
     if (modelMapping) {
       credentials.model_mapping = modelMapping
     }
+  }
+  // OpenCode 额度保护（可选）：启用前先校验；Zen/非 Go 模式强制 enabled=false（保留已编辑映射，
+  // 与 Edit 一致，不静默丢弃、不泄漏启用策略）；无字段且关闭且无映射时不写。其他平台不提交该字段。
+  if (form.platform === 'opencode' || form.platform === 'opencode_go') {
+    const quotaFallbackEligible = isOpenCodeQuotaFallbackEligible(
+      form.platform,
+      form.type,
+      openCodeQuotaFallbackMode.value
+    )
+    if (quotaFallbackEligible) {
+      const quotaFallbackValidationError = validateOpenCodeQuotaFallbackConfig(quotaFallbackConfig.value)
+      if (quotaFallbackValidationError) {
+        appStore.showError(t(`admin.accounts.openCodeQuotaFallback.errors.${quotaFallbackValidationError}`))
+        return
+      }
+    }
+    applyOpenCodeQuotaFallbackConfig(credentials, quotaFallbackConfig.value, {
+      eligible: quotaFallbackEligible
+    })
   }
   if (form.platform === 'openai') {
     applyOpenAIEndpointCapabilities(credentials)

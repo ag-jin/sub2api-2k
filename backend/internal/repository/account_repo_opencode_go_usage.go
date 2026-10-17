@@ -26,11 +26,20 @@ const (
 	// 平台本身不在名单内——平台账号走下方 account_mode 分支。所有平台白名单 SQL
 	// 只允许引用本常量，不得各处重写字面量，防止漂移。
 	opencodeGoUsageMountPlatformsSQL = "'openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax'"
-	// opencodeGoUsageEligibleSQL 与 service.IsOpenCodeGoUsageAccount 互为镜像：
+	// openCodeGoQuotaFallbackEnabledSQL 是 service 侧 credentials.quota_fallback.enabled
+	// 的 SQL 镜像：启用额度保护的账号必须持续刷新用量快照，不能依赖全局 OpenCode Go
+	// 用量开关（默认关闭）或账号自身的 auto_refresh 标记——否则首启后状态会永久停在
+	// unknown（付费源被保守停调且永不自愈）。仅该策略账号绕过，其它账号设置原样。
+	opencodeGoQuotaFallbackEnabledSQL = "(credentials -> 'quota_fallback' ->> 'enabled') = 'true'" // opencodeGoUsageEligibleSQL 与 service.IsOpenCodeGoUsageAccount 互为镜像：
 	//   - opencode_go 平台：account_mode 存储于 credentials（domain/constants.go），
 	//     未设置/为 null/非 "zen" 一律视为 Go 订阅，与 GetOpenCodeAccountMode 的
 	//     默认兼容逻辑一致；COALESCE 把 <> 对 NULL 的结果归一为 true。不校验
 	//     base_url（平台字段已是权威来源）。
+	//   - legacy opencode 平台（card 血统存量值）：service 侧 IsOpenCodeGo() 同时
+	//     接受 "opencode" 与 "opencode_go"，SQL 侧必须同样纳入，account_mode 语义
+	//     与上一分支一致；缺少此分支时存量 opencode 账号在 SQL 侧集体失去资格
+	//     （组查询漏行、RunDue 自动刷新与快照写入停摆），与 Go 侧判定不一致，
+	//     OpenCode 额度保护在 legacy 账号上永远拿不到快照。
 	//   - 挂载白名单平台：base_url 必须匹配官方 OpenCode Go 基址正则。
 	//
 	// 已知且可接受的差异：btrim 只去空格，Go 侧 strings.TrimSpace 还会去
@@ -40,6 +49,8 @@ const (
 	opencodeGoUsageEligibleSQL = `
 	(
 		(platform = 'opencode_go'
+			AND COALESCE(btrim(credentials ->> 'account_mode') <> 'zen', true))
+		OR (platform = 'opencode'
 			AND COALESCE(btrim(credentials ->> 'account_mode') <> 'zen', true))
 		OR (platform IN (` + opencodeGoUsageMountPlatformsSQL + `)
 			AND ` + opencodeGoBaseURLMatchSQLPrefix + `credentials ->> 'base_url'` + opencodeGoBaseURLMatchSQLSuffix + `)
@@ -360,6 +371,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 	now time.Time,
 	debounce, maxWait time.Duration,
 	limit int,
+	policyAccountsOnly bool,
 ) ([]service.Account, error) {
 	if limit <= 0 {
 		return []service.Account{}, nil
@@ -376,6 +388,12 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 	debounceSeconds := debounce.Seconds()
 	maxWaitSeconds := maxWait.Seconds()
 	minFetchIntervalSeconds := service.OpenCodeGoUsageMinFetchInterval.Seconds()
+	// policyAccountsOnly=true 时（全局用量开关关闭）只返回启用额度保护的账号，
+	// 其它账号的全局设置原样不生效。
+	policyOnlyFilter := ""
+	if policyAccountsOnly {
+		policyOnlyFilter = "\n\t\t\t\tAND " + opencodeGoQuotaFallbackEnabledSQL
+	}
 	rows, err := r.sql.QueryContext(ctx, `
 		WITH eligible AS (
 			SELECT id,
@@ -386,7 +404,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 			WHERE deleted_at IS NULL
 				AND status = 'active'
 				AND `+opencodeGoUsageEligibleSQL+`
-				AND extra @> '{"opencode_go_usage_auto_refresh": true}'::jsonb
+				AND (extra @> '{"opencode_go_usage_auto_refresh": true}'::jsonb OR `+opencodeGoQuotaFallbackEnabledSQL+`)`+policyOnlyFilter+`
 		), group_activity AS (
 			SELECT credentials ->> 'api_key' AS api_key,
 				MAX(last_used_at) AS group_last_used_at
@@ -434,6 +452,9 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 						),
 						COALESCE(parsed_next_refresh_at::timestamptz, '-infinity'::timestamptz)
 					)
+					WHEN `+opencodeGoQuotaFallbackEnabledSQL+`
+						AND parsed_fetched_at IS NOT NULL
+					THEN parsed_fetched_at::timestamptz + make_interval(secs => $3::double precision)
 					ELSE NULL
 				END AS activity_due_at
 			FROM parsed

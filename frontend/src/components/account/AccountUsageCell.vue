@@ -773,6 +773,35 @@
       </div>
       <div v-else-if="error" class="text-xs text-red-500">{{ error }}</div>
       <div v-else class="text-xs text-gray-400">-</div>
+      <!-- OpenCode 额度保护状态（只读 DTO；unknown 不伪报正常，保护关闭时不渲染） -->
+      <div
+        v-if="showQuotaFallbackStatus && quotaFallbackStatus"
+        data-testid="opencode-quota-fallback"
+        class="space-y-0.5 pt-0.5"
+      >
+        <span
+          data-testid="opencode-quota-fallback-badge"
+          class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium"
+          :class="quotaFallbackBadgeClass"
+        >
+          {{ quotaFallbackStateLabel }}
+        </span>
+        <div
+          v-for="item in quotaFallbackWindowLines"
+          :key="item.key"
+          data-testid="opencode-quota-fallback-window"
+          class="text-[10px] text-amber-600 dark:text-amber-400"
+        >
+          {{ item.text }}
+        </div>
+        <div
+          v-if="quotaFallbackHint"
+          data-testid="opencode-quota-fallback-hint"
+          class="text-[10px] text-gray-500 dark:text-gray-400"
+        >
+          {{ quotaFallbackHint }}
+        </div>
+      </div>
     </template>
 
     <!-- Other accounts: no usage window -->
@@ -817,6 +846,35 @@
         :account="account"
         @updated="handleOpenCodeGoUsageUpdated"
       />
+      <!-- OpenCode 额度保护状态（只读 DTO；unknown 不伪报正常，保护关闭时不渲染） -->
+      <div
+        v-if="showQuotaFallbackStatus && quotaFallbackStatus"
+        data-testid="opencode-quota-fallback"
+        class="space-y-0.5 pt-0.5"
+      >
+        <span
+          data-testid="opencode-quota-fallback-badge"
+          class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium"
+          :class="quotaFallbackBadgeClass"
+        >
+          {{ quotaFallbackStateLabel }}
+        </span>
+        <div
+          v-for="item in quotaFallbackWindowLines"
+          :key="item.key"
+          data-testid="opencode-quota-fallback-window"
+          class="text-[10px] text-amber-600 dark:text-amber-400"
+        >
+          {{ item.text }}
+        </div>
+        <div
+          v-if="quotaFallbackHint"
+          data-testid="opencode-quota-fallback-hint"
+          class="text-[10px] text-gray-500 dark:text-gray-400"
+        >
+          {{ quotaFallbackHint }}
+        </div>
+      </div>
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
       <div v-if="todayStats && !cardMode" class="mb-0.5 flex items-center">
         <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
@@ -901,6 +959,10 @@ import {
   cnBalanceCellVisible as cnBalanceCellVisibleFn,
   isMultiProtocolApiKeyPlatform
 } from './credentialsBuilder'
+import {
+  isOpenCodeQuotaFallbackEligible,
+  normalizeOpenCodeQuotaFallbackStatus
+} from './openCodeQuotaFallback'
 import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
@@ -1086,6 +1148,110 @@ const formatCodebuddyReset = (resetAt: string) => {
   const d = new Date(resetAt)
   return Number.isNaN(d.getTime()) ? resetAt : d.toLocaleString()
 }
+
+// ── OpenCode 额度保护：只读状态条（DTO 由 backend 派生下发，前端不做重复决策）──
+// state=unknown/缺失快照显式提示，绝不显示为 0%/正常；开关关闭时不渲染（无布局回归）。
+const quotaFallbackStatus = computed(() =>
+  normalizeOpenCodeQuotaFallbackStatus(props.account.opencode_quota_fallback)
+)
+const showQuotaFallbackStatus = computed(() => {
+  const status = quotaFallbackStatus.value
+  if (!status) return false
+  if (!status.enabled && status.state === 'disabled') return false
+  if (props.account.opencode_go_usage?.eligible) return true
+  const mode = props.account.credentials?.account_mode
+  return isOpenCodeQuotaFallbackEligible(
+    props.account.platform,
+    props.account.type,
+    typeof mode === 'string' ? mode : undefined
+  )
+})
+const quotaFallbackStateLabel = computed(() => {
+  const state = quotaFallbackStatus.value?.state
+  if (state === 'normal') return t('admin.accounts.openCodeQuotaFallback.status.normal')
+  if (state === 'fallback_active') return t('admin.accounts.openCodeQuotaFallback.status.fallbackActive')
+  if (state === 'unknown') return t('admin.accounts.openCodeQuotaFallback.status.unknown')
+  return t('admin.accounts.openCodeQuotaFallback.status.disabled')
+})
+const quotaFallbackBadgeClass = computed(() => {
+  switch (quotaFallbackStatus.value?.state) {
+    case 'normal':
+      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+    case 'fallback_active':
+      return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+    case 'unknown':
+      return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+    default:
+      return 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
+  }
+})
+const quotaFallbackWindowLabel = (window: '5h' | 'weekly' | 'monthly') => {
+  if (window === '5h') return t('admin.accounts.openCodeQuotaFallback.status.window5h')
+  if (window === 'weekly') return t('admin.accounts.openCodeQuotaFallback.status.windowWeekly')
+  return t('admin.accounts.openCodeQuotaFallback.status.windowMonthly')
+}
+const formatQuotaFallbackTime = (value: string) => {
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+}
+// 机器短码只映射到已词条化的原因；未知短码不裸露给用户，回落通用“刷新失败/不可用”文案。
+const QUOTA_FALLBACK_REASON_KEYS = new Set(['no_snapshot', 'refresh_failed', 'unauthorized'])
+const quotaFallbackReasonLabel = computed(() => {
+  const reason = quotaFallbackStatus.value?.reason
+  if (!reason) return ''
+  if (reason.startsWith('stale')) return t('admin.accounts.openCodeQuotaFallback.status.reason.stale')
+  if (QUOTA_FALLBACK_REASON_KEYS.has(reason)) {
+    return t(`admin.accounts.openCodeQuotaFallback.status.reason.${reason}`)
+  }
+  return t('admin.accounts.openCodeQuotaFallback.status.reason.unknown')
+})
+const quotaFallbackWindowLines = computed(() => {
+  const status = quotaFallbackStatus.value
+  if (!status || status.state !== 'fallback_active') return []
+  return status.triggering_windows.map((window, index) => {
+    const percent = typeof window.used_percent === 'number' ? `${window.used_percent}%` : ''
+    let text = t('admin.accounts.openCodeQuotaFallback.status.windowPercent', {
+      window: quotaFallbackWindowLabel(window.window),
+      percent
+    })
+    if (window.resets_at) {
+      text += ` ${t('admin.accounts.openCodeQuotaFallback.status.windowReset', {
+        time: formatQuotaFallbackTime(window.resets_at)
+      })}`
+    }
+    return { key: `${window.window}-${index}`, text }
+  })
+})
+const quotaFallbackHint = computed(() => {
+  const status = quotaFallbackStatus.value
+  if (!status) return ''
+  if (status.state === 'unknown') {
+    const parts = [t('admin.accounts.openCodeQuotaFallback.status.unknownHint')]
+    if (quotaFallbackReasonLabel.value) parts.push(quotaFallbackReasonLabel.value)
+    if (status.snapshot_at) {
+      parts.push(
+        t('admin.accounts.openCodeQuotaFallback.status.snapshotAt', {
+          time: formatQuotaFallbackTime(status.snapshot_at)
+        })
+      )
+    }
+    return parts.join(' ')
+  }
+  if (status.state === 'fallback_active') {
+    const parts = [t('admin.accounts.openCodeQuotaFallback.status.fallbackHint')]
+    if (status.snapshot_at) {
+      parts.push(
+        t('admin.accounts.openCodeQuotaFallback.status.snapshotAt', {
+          time: formatQuotaFallbackTime(status.snapshot_at)
+        })
+      )
+    }
+    return parts.join(' ')
+  }
+  return t('admin.accounts.openCodeQuotaFallback.status.threshold', {
+    percent: status.threshold_percent
+  })
+})
 
 // M2：令牌有效期标注（<24h 预警）
 const codebuddyTokenExpiryHint = computed(() => {

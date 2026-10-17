@@ -2001,7 +2001,11 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 			return false
 		}
 	}
-	if a.IsOpenCode() && capability != OpenAIEndpointCapabilityChatCompletions {
+	if a.IsOpenCode() && capability != OpenAIEndpointCapabilityChatCompletions &&
+		!openCodeQuotaFallbackAllowsCapability(a, capability) {
+		// legacy opencode 默认只支持 Chat Completions 端点；启用额度保护且替代目标的
+		// 协议集合覆盖该端点能力时按目标能力放行（feature-off / 无可用目标协议时保持
+		// 原行为）。上游协议选择见 resolveUpstreamProtocol 的目标驱动分支。
 		return false
 	}
 	// CodeBuddy 仅支持 Chat Completions 端点（上游为 /v2/chat/completions）。

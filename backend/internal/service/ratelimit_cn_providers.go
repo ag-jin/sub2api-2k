@@ -223,6 +223,15 @@ func (s *RateLimitService) cooldownCNProviderToQuotaSnapshotReset(ctx context.Co
 	if until == nil {
 		return nil
 	}
+	// 启用额度保护：付费窗口耗尽收敛为模型作用域的付费钱包冷却（替代目标与
+	// 免费直连模型不受影响）；持久化失败时返回 nil，由调用方落入既有真实 429
+	// 门禁（不把未知作用域伪装成已知额度耗尽，也不写整账号停调）。
+	if account.GetOpenCodeQuotaFallback().Enabled {
+		if !persistOpenCodeQuotaFallbackWalletLimit(ctx, s.accountRepo, account, *until, reason) {
+			return nil
+		}
+		return until
+	}
 	s.notifyAccountSchedulingBlocked(account, *until, reason)
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *until); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)

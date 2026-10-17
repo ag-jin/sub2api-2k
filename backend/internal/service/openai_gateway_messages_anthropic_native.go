@@ -220,7 +220,9 @@ func nativeAnthropicMessagesURL(account *Account, validatedBaseURL string) strin
 func resolveMappedUpstreamModel(account *Account, body []byte, defaultMappedModel string) string {
 	original := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	billing := resolveOpenAIForwardModel(account, original, defaultMappedModel)
-	return normalizeOpenAIModelForUpstream(account, billing)
+	// 协议分流必须按实际出站目标判定：额度保护替换后按目标的 protocol_rules /
+	// 可用元数据选协议（legacy opencode 强制 CC 的兜底不能加给替代目标）。
+	return applyOpenCodeQuotaFallbackUpstreamModel(account, normalizeOpenAIModelForUpstream(account, billing))
 }
 
 // buildNativeAnthropicUpstreamRequest 构建原生 Anthropic 上游请求；signed 表示本次

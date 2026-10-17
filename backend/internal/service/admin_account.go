@@ -349,6 +349,9 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	if err := ValidateOpenCodeQuotaFallbackCredentials(input.Platform, input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	duplicate, err := buildAccountForCreate(input, accountExtra)
 	if err != nil {
 		return nil, err
@@ -548,6 +551,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	// OpenCode 额度保护配置：保存侧唯一强校验（平台/mode/apikey + 结构）。
+	if err := ValidateOpenCodeQuotaFallbackCredentials(input.Platform, input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
@@ -695,6 +702,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		if err := NormalizeProtocolRulesCredentials(account.Credentials); err != nil {
+			return nil, err
+		}
+		// OpenCode 额度保护配置：合并后的凭据 + 账号当前平台/类型/模式统一校验。
+		if err := ValidateOpenCodeQuotaFallbackCredentials(account.Platform, account.Type, account.Credentials); err != nil {
 			return nil, err
 		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
@@ -1143,6 +1154,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
+	}
+	// 批量路径的 credentials 是 JSONB 顶层键整体替换（credentials || payload），
+	// 无法按平台/mode 校验，且会整体覆盖/意外关闭 quota_fallback；本期显式拒绝该
+	// 字段，不做批量额度保护配置。
+	if input.Credentials != nil {
+		if _, present := input.Credentials[OpenCodeQuotaFallbackCredentialKey]; present {
+			return nil, infraerrors.BadRequest("BULK_OPENCODE_QUOTA_FALLBACK_UNSUPPORTED",
+				"quota_fallback cannot be changed through the bulk account update; edit the account directly")
+		}
 	}
 	// Bulk may mix platforms; always drop ephemeral SSO/password keys (cookie
 	// only when platform is known Grok — empty platform still strips password/*).

@@ -550,6 +550,58 @@ export default {
           forbidden: '上游返回 403：可能是订阅缺失/失效，也可能是 WAF 或访问策略拦截，请结合网络路径与 HTTP 状态排查。'
         }
       },
+      openCodeQuotaFallback: {
+        title: 'OpenCode 额度保护',
+        hint: '可选功能，仅 OpenCode GO 账号（含旧版 OpenCode 平台）生效：任一用量窗口达到阈值后，已配置的付费模型切换到管理员手动选择的替代目标。Zen 模式与其他平台不受影响。',
+        enabled: '启用额度保护',
+        enabledHint: '默认关闭。保存后对下一次请求生效，绝不改写正常模型映射。',
+        threshold: '触发阈值（%）',
+        thresholdHint: '1-100 的整数，默认 98：任一有效用量窗口达到该百分比即开始替代。',
+        mapping: '替代模型映射',
+        mappingHint: '左侧来自账号正常模型映射（实际上游模型 ID），右侧为手动选择的替代模型 ID。',
+        sourceColumn: '正常上游模型',
+        targetColumn: '替代模型',
+        addRow: '添加映射',
+        removeRow: '删除',
+        sourcePlaceholder: '正常上游模型 ID',
+        targetPlaceholder: '替代模型 ID',
+        noSourceOptions: '该账号还没有正常模型映射，请先配置模型映射。',
+        targetManualHint: '可从上游目录选择或直接输入准确模型 ID。',
+        candidatesRefresh: '获取上游模型',
+        candidatesLoading: '正在加载上游模型...',
+        candidatesError: '上游模型目录加载失败，可手动输入模型 ID 或重试。',
+        candidatesEmpty: '上游目录未返回任何模型。',
+        candidateAvailable: '在目录中',
+        candidateUnavailable: '已不在目录中',
+        candidateUnknown: '在目录中（无元数据）',
+        freePolicyNotice: '替代模型当前是否免费需由管理员自行确认。上游免费不代表下游免费，账务仍按站点规则；系统不会擅自更换目标。',
+        errors: {
+          thresholdInvalid: '阈值必须是 1 到 100 之间的整数。',
+          mappingInvalid: '至少添加一条正常上游模型非空、替代目标非空且两者不同的映射。'
+        },
+        status: {
+          disabled: '保护关闭',
+          normal: '正常',
+          fallbackActive: '替代中',
+          unknown: '用量未知',
+          threshold: '阈值 {percent}%',
+          window5h: '5 小时',
+          windowWeekly: '周',
+          windowMonthly: '月',
+          windowPercent: '{window} {percent}%',
+          windowReset: '{time} 重置',
+          snapshotAt: '快照 {time}',
+          fallbackHint: '已配置替代的付费模型走替代目标；下游账务仍按正常规则。',
+          unknownHint: '没有可用的最新用量快照，保护状态未知，不会误报为正常。',
+          reason: {
+            no_snapshot: '暂无用量快照',
+            refresh_failed: '用量刷新失败',
+            unauthorized: '用量查询未授权',
+            stale: '用量快照已过期',
+            unknown: '用量刷新失败或状态不可用'
+          }
+        }
+      },
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',

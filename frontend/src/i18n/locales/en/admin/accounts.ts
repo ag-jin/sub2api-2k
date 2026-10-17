@@ -347,6 +347,58 @@ export default {
           forbidden: 'Upstream returned 403: could be a missing/expired OpenCode Go subscription or a WAF/access-policy block; check the network path and HTTP status.'
         }
       },
+      openCodeQuotaFallback: {
+        title: 'OpenCode Quota Protection',
+        hint: 'Optional, for OpenCode GO accounts (and the legacy OpenCode platform). When any usage window reaches the threshold, configured paid models switch to the substitute targets you pick manually. Zen mode and other platforms are unaffected.',
+        enabled: 'Enable quota protection',
+        enabledHint: 'Off by default. Applies from the next request after saving; it never rewrites the normal model mapping.',
+        threshold: 'Trigger threshold (%)',
+        thresholdHint: 'Whole number 1-100, default 98. Substitution starts when any valid usage window reaches this percentage.',
+        mapping: 'Substitute model mapping',
+        mappingHint: 'Left column comes from the account normal model mapping (actual upstream model IDs). Right column is the substitute model ID selected manually.',
+        sourceColumn: 'Normal upstream model',
+        targetColumn: 'Substitute model',
+        addRow: 'Add mapping',
+        removeRow: 'Remove',
+        sourcePlaceholder: 'Normal upstream model ID',
+        targetPlaceholder: 'Substitute model ID',
+        noSourceOptions: 'This account has no normal model mapping yet. Configure the model mapping first.',
+        targetManualHint: 'Pick from the upstream catalog or type the exact model ID.',
+        candidatesRefresh: 'Load upstream models',
+        candidatesLoading: 'Loading upstream models...',
+        candidatesError: 'Failed to load the upstream model catalog. Type the model ID manually or retry.',
+        candidatesEmpty: 'The upstream catalog returned no models.',
+        candidateAvailable: 'In catalog',
+        candidateUnavailable: 'No longer in catalog',
+        candidateUnknown: 'In catalog (no metadata)',
+        freePolicyNotice: 'Confirm the substitute model current free policy yourself. Upstream free does not mean downstream free; normal billing rules still apply, and the system never changes targets on its own.',
+        errors: {
+          thresholdInvalid: 'Threshold must be a whole number between 1 and 100.',
+          mappingInvalid: 'Add at least one mapping with a non-empty substitute ID different from the source.'
+        },
+        status: {
+          disabled: 'Protection off',
+          normal: 'Normal',
+          fallbackActive: 'Substitute active',
+          unknown: 'Usage unknown',
+          threshold: 'Threshold {percent}%',
+          window5h: '5h',
+          windowWeekly: 'Weekly',
+          windowMonthly: 'Monthly',
+          windowPercent: '{window} {percent}%',
+          windowReset: 'resets {time}',
+          snapshotAt: 'Snapshot {time}',
+          fallbackHint: 'Paid models with a substitute mapping are routed to the substitute target; downstream billing follows normal rules.',
+          unknownHint: 'No fresh usage snapshot; protection state is unknown and is not reported as normal.',
+          reason: {
+            no_snapshot: 'No usage snapshot yet',
+            refresh_failed: 'Usage refresh failed',
+            unauthorized: 'Usage query unauthorized',
+            stale: 'Usage snapshot is stale',
+            unknown: 'Usage refresh failed or status unavailable'
+          }
+        }
+      },
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',

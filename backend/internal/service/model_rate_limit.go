@@ -77,6 +77,18 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	}
 
 	keys := []string{modelKey}
+	// 额度保护把请求改写到管理员手选目标时，目标自身的模型级冷却必须同样生效
+	// （401/403/rpm/上游 model-not-found 冷却照旧，不因替代而绕过）。
+	if target, ok := openCodeQuotaFallbackRoutedTarget(a, requestedModel); ok && target != modelKey {
+		keys = append(keys, target)
+	}
+	// 付费钱包冷却（付费窗口耗尽的模型作用域记录）只挡「额度保护判定该模型不可用」的
+	// 付费模型：替代目标、目标直连、以及已从可信快照恢复 normal 的请求都不受其影响
+	// （free 替代不过付费 wallet key，直连 target 与 fresh 恢复不被误封）。
+	if openCodeQuotaFallbackBlocksModel(a, requestedModel) &&
+		a.isRateLimitActiveForKey(OpenCodeQuotaFallbackWalletScope) {
+		keys = append(keys, OpenCodeQuotaFallbackWalletScope)
+	}
 	switch a.Platform {
 	case PlatformAntigravity:
 		if isAntigravityGeminiModel(modelKey) && !isAntigravityGeminiImageModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {

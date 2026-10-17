@@ -132,7 +132,7 @@ type openCodeGoUsageRepository interface {
 	SetOpenCodeGoUsageAutoRefresh(context.Context, *Account, bool) error
 	UpdateOpenCodeGoUsageSnapshot(context.Context, *Account, *OpenCodeGoUsageSnapshot) error
 	DisableOpenCodeGoUsageAutoRefresh(context.Context, *Account) error
-	ListDueOpenCodeGoUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int) ([]Account, error)
+	ListDueOpenCodeGoUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int, bool) ([]Account, error)
 }
 
 // GetOpenCodeGoUsageSettings returns fail-safe defaults when the setting is absent.
@@ -598,9 +598,10 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !settings.Enabled {
-		return nil
-	}
+	// 全局用量开关关闭时，仍对「启用 OpenCode 额度保护」的账号保持刷新：用户没有
+	// 承诺另开全局开关，启用保护后的首刷与持续刷新不能依赖它（否则 unknown 永久
+	// 悬挂）。其它账号严格保持全局设置原样（policyAccountsOnly 只放行策略账号）。
+	policyAccountsOnly := !settings.Enabled
 	release, acquired := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, opencodeGoUsageLeaderLockKey, s.instanceID, opencodeGoUsageLeaderLockTTL)
 	if !acquired {
 		return nil
@@ -613,7 +614,7 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	}
 	now := s.currentTime()
 	debounce, maxWait := openCodeGoUsageDurations(settings)
-	accounts, err := writer.ListDueOpenCodeGoUsageAccounts(ctx, now, debounce, maxWait, opencodeGoUsageMaxPerCycle)
+	accounts, err := writer.ListDueOpenCodeGoUsageAccounts(ctx, now, debounce, maxWait, opencodeGoUsageMaxPerCycle, policyAccountsOnly)
 	if err != nil {
 		return fmt.Errorf("list due OpenCode Go usage accounts: %w", err)
 	}
@@ -622,7 +623,16 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	for index := range accounts {
 		account := accounts[index]
 		fingerprint, valid := openCodeGoUsageGroupFingerprint(&account)
-		if !valid || !account.IsActive() || !openCodeGoUsageAutoRefreshEnabled(&account) {
+		if !valid || !account.IsActive() {
+			continue
+		}
+		// 策略账号不需要 auto_refresh 标记；其它账号仍必须显式启用自动刷新。
+		if !openCodeGoUsageAutoRefreshEnabled(&account) && !account.GetOpenCodeQuotaFallback().Enabled {
+			continue
+		}
+		// 全局用量开关关闭时只刷新策略账号（SQL 已限制，这里再挡一层，保证任何
+		// 数据源下其它账号的全局设置都不被绕过）。
+		if policyAccountsOnly && !account.GetOpenCodeQuotaFallback().Enabled {
 			continue
 		}
 		if _, duplicate := seenGroups[fingerprint]; duplicate {
@@ -703,7 +713,11 @@ func (s *OpenCodeGoUsageService) refreshAccount(ctx context.Context, accountID i
 			}
 		}
 		if requireEnabled {
-			if !account.IsActive() || !openCodeGoUsageAutoRefreshEnabled(account) {
+			// 启用额度保护的账号按策略资格放行：不要求 auto_refresh 标记，
+			// 也不受全局用量开关影响（否则 RunDue 筛入后会在执行层被挡回，
+			// 首启 unknown 永久悬挂）。其它账号仍要求显式启用自动刷新。
+			policyEnabled := account.GetOpenCodeQuotaFallback().Enabled
+			if !account.IsActive() || (!openCodeGoUsageAutoRefreshEnabled(account) && !policyEnabled) {
 				return nil, nil
 			}
 			groupLastUsed := account.LastUsedAt
@@ -720,7 +734,14 @@ func (s *OpenCodeGoUsageService) refreshAccount(ctx context.Context, accountID i
 					groupLastUsed = maxOpenCodeGoUsageGroupLastUsed(siblings)
 				}
 			}
-			if !openCodeGoUsageIsAutoRefreshDue(decodeOpenCodeGoUsageSnapshot(account.Extra), groupLastUsed, s.currentTime(), debounce, maxWait) {
+			snapshot := decodeOpenCodeGoUsageSnapshot(account.Extra)
+			due := openCodeGoUsageIsAutoRefreshDue(snapshot, groupLastUsed, s.currentTime(), debounce, maxWait)
+			if policyEnabled {
+				// 策略账号额外接受「快照缺失/陈旧」这一与活动无关的刷新条件，
+				// 与 due SQL 的 policy 分支同一语义。
+				due = due || openCodeQuotaFallbackSnapshotNeedsRefresh(snapshot, s.currentTime(), maxWait)
+			}
+			if !due {
 				return nil, nil
 			}
 		}

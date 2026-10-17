@@ -74,7 +74,7 @@ func (r *openCodeGoUsageHandlerTestRepo) UpdateOpenCodeGoUsageSnapshot(context.C
 func (r *openCodeGoUsageHandlerTestRepo) DisableOpenCodeGoUsageAutoRefresh(context.Context, *service.Account) error {
 	return nil
 }
-func (r *openCodeGoUsageHandlerTestRepo) ListDueOpenCodeGoUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int) ([]service.Account, error) {
+func (r *openCodeGoUsageHandlerTestRepo) ListDueOpenCodeGoUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int, bool) ([]service.Account, error) {
 	return nil, nil
 }
 

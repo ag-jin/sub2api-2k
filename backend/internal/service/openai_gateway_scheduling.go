@@ -816,9 +816,17 @@ func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
 }
 
 // resolveOpenAIAccountUpstreamModelForRequest resolves the upstream model that
-// would be sent for a given request, honoring the legacy compact-only mapping
-// when the caller is on the /responses/compact path.
+// would be sent for a given request: the normal account mapping chain plus the
+// OpenCode quota-fallback rewrite (single arbitration point, see
+// opencode_quota_fallback.go). Accounts that did not enable the feature pass
+// through bit-identical.
 func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool) string {
+	return applyOpenCodeQuotaFallbackUpstreamModel(account, resolveOpenAIAccountUpstreamNormalModel(account, requestedModel, requireCompact))
+}
+
+// resolveOpenAIAccountUpstreamNormalModel is the pre-policy chain, honoring the
+// legacy compact-only mapping when the caller is on the /responses/compact path.
+func resolveOpenAIAccountUpstreamNormalModel(account *Account, requestedModel string, requireCompact bool) string {
 	// Forward checks the raw Chat Completions fallback before passthrough.
 	// These API-key accounts therefore apply normal account model_mapping and
 	// upstream normalization, but never compact_model_mapping.

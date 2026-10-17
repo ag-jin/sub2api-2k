@@ -524,3 +524,24 @@ func TestOpenCodeAccountModeOnlyTrimmedZenIsZen(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenCodeGoUsageDueQueryPolicyAccountsContracts 钉死额度保护的 due 查询契约：
+// 策略账号（credentials.quota_fallback.enabled=true）必须进入 eligible 集合，且在
+// policyAccountsOnly=true（全局用量开关关闭）时被显式限制为仅策略账号；同时策略
+// 账号获得与活动无关的刷新下限（idle due = fetched_at + maxWait）。
+func TestOpenCodeGoUsageDueQueryPolicyAccountsContracts(t *testing.T) {
+	require.Equal(t, "(credentials -> 'quota_fallback' ->> 'enabled') = 'true'", opencodeGoQuotaFallbackEnabledSQL)
+
+	for _, policyAccountsOnly := range []bool{false, true} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		mock.ExpectQuery(`(?s)opencode_go_usage_auto_refresh.*quota_fallback.*enabled`).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "group_last_used_at"}))
+		repo := newAccountRepositoryWithSQL(nil, db, nil)
+
+		_, err = repo.ListDueOpenCodeGoUsageAccounts(context.Background(), time.Now(), time.Minute, 15*time.Minute, 10, policyAccountsOnly)
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	}
+}

@@ -30,6 +30,10 @@ type openCodeGoUsageTestRepo struct {
 	getByIDCalls       atomic.Int64
 	disableAutoCalls   atomic.Int64
 	disableAutoAttempt atomic.Int64
+	// lastPolicyAccountsOnly 记录最近一次 ListDue 的 policyAccountsOnly 入参，
+	// 供「全局关闭时只查策略账号」的断言使用。
+	lastPolicyAccountsOnly bool
+	policyOnlyCalls        atomic.Int64
 }
 
 func (r *openCodeGoUsageTestRepo) GetByID(_ context.Context, id int64) (*Account, error) {
@@ -160,9 +164,13 @@ func sameOpenCodeGoUsageTestIdentity(left, right *Account) bool {
 		reflect.DeepEqual(left.Credentials, right.Credentials) && reflect.DeepEqual(left.ProxyID, right.ProxyID)
 }
 
-func (r *openCodeGoUsageTestRepo) ListDueOpenCodeGoUsageAccounts(_ context.Context, _ time.Time, _, _ time.Duration, limit int) ([]Account, error) {
+func (r *openCodeGoUsageTestRepo) ListDueOpenCodeGoUsageAccounts(_ context.Context, _ time.Time, _, _ time.Duration, limit int, policyAccountsOnly bool) ([]Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastPolicyAccountsOnly = policyAccountsOnly
+	if policyAccountsOnly {
+		r.policyOnlyCalls.Add(1)
+	}
 	if len(r.due) > 0 {
 		out := make([]Account, 0, min(limit, len(r.due)))
 		for _, account := range r.due[:min(limit, len(r.due))] {
@@ -746,6 +754,9 @@ func TestOpenCodeGoUsageRunDueRefreshesDueAccounts(t *testing.T) {
 	require.NoError(t, svc.RunDue(context.Background()))
 	require.Equal(t, int64(1), stub.calls.Load())
 	require.Equal(t, OpenCodeGoUsageStatusOK, decodeOpenCodeGoUsageSnapshot(account.Extra).Status)
+	// 全局开关启用时按原语义查询全部自动刷新账号（不进入 policy-only 模式）。
+	require.Equal(t, int64(0), repo.policyOnlyCalls.Load())
+	require.False(t, repo.lastPolicyAccountsOnly)
 }
 
 func TestOpenCodeGoUsageRunDueSkipsWhenDisabled(t *testing.T) {
@@ -756,6 +767,10 @@ func TestOpenCodeGoUsageRunDueSkipsWhenDisabled(t *testing.T) {
 	svc := newOpenCodeGoUsageTestService(t, repo, stub, &upstreamBillingProbeSettingRepo{})
 
 	require.NoError(t, svc.RunDue(context.Background()))
+	// 全局用量开关关闭：只查询启用额度保护的账号（policyAccountsOnly=true），
+	// 非策略账号即使开了 auto_refresh 也不执行刷新——设置原样不被绕过。
+	require.Equal(t, int64(1), repo.policyOnlyCalls.Load())
+	require.True(t, repo.lastPolicyAccountsOnly)
 	require.Equal(t, int64(0), stub.calls.Load())
 }
 

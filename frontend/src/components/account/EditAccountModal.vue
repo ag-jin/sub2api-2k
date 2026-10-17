@@ -200,6 +200,16 @@
           :platform="account.platform"
           :plan="currentOpenCodeOrCNMode()"
         />
+        <OpenCodeQuotaFallbackEditor
+          v-if="showOpenCodeQuotaFallbackEditor"
+          v-model="editQuotaFallbackConfig"
+          :model-options="quotaFallbackModelOptions"
+          :candidates="quotaFallbackCandidates"
+          :candidates-state="quotaFallbackCandidatesState"
+          :disabled="submitting"
+          :error="quotaFallbackError"
+          @sync-targets="syncQuotaFallbackCandidates"
+        />
         <!-- Zhipu 团队版 Coding Plan：组织/项目 ID（可选，填写后用量查询走团队版端点） -->
         <div v-if="account.platform === 'zhipu' && editAccountMode === 'coding'">
           <div class="flex items-center">
@@ -3440,7 +3450,20 @@ import {
   normalizeExplicitCacheUpstreamMaxTTL
 } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
+import OpenCodeQuotaFallbackEditor from '@/components/account/OpenCodeQuotaFallbackEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import {
+  applyOpenCodeQuotaFallbackConfig,
+  createOpenCodeQuotaFallbackConfig,
+  isOpenCodeQuotaFallbackEligible,
+  mergeOpenCodeQuotaFallbackCandidates,
+  openCodeQuotaFallbackCandidatesFromSync,
+  openCodeQuotaFallbackSourceOptions,
+  parseOpenCodeQuotaFallbackConfig,
+  validateOpenCodeQuotaFallbackConfig,
+  type OpenCodeQuotaFallbackCandidate,
+  type OpenCodeQuotaFallbackConfig
+} from '@/components/account/openCodeQuotaFallback'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
 import {
@@ -3809,6 +3832,67 @@ const editOpenCodeAccountMode = ref<OpenCodeAccountMode>('go')
 const cnPresetMode = computed<CnAccountMode>(() => (editAccountMode.value === 'coding' ? 'coding' : 'payg'))
 function currentOpenCodeOrCNMode(): string {
   return props.account?.platform === 'opencode_go' ? editOpenCodeAccountMode.value : editAccountMode.value
+}
+// ── OpenCode 额度保护（可选，默认关闭）──
+// 仅 opencode / opencode_go 的 Go 模式 apikey 账号展示与保存；Zen 无 5h 窗口，
+// 不展示且保存时强制 enabled=false（保留映射，不泄漏启用策略）。
+// 持久层 schema/校验见 openCodeQuotaFallback.ts（冻结契约 2026-10-16）。
+const editQuotaFallbackConfig = ref<OpenCodeQuotaFallbackConfig>(createOpenCodeQuotaFallbackConfig())
+const quotaFallbackCandidates = ref<OpenCodeQuotaFallbackCandidate[]>([])
+const quotaFallbackCandidatesState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+// 账号切换即失效候选目录；旧账号的异步响应不得覆盖新账号上下文。
+let quotaFallbackCandidatesRequestVersion = 0
+watch(
+  () => props.account?.id,
+  () => {
+    quotaFallbackCandidatesRequestVersion += 1
+    quotaFallbackCandidates.value = []
+    quotaFallbackCandidatesState.value = 'idle'
+  }
+)
+// legacy opencode 平台没有模式选择器：资格判定读存储的 account_mode（zen 不豁免）。
+const openCodeQuotaFallbackMode = computed<string | undefined>(() => {
+  if (props.account?.platform === 'opencode_go') return editOpenCodeAccountMode.value
+  if (props.account?.platform === 'opencode') {
+    const mode = (props.account.credentials as Record<string, unknown> | undefined)?.account_mode
+    return typeof mode === 'string' ? mode : undefined
+  }
+  return undefined
+})
+const showOpenCodeQuotaFallbackEditor = computed(() =>
+  isOpenCodeQuotaFallbackEligible(
+    props.account?.platform ?? '',
+    props.account?.type ?? '',
+    openCodeQuotaFallbackMode.value
+  )
+)
+// source 候选 = 当前表单正常 model_mapping 的真正 targets（正常实际上游模型 ID）。
+const quotaFallbackModelOptions = computed(() =>
+  openCodeQuotaFallbackSourceOptions(buildModelRestrictionMapping())
+)
+const quotaFallbackError = computed(() => {
+  const error = validateOpenCodeQuotaFallbackConfig(editQuotaFallbackConfig.value)
+  return error ? t(`admin.accounts.openCodeQuotaFallback.errors.${error}`) : null
+})
+// 目标候选：复用既有上游 models list 能力；仅管理员显式触发（sync-targets）。
+async function syncQuotaFallbackCandidates() {
+  if (!showOpenCodeQuotaFallbackEditor.value || !props.account || quotaFallbackCandidatesState.value === 'loading') {
+    return
+  }
+  const requestVersion = ++quotaFallbackCandidatesRequestVersion
+  quotaFallbackCandidatesState.value = 'loading'
+  try {
+    const result = await adminAPI.accounts.syncUpstreamModels(props.account.id)
+    if (requestVersion !== quotaFallbackCandidatesRequestVersion) return
+    quotaFallbackCandidates.value = mergeOpenCodeQuotaFallbackCandidates(
+      quotaFallbackCandidates.value,
+      openCodeQuotaFallbackCandidatesFromSync(result)
+    )
+    quotaFallbackCandidatesState.value = 'ready'
+  } catch {
+    if (requestVersion !== quotaFallbackCandidatesRequestVersion) return
+    quotaFallbackCandidatesState.value = 'error'
+  }
 }
 // 智谱团队版 Coding Plan：组织/项目 ID，写入 credentials 供额度探测切换团队端点
 const editZhipuOrganization = ref('')
@@ -4894,6 +4978,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           cloneOpenCodeGoProtocolRules(defaultProviderProtocolRules(newAccount.platform, currentOpenCodeOrCNMode()))
       }
     }
+    // OpenCode 额度保护：回显存储配置；旧账号无字段 → 默认关闭态（等价缺省，不自动写 enabled）。
+    editQuotaFallbackConfig.value =
+      parseOpenCodeQuotaFallbackConfig(credentials.quota_fallback) ?? createOpenCodeQuotaFallbackConfig()
+    quotaFallbackCandidatesRequestVersion += 1
+    quotaFallbackCandidates.value = []
+    quotaFallbackCandidatesState.value = 'idle'
     const platformDefaultUrl =
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
@@ -5761,6 +5851,25 @@ const handleSubmit = async () => {
         }
       } else if (currentCredentials.model_mapping) {
         newCredentials.model_mapping = currentCredentials.model_mapping
+      }
+      // OpenCode 额度保护（可选）：启用前先校验；Zen/非 Go 模式强制 enabled=false（不泄漏启用策略，
+      // 保留已选映射）；无存量字段且关闭且无映射时不写。非 OpenCode 平台不触碰该字段。
+      if (props.account.platform === 'opencode' || props.account.platform === 'opencode_go') {
+        const quotaFallbackEligible = isOpenCodeQuotaFallbackEligible(
+          props.account.platform,
+          props.account.type,
+          openCodeQuotaFallbackMode.value
+        )
+        if (quotaFallbackEligible) {
+          const quotaFallbackValidationError = validateOpenCodeQuotaFallbackConfig(editQuotaFallbackConfig.value)
+          if (quotaFallbackValidationError) {
+            appStore.showError(t(`admin.accounts.openCodeQuotaFallback.errors.${quotaFallbackValidationError}`))
+            return
+          }
+        }
+        applyOpenCodeQuotaFallbackConfig(newCredentials, editQuotaFallbackConfig.value, {
+          eligible: quotaFallbackEligible
+        })
       }
       if (props.account.platform === 'openai') {
         applyOpenAIEndpointCapabilities(newCredentials)

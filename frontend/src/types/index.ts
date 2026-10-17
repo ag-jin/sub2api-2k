@@ -1230,6 +1230,27 @@ export interface OpenCodeGoUsageState {
   snapshot?: OpenCodeGoUsageSnapshot
 }
 
+/** 只读保护状态（backend 派生下发，前端不做重复决策）。 */
+export type OpenCodeQuotaFallbackState = 'disabled' | 'normal' | 'fallback_active' | 'unknown'
+
+export interface OpenCodeQuotaFallbackTriggerWindow {
+  window: '5h' | 'weekly' | 'monthly'
+  /** 触发窗口的最新快照百分比；缺失时不得显示为 0%。 */
+  used_percent?: number
+  resets_at?: string
+}
+
+export interface OpenCodeQuotaFallbackStatus {
+  enabled: boolean
+  state: OpenCodeQuotaFallbackState
+  threshold_percent: number
+  /** 仅 fallback_active 非空。 */
+  triggering_windows: OpenCodeQuotaFallbackTriggerWindow[]
+  snapshot_at?: string | null
+  /** 机器可读短码（no_snapshot / refresh_failed / unauthorized / stale_* 等），非用户文案。 */
+  reason?: string
+}
+
 export interface OpenCodeGoUsageSettings {
   enabled: boolean
   /** Max wait while model requests keep arriving (minutes). */
@@ -1252,6 +1273,7 @@ export interface Account {
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   opencode_go_usage?: OpenCodeGoUsageState
+  opencode_quota_fallback?: OpenCodeQuotaFallbackStatus
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>

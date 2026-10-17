@@ -33,6 +33,13 @@ func resolveUpstreamProtocol(account *Account, inbound, model string, catalog []
 	if account.routesByModel() {
 		return account.resolveModelRoutedProtocolFor(model, inbound, catalog)
 	}
+	// legacy opencode（无 provider profile，GetAPIProtocol 兜底 CC）在发生额度保护
+	// 替代时，按替代目标自身的 protocol_rules / 元数据选协议：不能把 CC 强制兜底
+	// 加给协议不同的目标（Step 曾因沿用 DeepSeek 的 CC 协议报
+	// "Model does not support this protocol"）。未启用/未命中的账号零变化。
+	if account.usesOpenCodeQuotaFallbackTargetProtocol(model) {
+		return account.resolveOpenCodeQuotaFallbackProtocolFor(model, inbound, catalog)
+	}
 	if account.IsAdaptiveAPIProtocol() {
 		if account.providerSupportsProtocol(inbound) {
 			return inbound
@@ -112,7 +119,10 @@ func (a *Account) supportedCatalogProtocols(catalog []string) []string {
 // 模型映射与上游归一后的名字匹配规则；其余账号的分流与模型无关，返回空串。
 func upstreamRoutingModel(account *Account, body []byte, defaultMappedModel string) string {
 	if !account.routesByModel() {
-		return ""
+		// legacy opencode（无 provider profile）：默认不参与按模型分流；仅当额度保护
+		// 把请求改写到手选目标时返回该目标，供 resolveUpstreamProtocol 按目标能力
+		// 选协议（feature-off/未命中仍返回 ""，与基线一致）。
+		return openCodeQuotaFallbackRoutingModelForBody(account, body, defaultMappedModel)
 	}
 	return resolveMappedUpstreamModel(account, body, defaultMappedModel)
 }

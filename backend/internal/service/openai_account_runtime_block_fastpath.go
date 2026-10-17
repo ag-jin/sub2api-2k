@@ -466,9 +466,11 @@ func canonicalOpenAIAccountSchedulingModel(account *Account, requestedModel stri
 		return resolveOpenAIAccountUpstreamModelForRequest(account, model, false)
 	}
 	if mapped := strings.TrimSpace(account.GetMappedModel(model)); mapped != "" {
-		return mapped
+		// 额度保护把请求改写到替代目标时，瞬断/失败状态按实际出站目标记账，
+		// 否则目标的真实故障会被记到源模型名下（其他平台原样返回）。
+		return applyOpenCodeQuotaFallbackUpstreamModel(account, mapped)
 	}
-	return model
+	return applyOpenCodeQuotaFallbackUpstreamModel(account, model)
 }
 
 func openAIAccountModelTransientModel(canonicalModel string) string {

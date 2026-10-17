@@ -1815,6 +1815,11 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if req.RequestedModel != "" && !supportsOpenAIRequestModel(account, req.RequestedModel, req.RequireCompact) {
 		return false, "model_not_supported"
 	}
+	// OpenCode 额度保护：付费额度触发/未知时，未配置替代的付费模型不在本账号
+	// 候选内（模型级；与 legacy 录用门禁共用同一判定入口，不另写一份逻辑）。
+	if openCodeQuotaFallbackBlocksModel(account, req.RequestedModel) {
+		return false, "quota_fallback_model_blocked"
+	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
 		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
 		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
