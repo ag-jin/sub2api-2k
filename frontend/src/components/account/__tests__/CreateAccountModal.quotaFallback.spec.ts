@@ -159,7 +159,7 @@ function mountModal(groups: any[] = []) {
 
 // 真实 Editor 需要可交互的 Select 才能构造“只选 target、source 为空”的草稿行。
 const RealEditorSelectStub = defineComponent({
-  name: 'Select',
+  name: 'QuotaTargetSelectStub',
   props: ['modelValue', 'options', 'disabled', 'error'],
   emits: ['update:modelValue'],
   template: `

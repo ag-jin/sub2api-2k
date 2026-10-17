@@ -266,12 +266,12 @@ describe('OpenCodeQuotaFallbackEditor', () => {
   })
 
   it('treats a parent reset to the pre-edit stored config as authoritative (no edit replay)', async () => {
-    const original = fallback({
+    const stored = fallback({
       enabled: true,
       threshold_percent: 95,
       model_mapping: { 'normal-a': 'free-a' }
     })
-    const wrapper = mountEditor(original)
+    const wrapper = mountEditor(stored)
 
     const thresholdInput = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
     await thresholdInput.setValue('90')
@@ -287,7 +287,13 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     const emittedAfterEdit = wrapper.emitted('update:modelValue')?.length ?? 0
 
     // 父级真实回退（例如服务端状态变化/新上下文）以父级 v-model 为准，不得复活旧编辑。
-    await wrapper.setProps({ modelValue: original })
+    // 真实 v-model 更新总是赋新 config 对象；不能复用挂载时的同一引用，否则浅 watch 不会触发。
+    const reset = fallback({
+      enabled: true,
+      threshold_percent: 95,
+      model_mapping: { 'normal-a': 'free-a' }
+    })
+    await wrapper.setProps({ modelValue: reset })
 
     expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value).toBe('95')
     expect(sourceInput(wrapper, 'normal-a').element.value).toBe('normal-a')
@@ -337,6 +343,8 @@ describe('OpenCodeQuotaFallbackEditor', () => {
       validateForSubmit: () => string | null
     }).validateForSubmit
     expect(validateForSubmit()).toBe('sourceRequired')
+    // 行错误是响应式状态，DOM 在下一个 Vue flush 才渲染（真实提交时父级 toast 立即出现）。
+    await nextTick()
     expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.sourceRequired')
     // 合法行仍在，父级保存必须整体阻断而不是静默丢掉草稿行。
     expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-a"]').exists()).toBe(true)
