@@ -473,6 +473,37 @@
         <CNProviderQuotaCell :account="account" />
         <CNProviderBalanceCell :account="account" />
       </div>
+      <!-- OpenCode 额度保护状态（只读 DTO；unknown 不伪报正常，保护关闭时不渲染）：
+           platform=opencode_go 的 apikey Go 模式账号走本分支（多协议 API Key 供应商），
+           额度保护状态必须与上方 OpenCode Go 用量单元格一并展示。 -->
+      <div
+        v-if="showQuotaFallbackStatus && quotaFallbackStatus"
+        data-testid="opencode-quota-fallback"
+        class="space-y-0.5 pt-0.5"
+      >
+        <span
+          data-testid="opencode-quota-fallback-badge"
+          class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium"
+          :class="quotaFallbackBadgeClass"
+        >
+          {{ quotaFallbackStateLabel }}
+        </span>
+        <div
+          v-for="item in quotaFallbackWindowLines"
+          :key="item.key"
+          data-testid="opencode-quota-fallback-window"
+          class="text-[10px] text-amber-600 dark:text-amber-400"
+        >
+          {{ item.text }}
+        </div>
+        <div
+          v-if="quotaFallbackHint"
+          data-testid="opencode-quota-fallback-hint"
+          class="text-[10px] text-gray-500 dark:text-gray-400"
+        >
+          {{ quotaFallbackHint }}
+        </div>
+      </div>
     </template>
 
     <!-- CodeBuddy API-key accounts: single-value upstream balance (UpstreamBalanceUsage

@@ -4816,22 +4816,8 @@ const openCodeGoProtocolRules = ref<OpenCodeGoProtocolRule[]>(
 const quotaFallbackConfig = ref<OpenCodeQuotaFallbackConfig>(createOpenCodeQuotaFallbackConfig())
 const quotaFallbackCandidates = ref<OpenCodeQuotaFallbackCandidate[]>([])
 const quotaFallbackCandidatesState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-// 上下文切换（平台/类型/模式/端点/Key）即失效候选目录；旧异步响应不得覆盖新上下文。
+// 候选目录的失效版本号（watcher 见下方 Watchers 段：必须晚于 form 声明注册）。
 let quotaFallbackCandidatesRequestVersion = 0
-watch(
-  [
-    () => form.platform,
-    () => form.type,
-    () => openCodeAccountMode.value,
-    () => apiKeyBaseUrl.value,
-    () => apiKeyValue.value
-  ],
-  () => {
-    quotaFallbackCandidatesRequestVersion += 1
-    quotaFallbackCandidates.value = []
-    quotaFallbackCandidatesState.value = 'idle'
-  }
-)
 // 智谱团队版 Coding Plan：组织/项目 ID，写入 credentials 供额度探测切换团队端点
 const zhipuOrganization = ref('')
 const zhipuProject = ref('')
@@ -5561,6 +5547,22 @@ const canExchangeCode = computed(() => {
 })
 
 // Watchers
+// 上下文切换（平台/类型/模式/端点/Key）即失效候选目录；旧异步响应不得覆盖新上下文。
+// 必须注册在 `form` 声明之后：watch 源数组在注册时立即求值，提前引用会命中 TDZ。
+watch(
+  [
+    () => form.platform,
+    () => form.type,
+    () => openCodeAccountMode.value,
+    () => apiKeyBaseUrl.value,
+    () => apiKeyValue.value
+  ],
+  () => {
+    quotaFallbackCandidatesRequestVersion += 1
+    quotaFallbackCandidates.value = []
+    quotaFallbackCandidatesState.value = 'idle'
+  }
+)
 watch(
   () => props.show,
   (newVal) => {

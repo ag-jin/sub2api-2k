@@ -736,25 +736,6 @@ func openCodeQuotaFallbackSnapshotNeedsRefresh(snap *OpenCodeGoUsageSnapshot, no
 	return !now.Before(snap.FetchedAt.Add(horizon))
 }
 
-// openCodeQuotaFallbackWalletEvidence 读取 extra.model_rate_limits 下的付费钱包冷却记录
-// （写入方见 persistOpenCodeQuotaFallbackWalletLimit）。返回 (写入时间, 结束时间)。
-// 判定本身不消费它——钱包冷却只作为付费模型的额外门禁（model_rate_limit.go 的
-// paid-wallet key），状态机输入始终是冻结契约的 cfg + snapshot。
-func (a *Account) openCodeQuotaFallbackWalletEvidence() (since *time.Time, until *time.Time) {
-	if a == nil || a.Extra == nil {
-		return nil, nil
-	}
-	limits, ok := a.Extra[modelRateLimitsKey].(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-	payload, ok := limits[OpenCodeQuotaFallbackWalletScope].(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-	return parseSchedulingResetAt(payload["rate_limited_at"]), parseSchedulingResetAt(payload["rate_limit_reset_at"])
-}
-
 // persistOpenCodeQuotaFallbackWalletLimit 是启用保护后配额耗尽的唯一写入形态：
 // 只写模型作用域的付费钱包冷却（extra.model_rate_limits[opencode:paid_wallet]），
 // 不写整账号 rate_limit_reset_at / temp_unschedulable / 进程内 Block。
@@ -894,11 +875,8 @@ func OpenCodeQuotaFallbackStatusFromAccount(account *Account) *OpenCodeQuotaFall
 	status.SnapshotAt = decision.SnapshotAt
 	status.Reason = decision.Reason
 	for _, window := range decision.TriggeringWindows {
-		status.TriggeringWindows = append(status.TriggeringWindows, OpenCodeQuotaFallbackWindowStatus{
-			Window:      window.Window,
-			UsedPercent: window.UsedPercent,
-			ResetsAt:    window.ResetsAt,
-		})
+		// 两个结构字段名/类型一致，直接转换（S1016），避免逐字段字面量复制。
+		status.TriggeringWindows = append(status.TriggeringWindows, OpenCodeQuotaFallbackWindowStatus(window))
 	}
 	return status
 }

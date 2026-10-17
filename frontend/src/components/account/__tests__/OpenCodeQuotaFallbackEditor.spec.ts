@@ -13,10 +13,13 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
+// Toggle 的真实契约是编辑器透传的 data-testid="opencode-quota-fallback-toggle"：
+// 父组件属性会落在本 stub 的根 button 上并覆盖此处的同名标记，因此不在此声明标记，
+// 一律按产品契约 testid 定位（与真实 Toggle 渲染结果一致）。
 const ToggleStub = {
   props: ['modelValue'],
   emits: ['update:modelValue'],
-  template: '<button type="button" data-testid="toggle-stub" @click="$emit(\'update:modelValue\', !modelValue)"><slot /></button>'
+  template: '<button type="button" @click="$emit(\'update:modelValue\', !modelValue)"><slot /></button>'
 }
 
 const SelectStub = {
@@ -64,7 +67,7 @@ describe('OpenCodeQuotaFallbackEditor', () => {
       model_mapping: { 'normal-a': 'free-a' }
     }))
 
-    await wrapper.get('[data-testid="toggle-stub"]').trigger('click')
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual({
       enabled: false,
       threshold_percent: 91,
@@ -83,17 +86,44 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     })
   })
 
-  it('clamps the threshold to an integer in the 1 to 100 range', async () => {
-    const wrapper = mountEditor(fallback({ enabled: true }))
+  it('never silently clamps an out-of-range threshold', async () => {
+    const wrapper = mountEditor(fallback({ enabled: true, model_mapping: { 'normal-a': 'free-a' } }))
     const input = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    // 冻结契约（contract.md §启用约束）：threshold 必须是整数 1..100，越界/非整数由共享校验
+    // 拒绝（后端 400），组件不得把管理员输入静默改写成边界值。
+    const thresholds = () => (wrapper.emitted('update:modelValue') ?? [])
+      .map(event => (event[0] as OpenCodeQuotaFallbackConfig).threshold_percent)
 
     await input.setValue('101.4')
     await input.trigger('change')
-    expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toMatchObject({ threshold_percent: 100 })
+    expect(thresholds()).toContain(101.4)
+    expect(thresholds()).not.toContain(100)
 
     await input.setValue('0')
     await input.trigger('change')
-    expect(wrapper.emitted('update:modelValue')?.[1]?.[0]).toMatchObject({ threshold_percent: 1 })
+    expect(thresholds()).toContain(0)
+    expect(thresholds()).not.toContain(1)
+
+    await input.setValue('96')
+    await input.trigger('change')
+    expect(thresholds()).toContain(96)
+  })
+
+  it('surfaces the frozen threshold error to the administrator instead of coercing the value', () => {
+    const outOfRange = mountEditor(fallback({
+      enabled: true,
+      threshold_percent: 101.4,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+    expect(outOfRange.get('[data-testid="opencode-quota-fallback-validation"]').text())
+      .toContain('admin.accounts.openCodeQuotaFallback.errors.thresholdInvalid')
+
+    const inRange = mountEditor(fallback({
+      enabled: true,
+      threshold_percent: 96,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+    expect(inRange.find('[data-testid="opencode-quota-fallback-validation"]').exists()).toBe(false)
   })
 
   it('accepts an administrator-entered precise ID and emits an upstream target refresh request', async () => {

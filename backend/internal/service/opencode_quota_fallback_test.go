@@ -606,8 +606,10 @@ func TestOpenCodeQuotaFallbackDecisionResolveRequest(t *testing.T) {
 			wantAllowed:    true,
 		},
 		{
+			// 「配置的 target」必须由 decision 携带的映射表界定：unknown 只放行
+			// 管理员手选目标（EffectiveMapping 的 value），不放行付费 source。
 			name:           "unknown allows a direct call to the configured target",
-			decision:       OpenCodeQuotaFallbackDecision{State: OpenCodeQuotaFallbackStateUnknown},
+			decision:       OpenCodeQuotaFallbackDecision{State: OpenCodeQuotaFallbackStateUnknown, EffectiveMapping: mapping},
 			normalUpstream: "step-5-preview",
 			wantModel:      "step-5-preview",
 			wantAllowed:    true,
@@ -938,8 +940,11 @@ func TestOpenCodeGoUsageRunDueSharesPolicySnapshotWithGroupSibling(t *testing.T)
 }
 
 // openCodeQuotaFallbackWriteRecorder 只为满足接口；本用例只驱动两个写入 helper。
+// 同时嵌入两个接口：AccountRepository 供付费钱包写入，openCodeGoUsageRepository 供
+// 组作用域快照写入（helper 内部对该接口做类型断言，缺一即退化为 no-op）。
 type openCodeQuotaFallbackWriteRecorder struct {
 	AccountRepository
+	openCodeGoUsageRepository
 	snapshot        *OpenCodeGoUsageSnapshot
 	modelScope      string
 	modelResetAt    time.Time
@@ -1056,8 +1061,9 @@ func openCodeQuotaFallbackWalletExtra(until time.Time) map[string]any {
 // paid-wallet key 只在额度保护判定该模型不可用时加入——替代目标、目标直连、
 // 以及已从可信快照恢复 normal 的请求都不得被误封（目标自身冷却键仍保留）。
 func TestOpenCodeQuotaFallbackWalletKeyDoesNotBlockTargetOrRecoveredPaid(t *testing.T) {
-	now := openCodeQuotaFallbackNow()
-	resetAt := openCodeQuotaFallbackReset(t, time.Hour)
+	// 该用例驱动的是生产 helper（内部使用真实时钟），夹具时间必须相对 time.Now()。
+	now := time.Now()
+	resetAt := now.Add(time.Hour)
 	walletUntil := time.Now().Add(4 * time.Hour)
 	configuration := map[string]any{
 		"enabled":       true,
@@ -1080,6 +1086,9 @@ func TestOpenCodeQuotaFallbackWalletKeyDoesNotBlockTargetOrRecoveredPaid(t *test
 	}
 
 	// 触发态：替代目标直连不被钱包键封（无替代命中、也不拒选）。
+	// 夹具时间来自函数开头的 time.Now()：生产 helper 使用真实时钟，「新鲜」快照
+	// 必须相对真实时钟构造（固定过去时间会越界 30 分钟 stale 界，按契约降级 unknown
+	// 并停付费源）。
 	triggered := accountWith(100, now)
 	require.False(t, openCodeQuotaFallbackBlocksModel(triggered, "step-5-preview"))
 	require.NotContains(t, keysFor(triggered, "step-5-preview"), OpenCodeQuotaFallbackWalletScope)
