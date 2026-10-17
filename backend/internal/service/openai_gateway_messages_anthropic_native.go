@@ -49,7 +49,9 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	clientStream := gjson.GetBytes(body, "stream").Bool()
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	// 原生 Anthropic 出站 body 也必须走统一 actual resolver，否则目标协议命中
+	// Anthropic 时仍会把付费原模型写进 body；billingModel 仍保留正常映射。
+	upstreamModel := resolveOpenAIForwardUpstreamModel(account, originalModel, defaultMappedModel)
 	if upstreamModel != originalModel {
 		rewritten, err := sjson.SetBytes(body, "model", upstreamModel)
 		if err != nil {
@@ -110,12 +112,16 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		cooldownModel := billingModel
+		if _, routed := openCodeQuotaFallbackRoutedTarget(account, originalModel); routed {
+			cooldownModel = upstreamModel
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
 		// 非 failover 错误：经共享 compat handler 以 Anthropic 格式回写
 		// （透传规则、ops 记录、cyber_policy 与 CC 回退路径一致）。
-		return s.handleAnthropicErrorResponse(resp, c, account, billingModel)
+		return s.handleAnthropicErrorResponse(resp, c, account, cooldownModel)
 	}
 
 	if clientStream {
@@ -219,10 +225,9 @@ func nativeAnthropicMessagesURL(account *Account, validatedBaseURL string) strin
 
 func resolveMappedUpstreamModel(account *Account, body []byte, defaultMappedModel string) string {
 	original := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-	billing := resolveOpenAIForwardModel(account, original, defaultMappedModel)
 	// 协议分流必须按实际出站目标判定：额度保护替换后按目标的 protocol_rules /
 	// 可用元数据选协议（legacy opencode 强制 CC 的兜底不能加给替代目标）。
-	return applyOpenCodeQuotaFallbackUpstreamModel(account, normalizeOpenAIModelForUpstream(account, billing))
+	return resolveOpenAIForwardUpstreamModel(account, original, defaultMappedModel)
 }
 
 // buildNativeAnthropicUpstreamRequest 构建原生 Anthropic 上游请求；signed 表示本次

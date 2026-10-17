@@ -164,7 +164,8 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// 2. Resolve model mapping early so compat prompt_cache_key injection can
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	// 出站 Responses body 必须使用额度保护替代后的目标；billingModel 仍保留正常映射。
+	upstreamModel := resolveOpenAIForwardUpstreamModel(account, originalModel, defaultMappedModel)
 	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
 		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
@@ -408,10 +409,14 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 			)
 			return s.forwardAsRawChatCompletionsWithStartTime(ctx, c, account, body, defaultMappedModel, startTime)
 		}
+		cooldownModel := billingModel
+		if _, routed := openCodeQuotaFallbackRoutedTarget(account, originalModel); routed {
+			cooldownModel = upstreamModel
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
-		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+		return s.handleChatCompletionsErrorResponse(resp, c, account, cooldownModel)
 	}
 
 	// 9. Handle normal response

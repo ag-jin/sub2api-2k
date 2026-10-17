@@ -271,7 +271,9 @@ type OpenCodeQuotaFallbackDecision struct {
 	State string
 	// TriggeringWindows 仅在 fallback_active 非空（窗口顺序固定 5h → weekly → monthly）。
 	TriggeringWindows []OpenCodeQuotaFallbackWindow
-	// EffectiveMapping 仅在 fallback_active 非空，是 cfg.ModelMapping 的副本。
+	// EffectiveMapping 在 fallback_active / unknown 非空，是 cfg.ModelMapping 的
+	// 副本。unknown 下它只用于识别管理员手选的直连目标（绝不自动改写付费 source），
+	// 不能因证据缺失而丢掉配置。
 	EffectiveMapping map[string]string
 	// SnapshotAt 是最后一份 ok 证据的 fetched_at（无证据时为 nil）。
 	SnapshotAt *time.Time
@@ -326,9 +328,12 @@ func EvaluateOpenCodeQuotaFallback(cfg OpenCodeQuotaFallbackConfig, snap *OpenCo
 	}
 
 	return OpenCodeQuotaFallbackDecision{
-		State:      OpenCodeQuotaFallbackStateUnknown,
-		SnapshotAt: openCodeQuotaFallbackSnapshotAt(snap),
-		Reason:     openCodeQuotaFallbackUnknownReason(snap),
+		State: OpenCodeQuotaFallbackStateUnknown,
+		// unknown 只放行 target 直连，不放行付费 source；target 集合必须来自配置，
+		// 否则调度把直连目标误判为未配置替代的付费模型（gateway 429/no upstream call）。
+		EffectiveMapping: openCodeQuotaFallbackMappingCopy(cfg.ModelMapping),
+		SnapshotAt:       openCodeQuotaFallbackSnapshotAt(snap),
+		Reason:           openCodeQuotaFallbackUnknownReason(snap),
 	}
 }
 
@@ -469,7 +474,7 @@ type OpenCodeQuotaFallbackRequestOutcome struct {
 
 // ResolveRequest 把判定落到单次请求上（唯一映射入口，绝不做第二跳）：
 //   - fallback_active：命中映射的 source → target；target 直连放行；其余付费模型拒选。
-//   - unknown：只放行 target 直连（不自动选 target、也不放行付费 source）。
+//   - unknown：只放行配置里的 target 直连（不自动选 target、也不放行付费 source）。
 //   - normal / disabled：原样放行，零变化。
 func (d OpenCodeQuotaFallbackDecision) ResolveRequest(normalUpstreamModel string) OpenCodeQuotaFallbackRequestOutcome {
 	model := strings.TrimSpace(normalUpstreamModel)
@@ -539,8 +544,9 @@ func openCodeQuotaFallbackRequestEvaluation(account *Account, normalUpstreamMode
 
 // openCodeQuotaFallbackRoutingModelForBody 是 upstreamRoutingModel 的 legacy 分支：
 // legacy opencode 没有 provider profile（routesByModel=false），默认不参与按模型协议
-// 分流。仅当额度保护把请求改写到管理员手选目标时返回该目标，让协议按目标能力选择
-// （feature-off/未命中时返回 ""，行为与基线一致，避免影响既有 gemini/jev 判定）。
+// 分流。额度保护把请求改写到管理员手选目标、或请求本身就是配置的直连目标时返回该
+// 目标，让协议按目标能力选择（feature-off/未命中时返回 ""，行为与基线一致，避免
+// 影响既有 gemini/jev 判定）。
 func openCodeQuotaFallbackRoutingModelForBody(account *Account, body []byte, defaultMappedModel string) string {
 	if account == nil || !account.IsOpenCodeGo() || account.Type != AccountTypeAPIKey {
 		return ""
@@ -550,10 +556,16 @@ func openCodeQuotaFallbackRoutingModelForBody(account *Account, body []byte, def
 	}
 	normal := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, strings.TrimSpace(gjson.GetBytes(body, "model").String()), defaultMappedModel))
 	outcome := openCodeQuotaFallbackRequestOutcomeForAccount(account, normal, time.Now())
-	if !outcome.MappingApplied {
-		return ""
+	if outcome.MappingApplied {
+		return outcome.EffectiveUpstreamModel
 	}
-	return outcome.EffectiveUpstreamModel
+	// 直连管理员手选目标：正常解析结果本身就是配置的 target 时，同样按目标自身
+	// 的协议集合分流。不能因为本次没有发生 source→target 改写就落回 legacy
+	// opencode 的协议兜底（gate 期望 target 直连走 /v1/chat/completions）。
+	if account.usesOpenCodeQuotaFallbackTargetProtocol(normal) {
+		return normal
+	}
+	return ""
 }
 
 // openCodeQuotaFallbackAllowsCapability 报告启用额度保护的 legacy opencode 账号是否

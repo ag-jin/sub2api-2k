@@ -66,7 +66,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	// 3. Convert Responses → Anthropic
 	// Resolve the mapped model before choosing its thinking/tool protocol.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	// Responses→native Anthropic 出站 body 同样必须走统一 actual resolver；billing 仍为 normal。
+	upstreamModel := resolveOpenAIForwardUpstreamModel(account, originalModel, defaultMappedModel)
 	if err := validateClaude55Request(body, upstreamModel); err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err

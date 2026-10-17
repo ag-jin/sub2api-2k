@@ -90,7 +90,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	// 出站体必须使用额度保护替代后的目标；billingModel 仍保留正常映射用于计费。
+	upstreamModel := resolveOpenAIForwardUpstreamModel(account, originalModel, defaultMappedModel)
 	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
 		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
@@ -302,6 +303,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		// 冷却/归因模型：额度保护实际改写时用出站目标，否则保持原 billingModel，
+		// 确保 feature-off（含其它平台 normalize）行为不变。
+		cooldownModel := billingModel
+		if _, routed := openCodeQuotaFallbackRoutedTarget(account, originalModel); routed {
+			cooldownModel = upstreamModel
+		}
 		if account.Platform == PlatformGrok {
 			kind := "http_error"
 			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
@@ -332,12 +339,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 					SameAccountRetryMax:      retryMax,
 				}
 			}
-			return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+			return s.handleChatCompletionsErrorResponse(resp, c, account, cooldownModel)
 		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
-		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+		return s.handleChatCompletionsErrorResponse(resp, c, account, cooldownModel)
 	}
 
 	if account.Platform == PlatformGrok {

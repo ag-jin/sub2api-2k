@@ -70,7 +70,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	// 出站 Chat Completions body 必须使用额度保护替代后的目标；billingModel 仍保留正常映射。
+	upstreamModel := resolveOpenAIForwardUpstreamModel(account, originalModel, "")
 	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
@@ -129,10 +130,14 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		cooldownModel := billingModel
+		if _, routed := openCodeQuotaFallbackRoutedTarget(account, originalModel); routed {
+			cooldownModel = upstreamModel
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
-		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
+		return s.handleErrorResponse(ctx, resp, c, account, chatBody, cooldownModel)
 	}
 
 	if clientStream {
