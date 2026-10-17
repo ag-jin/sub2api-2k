@@ -875,7 +875,6 @@ func OpenCodeQuotaFallbackStatusFromAccount(account *Account) *OpenCodeQuotaFall
 	status.SnapshotAt = decision.SnapshotAt
 	status.Reason = decision.Reason
 	for _, window := range decision.TriggeringWindows {
-		// 两个结构字段名/类型一致，直接转换（S1016），避免逐字段字面量复制。
 		status.TriggeringWindows = append(status.TriggeringWindows, OpenCodeQuotaFallbackWindowStatus(window))
 	}
 	return status

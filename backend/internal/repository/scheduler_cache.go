@@ -957,6 +957,11 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
 	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
+		// OpenCode 额度保护：候选过滤(ListSchedulableAccounts)读本投影，
+		// GetOpenCodeQuotaFallback 依赖 credentials.quota_fallback 判定替换/拒选。
+		// 裁掉它，启用保护的账号在选号阶段退化为"无配置"，未配替代的付费模型与
+		// unknown 状态都会被放行。内容仅 enabled/threshold/模型 ID，无 secret。
+		service.OpenCodeQuotaFallbackCredentialKey,
 		// Gemini 显式缓存的候选过滤（GeminiExplicitCacheExclusions）读本投影判定账号是否支持显式缓存：
 		// 官方地址、Vertex 认证方式与上游网关的显式缓存声明。缺这几个键时只能按类型粗筛，
 		// 不支持的账号要逐个选中后才被剔除。
@@ -1046,6 +1051,10 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.OpenAIAutoResetCredit7dThresholdExtraKey,
 		service.OpenAIAutoResetCreditStateExtraKey,
 		"model_rate_limits",
+		// OpenCode 额度保护判定输入：缺 snapshot 时状态按契约降级为 unknown，
+		// 投影上的账号会被过度停调且永不应用替代目标。仅 status/percent/resets/
+		// last_error，无 secret。
+		service.OpenCodeGoUsageSnapshotExtraKey,
 		service.UpstreamBillingProbeExtraKey,
 		service.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
