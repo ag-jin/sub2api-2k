@@ -1656,7 +1656,7 @@ func (a *Account) IsAnthropicProtocol() bool {
 func (a *Account) GetAnthropicProtocolBaseURL() string {
 	// legacy opencode 仅当额度保护启用（target 可走 Anthropic）时复用 base_url。
 	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() &&
-		!(a.Platform == PlatformOpenCode && a.GetOpenCodeQuotaFallback().Enabled)) {
+		(a.Platform != PlatformOpenCode || !a.GetOpenCodeQuotaFallback().Enabled)) {
 		return ""
 	}
 	if a.IsAdaptiveAPIProtocol() {
