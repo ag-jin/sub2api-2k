@@ -674,8 +674,12 @@ func TestOpenCodeLegacyGroupIdentityKeepBranchIsInSQL(t *testing.T) {
 	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
 	require.NoError(t, err)
 
-	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("(platform = 'opencode' AND $2 = 'opencode'")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
-		WithArgs("key", account.ID, account.Platform, account.Type, string(credentials), nil).
+	// lockAndMergeAccountProbeExtra 的 SELECT 是 5 参数（$1=id），与组更新路径的
+	// 6 参数（$1=api_key）不同，这里必须按本查询的真实参数表声明。
+	// 断言片段只取 legacy 分支独有的谓词文本（不带前置括号，避免换行/缩进
+	// 变化把锚点变成空白敏感）；该文本只存在于新分支，opencode_go 分支不匹配。
+	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("platform = 'opencode' AND $2 = 'opencode'")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
+		WithArgs(account.ID, account.Platform, account.Type, string(credentials), nil).
 		WillReturnRows(sqlmock.NewRows(openCodeGoMergeMockColumns()).
 			AddRow(false, false, true, nil, nil, nil, nil, nil, nil, true, "true", openCodeGoSnapshotJSON()))
 
