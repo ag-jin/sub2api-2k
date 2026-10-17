@@ -266,11 +266,12 @@ jobs:
         TestOpenCodeQuotaFallbackForwardMessagesResponsesUsesTargetModel
         TestOpenCodeQuotaFallbackForwardChatToNativeAnthropicUsesTargetModel
         TestOpenCodeQuotaFallbackForwardResponsesToNativeAnthropicUsesTargetModel
+      # 3 个真实 model anchors；NativeAnthropic 在 literal 216 是真实 no-base
+      # 地址缺陷，独立记录，不算 model red。
       FORWARD_MODEL_RED_TESTS: >-
         TestOpenCodeQuotaFallbackForwardRawChatUsesTargetModel
         TestOpenCodeQuotaFallbackForwardResponsesBodyUsesTargetModel
         TestOpenCodeQuotaFallbackForwardResponsesToChatUsesTargetModel
-        TestOpenCodeQuotaFallbackForwardNativeAnthropicUsesTargetModel
     steps:
       - uses: actions/checkout@v6
         with:
@@ -361,17 +362,63 @@ jobs:
             echo "variant current: all ten forward runtime tests PASS"
           else
             [ "$rc" != "0" ] || fail "literal-216: forward tests unexpectedly PASSED; 216 regression not reproduced"
-            for name in ${FORWARD_MODEL_RED_TESTS}; do
-              grep -qE "^--- FAIL: ${name}([[:space:]]|$)" "$log" \
-                || fail "literal-216: expected model red missing for ${name}"
-            done
-            grep -qF 'expected: "step-5-preview"' "$log" \
-              || fail 'literal-216: missing expected: "step-5-preview" assertion evidence'
-            grep -qE 'actual[[:space:]]*:[[:space:]]*"deepseek-v4\.1-flash"' "$log" \
-              || fail 'literal-216: missing actual: "deepseek-v4.1-flash" assertion evidence'
+
+            # 逐 test 分段解析（=== RUN name 到 --- FAIL name）：3 个真实 model
+            # anchors 各自必须含本段的 expected step / actual paid；NativeAnthropic
+            # 的 literal 216 no-base 是真实旧地址缺陷，单独记录，不能算 model red。
+            python3 - "$log" ${FORWARD_MODEL_RED_TESTS} <<'PY' || exit 1
+          import re
+          import sys
+
+          lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+          blocks, status, current = {}, {}, None
+          for line in lines:
+              if m := re.match(r"^=== RUN\s+(\S+)", line):
+                  current = m.group(1)
+                  blocks[current] = []
+              elif m := re.match(r"^--- (PASS|FAIL|SKIP):\s+(\S+)", line):
+                  status[m.group(2)] = m.group(1)
+                  if current == m.group(2):
+                      current = None
+              elif current is not None:
+                  blocks[current].append(line)
+
+          no_base = re.compile(
+              r"(?i)(no\b[^\n]{0,60}\bbase[ _-]?url\b|no[ _-]?base\b|missing[ _-]?base\b"
+              r"|base[ _-]?url[^\n]{0,40}\b(empty|missing|required|not set)\b)"
+          )
+          errors = []
+          for name in sys.argv[2:]:
+              body = "\n".join(blocks.get(name, []))
+              if status.get(name) != "FAIL":
+                  errors.append(f"{name}: not FAIL ({status.get(name, 'MISSING')})")
+                  continue
+              if not re.search(r'expected:\s*"step-5-preview"', body):
+                  errors.append(f"{name}: missing expected step-5-preview")
+              if not re.search(r'actual\s*:\s*"deepseek-v4\.1-flash"', body):
+                  errors.append(f"{name}: missing actual deepseek-v4.1-flash")
+              if no_base.search(body) or re.search(r"(?m)(^|\s)(panic:|fatal error:)", body):
+                  errors.append(f"{name}: setup/panic error, not model evidence")
+
+          native = "TestOpenCodeQuotaFallbackForwardNativeAnthropicUsesTargetModel"
+          if status.get(native) == "FAIL":
+              if no_base.search("\n".join(blocks.get(native, []))):
+                  print("literal-216: NativeAnthropic no-base defect recorded separately (not a model anchor)")
+              else:
+                  errors.append(f"{native}: not the recorded no-base defect")
+          else:
+              print(f"literal-216: NativeAnthropic status={status.get(native, 'MISSING')}")
+
+          if errors:
+              for message in errors:
+                  print(f"::error::literal-216: {message}")
+              sys.exit(1)
+          print("literal-216: 3 model anchors carry per-block expected step-5-preview / actual deepseek-v4.1-flash")
+          PY
+
             other="$(grep -E '^--- FAIL:' "$log" | grep -vE "^--- FAIL: ${FORWARD_TEST_PREFIX}" || true)"
             [ -z "$other" ] || fail "literal-216: failures outside forward prefix: $other"
-            echo 'variant literal-216: model assertion RED: expected step-5-preview vs actual deepseek-v4.1-flash'
+            echo 'variant literal-216: 3 per-test model anchors RED; Native per-test status/no-base evidence recorded above'
           fi
 
       - uses: actions/upload-artifact@v7
