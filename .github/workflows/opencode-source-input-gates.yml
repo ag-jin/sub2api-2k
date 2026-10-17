@@ -1,0 +1,169 @@
+name: OpenCode Source Input Gates
+
+# 特性 fix/opencode-source-input-218（OpenCode 额度回退编辑器可直接输入 source）的独立门禁。
+# v0.1.218 修复版使用同一门禁。不修改、不取消既有 CI（backend-ci.yml / release.yml /
+# security-scan.yml 等按原样同时运行）；本 workflow 只是发布前的额外专项证据。
+#
+# 覆盖：
+#   job1 build                 backend go build ./... + go vet ./...（Go 版本由 backend/go.mod 决定）。
+#   job2 frontend-regression   current 与 literal217component 两个变体，跑同一个
+#                              OpenCodeQuotaFallbackEditor.spec.ts：
+#                              - current：本提交上整份 editor spec 必绿；
+#                              - literal217component：只把
+#                                frontend/src/components/account/OpenCodeQuotaFallbackEditor.vue
+#                                换回基线 9a710719f 的字面版本，spec、helpers、stubs 全部保持
+#                                本提交原样。4 个 source-input 用例必须逐个 FAIL，且失败必须是
+#                                DOM/断言语义，不能是 import/syntax/transform/收集错误。
+#
+# 基线静态审查（9a710719f）：
+#   - 基线组件的 imports 仍全部存在于本提交（helper 的差异只有新增 export
+#     isOpenCodeQuotaFallbackSourceTaken，没有删除/改名）；Select/Toggle/Icon 路径不变。
+#   - 基线组件的 props API 与本研究完全相同：
+#     modelValue/modelOptions/candidates/candidatesState/error/disabled。
+#   - 因此同一份 current spec + current helpers 可以直接编译基线组件；差异只在 DOM：
+#     基线把 source 渲染成只读 <span>，没有 source 输入框。两变体都先跑 pnpm typecheck
+#     作为编译前置门，编译失败是门禁失败，绝不算行为红灯。
+#   - 变体名严格为 literal217component：只回退组件文件，不回退整棵源码树或测试 helper。
+#
+# 证据性质（写发版记录必须照此表述）：
+#   - current：本提交上 editor spec 全部通过，4 个 source-input 用例逐个 PASS。
+#   - literal217component：仅组件字面回退后，4 个 source-input 用例逐个 FAIL，失败信息为
+#     DOM/assertion（例如 Unable to get source 输入框），不是编译错误。
+#   - 全量前端门禁仍由既有 make test-frontend / 产品 CI 承担；本 workflow 不替代它们。
+
+on:
+  push:
+    branches:
+      - 'fix/opencode-source-input-218'
+      - 'release/v0.1.218-card'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-source-input-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: 9a710719f
+  EDITOR_COMPONENT: frontend/src/components/account/OpenCodeQuotaFallbackEditor.vue
+  EDITOR_SPEC: src/components/account/__tests__/OpenCodeQuotaFallbackEditor.spec.ts
+
+jobs:
+  # ── 发布额外 Go 门禁 ───────────────────────────────────────────────────────
+  build:
+    name: Go build and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Go version
+        working-directory: backend
+        run: go version
+
+      - name: go build ./...
+        working-directory: backend
+        run: go build ./...
+
+      - name: go vet ./...
+        working-directory: backend
+        run: go vet ./...
+
+  # ── 定向红绿回归：current 必绿 / literal217component 必红 ──────────────────
+  frontend-regression:
+    name: Frontend source-input regression (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, literal217component]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # 需要基线 9a710719f 的完整历史来做字面组件回退。
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      # 仅 literal217component 变体回退组件文件；spec 与 helper 保持 current。
+      - name: Apply literal 217 component (variant=literal217component)
+        if: matrix.variant == 'literal217component'
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${BASELINE_SHA}"
+          fi
+          git cat-file -e "${BASELINE_SHA}^{commit}"
+          git show "${BASELINE_SHA}:${EDITOR_COMPONENT}" > "${EDITOR_COMPONENT}"
+          if git diff --quiet -- "${EDITOR_COMPONENT}"; then
+            echo "::error::LITERAL217_COMPONENT_NOT_DIFFERENT: ${EDITOR_COMPONENT} is identical to ${BASELINE_SHA}"
+            exit 1
+          fi
+          echo "literal217component: rewound only ${EDITOR_COMPONENT} to ${BASELINE_SHA}"
+          git status --short
+          git --no-pager diff --stat
+
+      # 编译前置门：current 与 literal217component 都必须通过 typecheck；
+      # import/syntax/transform 错误不得被当作行为红灯。
+      - name: Typecheck gate (compile preflight, variant=${{ matrix.variant }})
+        working-directory: frontend
+        run: pnpm typecheck
+
+      # 记录真实退出码；失败证据统一交给下一步校验，避免红绿判断散落在 shell 里。
+      - name: Run editor spec (variant=${{ matrix.variant }})
+        working-directory: frontend
+        run: |
+          set +e
+          mkdir -p ../test-logs
+          pnpm vitest run "$EDITOR_SPEC" \
+            --reporter=json \
+            --outputFile="../test-logs/${{ matrix.variant }}.json"
+          rc=$?
+          echo "$rc" > "../test-logs/${{ matrix.variant }}.exit"
+          echo "variant=${{ matrix.variant }} vitest rc=$rc"
+          exit 0
+
+      - name: Verify expected outcome (variant=${{ matrix.variant }})
+        run: |
+          set -euo pipefail
+          rc="$(cat "test-logs/${{ matrix.variant }}.exit")"
+          json="test-logs/${{ matrix.variant }}.json"
+          if [ "${{ matrix.variant }}" = "current" ]; then
+            [ "$rc" = "0" ] || { echo "::error::current: editor spec must pass (rc=$rc)"; exit 1; }
+            python3 .github/scripts/source-input-gate.py current "$json"
+          else
+            [ "$rc" != "0" ] || { echo "::error::literal217component: editor spec unexpectedly passed; source-input regression not reproduced"; exit 1; }
+            python3 .github/scripts/source-input-gate.py literal217component "$json"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: opencode-source-input-frontend-${{ matrix.variant }}
+          path: test-logs/
+          if-no-files-found: error
+          retention-days: 7
