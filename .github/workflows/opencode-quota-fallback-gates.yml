@@ -1,0 +1,237 @@
+name: OpenCode Quota Fallback Gates
+
+# 特性 fix/opencode-free-quota-216（OpenCode 付费额度阈值模型回退）的独立门禁。
+# 不改动、不取消既有 CI（backend-ci.yml / security-scan.yml 等按原样同时运行）。
+#
+# 覆盖：
+#   job1 build-gates         go build ./...、go vet -tags=unit（service/handler/repository）、
+#                            相对 BASELINE_SHA 的改动 Go 文件 gofmt、迁移/ent 不变检查。
+#   job2 targeted-regression feature 定向行为用例：current 必绿 / mutated 必红。
+#
+# 证据性质（写发版记录必须照此表述）：
+#   - current：本提交上，feature 定向用例原样通过。
+#   - mutated：同一提交内由 CI 机械禁用「阈值触发」这一条最小行为锚点：
+#     service/opencode_quota_fallback.go 的 openCodeQuotaFallbackTriggeringWindows
+#     中 `window.UsedPercent >= float64(threshold)` 前加 `false &&`。测试与断言一行
+#     不改，必须转红且红在预期用例 TestEvaluateOpenCodeQuotaFallback 的触发子用例上。
+#     这是「同提交行为等价回退（same-commit behavior mutation）」证据，不是字面基线
+#     提交证据：该功能的公开 API（EvaluateOpenCodeQuotaFallback 等）在 BASELINE_SHA
+#     上不存在，旧源无法与这批测试字面编译，因此不得宣称「literal old-source」失败。
+#   - 上一版 v0.1.215 的 CI 绿证据另有记录；dev 旧/新制品 A/B 由部署运行时承担。
+#
+# 运行前有编译前置门（go test -run '^$'），编译错误不得当行为红灯。
+
+on:
+  push:
+    branches:
+      - 'fix/opencode-free-quota-216'
+      - 'release/v0.1.216-card'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-quota-fallback-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: 083828134626d9f957f54dc00d634fea8d18dfe5
+
+jobs:
+  # ── 静态门禁 ────────────────────────────────────────────────────────────────
+  build-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Go version
+        run: go version
+
+      - name: gofmt check (changed Go files only)
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$BASELINE_SHA"
+          fi
+          git diff --name-only --diff-filter=ACMR "$BASELINE_SHA" HEAD -- '*.go' > /tmp/changed-go.txt
+          echo "changed go files: $(wc -l < /tmp/changed-go.txt)"
+          if [ ! -s /tmp/changed-go.txt ]; then
+            echo "no changed Go files; gofmt check trivially clean"
+            exit 0
+          fi
+          unformatted="$(xargs -a /tmp/changed-go.txt gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::GOFMT_UNFORMATTED"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean on changed files"
+
+      # 本特性不引入任何 schema 变更：迁移嵌入目录与 ent 相对基线必须逐字节不变。
+      - name: Migration-unchanged check (backend/migrations, backend/ent)
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$BASELINE_SHA"
+          fi
+          changed="$(git diff --name-only "$BASELINE_SHA" HEAD -- backend/migrations backend/ent)"
+          if [ -n "$changed" ]; then
+            echo "::error::MIGRATIONS_CHANGED: opencode quota fallback release must not change migrations/ent"
+            echo "$changed"
+            exit 1
+          fi
+          echo "backend/migrations and backend/ent unchanged vs ${BASELINE_SHA}"
+
+      - name: go build ./...
+        working-directory: backend
+        run: go build ./...
+
+      - name: go vet (unit-tagged, targeted packages)
+        working-directory: backend
+        run: go vet -tags=unit ./internal/service/... ./internal/handler/... ./internal/repository/...
+
+  # ── 定向红绿回归：current 必绿 / mutated（同提交行为回退）必红 ──────────────
+  targeted-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, mutated]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      # 同提交行为变异：只禁用「达到阈值即触发」这一条最小判定锚点。
+      # 不 checkout 基线（该 API 在基线不存在，无法字面编译），测试文件零改动。
+      - name: Apply threshold-trigger mutation (variant=mutated)
+        if: matrix.variant == 'mutated'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          # same-commit behavior mutation: disable exactly the threshold-trigger
+          # comparison in openCodeQuotaFallbackTriggeringWindows. Tests stay
+          # byte-identical. This is NOT a literal baseline checkout; the feature
+          # API does not exist at BASELINE_SHA.
+          PATH = Path("backend/internal/service/opencode_quota_fallback.go")
+          OLD = "\t\tif window.UsedPercent >= float64(threshold) {"
+          NEW = "\t\tif false && window.UsedPercent >= float64(threshold) {"
+
+          text = PATH.read_text(encoding="utf-8")
+          count = text.count(OLD)
+          if count != 1:
+              sys.exit("MUTATION_ANCHOR_MISSING: %s want 1 got %d for %r" % (PATH, count, OLD))
+
+          new_text = text.replace(OLD, NEW)
+          if new_text.count(NEW) != 1 or new_text.count(OLD) != 0:
+              sys.exit("MUTATION_WRITE_FAILED: replacement not observable in %s" % PATH)
+          PATH.write_text(new_text, encoding="utf-8")
+          print("mutated: disabled threshold trigger in openCodeQuotaFallbackTriggeringWindows")
+          print("MUTATION_APPLIED_OK")
+          PY
+
+      - name: Show mutation diff (evidence)
+        if: matrix.variant == 'mutated'
+        run: |
+          git --no-pager diff --stat
+          git --no-pager diff
+
+      - name: Hook sanity (target test functions present)
+        run: |
+          set -euo pipefail
+          f=backend/internal/service/opencode_quota_fallback_test.go
+          for name in \
+            TestParseOpenCodeQuotaFallback \
+            TestEvaluateOpenCodeQuotaFallback \
+            TestOpenCodeQuotaFallbackRoutingModelForLegacyPlatform \
+            TestOpenCodeQuotaFallbackAllowsCapability \
+            TestOpenCodeQuotaFallbackDecisionResolveRequest \
+            TestOpenCodeQuotaFallbackLastKnownOKData \
+            TestAccountGetOpenCodeQuotaFallback \
+            TestValidateOpenCodeQuotaFallbackCredentials \
+            TestOpenCodeGoUsageRunDueRefreshesPolicyAccountsWhenGlobalDisabled \
+            TestOpenCodeGoUsageRunDueSharesPolicySnapshotWithGroupSibling \
+            TestOpenCodeQuotaFallbackProbeSnapshotAndWalletWriter \
+            TestOpenCodeQuotaFallbackBlocksAndRoutedShareNormalResolution \
+            TestOpenCodeQuotaFallbackWalletKeyDoesNotBlockTargetOrRecoveredPaid \
+            TestOpenCodeQuotaFallbackRoutingModelSharesBodyChain; do
+            grep -q "^func ${name}(" "$f" || { echo "::error::TEST_HOOK_MISSING: $name"; exit 1; }
+          done
+          echo "hook sanity ok"
+
+      # 编译前置门：两变体都必须编译通过；编译错误不得当作行为红灯。
+      - name: Compile preflight (variant=${{ matrix.variant }})
+        working-directory: backend
+        run: |
+          set -o pipefail
+          mkdir -p ../test-logs
+          go test -tags=unit -count=1 -run '^$' ./internal/service/ 2>&1 | tee ../test-logs/compile.log
+          echo "compile preflight ok (variant=${{ matrix.variant }})"
+
+      # 只跑本特性的行为用例（opencode_quota_fallback_test.go 全部 14 个 Test）。
+      - name: Run feature-targeted behavior tests
+        working-directory: backend
+        run: |
+          set +e
+          mkdir -p ../test-logs
+          go test -tags=unit -count=1 -v -timeout=20m \
+            -run '^(TestParseOpenCodeQuotaFallback|TestEvaluateOpenCodeQuotaFallback|TestOpenCodeQuotaFallbackRoutingModelForLegacyPlatform|TestOpenCodeQuotaFallbackAllowsCapability|TestOpenCodeQuotaFallbackDecisionResolveRequest|TestOpenCodeQuotaFallbackLastKnownOKData|TestAccountGetOpenCodeQuotaFallback|TestValidateOpenCodeQuotaFallbackCredentials|TestOpenCodeGoUsageRunDueRefreshesPolicyAccountsWhenGlobalDisabled|TestOpenCodeGoUsageRunDueSharesPolicySnapshotWithGroupSibling|TestOpenCodeQuotaFallbackProbeSnapshotAndWalletWriter|TestOpenCodeQuotaFallbackBlocksAndRoutedShareNormalResolution|TestOpenCodeQuotaFallbackWalletKeyDoesNotBlockTargetOrRecoveredPaid|TestOpenCodeQuotaFallbackRoutingModelSharesBodyChain)$' \
+            ./internal/service/ > ../test-logs/quota_fallback.log 2>&1
+          echo $? > ../test-logs/quota_fallback.exit
+          tail -n 40 ../test-logs/quota_fallback.log
+          exit 0
+
+      - name: Verify expected outcome (variant=${{ matrix.variant }})
+        run: |
+          set -uo pipefail
+          mkdir -p test-logs
+          fail() { echo "::error::$*"; exit 1; }
+          rc() { cat "test-logs/$1.exit" 2>/dev/null || echo missing; }
+
+          if grep -qE '\[build failed\]|undefined: |cannot use |too many errors|syntax error' test-logs/quota_fallback.log 2>/dev/null; then
+            fail "COMPILE_ERROR_IN_TEST_LOG: red is not behavior evidence; see compile.log"
+          fi
+
+          if [ "${{ matrix.variant }}" = "current" ]; then
+            [ "$(rc quota_fallback)" = "0" ] || fail "current: feature tests must pass (rc=$(rc quota_fallback))"
+            grep -qE '^ok[[:space:]]' test-logs/quota_fallback.log || fail "current: missing go test ok status line"
+            if grep -q '^--- FAIL' test-logs/quota_fallback.log; then
+              fail "current: unexpected FAIL lines"
+            fi
+            echo "variant current: feature-targeted tests PASS"
+          else
+            [ "$(rc quota_fallback)" != "0" ] || fail "mutated: tests unexpectedly PASSED; mutation ineffective or tests not asserting"
+            grep -E 'FAIL: TestEvaluateOpenCodeQuotaFallback/' test-logs/quota_fallback.log >/dev/null \
+              || fail "mutated: red for the wrong reason (missing EXPECTED TestEvaluateOpenCodeQuotaFallback subtest failure)"
+            grep -E 'FAIL: TestEvaluateOpenCodeQuotaFallback/(threshold_equal_to_98_triggers_fallback|fully_used_monthly_window_triggers_fallback)' test-logs/quota_fallback.log >/dev/null \
+              || fail "mutated: expected threshold-trigger subtests did not fail; red is not threshold evidence"
+            echo "variant mutated: threshold-trigger subtests RED as expected (same-commit behavior mutation)"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: opencode-quota-fallback-targeted-${{ matrix.variant }}
+          path: test-logs/
+          if-no-files-found: error
+          retention-days: 7
