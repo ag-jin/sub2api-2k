@@ -1654,7 +1654,9 @@ func (a *Account) IsAnthropicProtocol() bool {
 // （上游路径为 {base}/v1/messages）。优先取凭证 base_url，缺失时按
 // 供应商 × 接入模式返回默认端点。非 Anthropic 协议账号返回空串。
 func (a *Account) GetAnthropicProtocolBaseURL() string {
-	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol()) {
+	// legacy opencode 仅当额度保护启用（target 可走 Anthropic）时复用 base_url。
+	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() &&
+		!(a.Platform == PlatformOpenCode && a.GetOpenCodeQuotaFallback().Enabled)) {
 		return ""
 	}
 	if a.IsAdaptiveAPIProtocol() {

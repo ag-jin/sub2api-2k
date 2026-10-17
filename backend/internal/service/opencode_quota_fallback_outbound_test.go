@@ -53,7 +53,7 @@ func newQuotaFallbackOutboundAccount(t *testing.T, baseURL string, protocolRules
 	t.Helper()
 	credentials := map[string]any{
 		"api_key":      "sk-quota-fallback-upstream",
-		"base_url":     baseURL,
+		"base_url":     baseURL + "/v1",
 		"account_mode": AccountModeGo,
 		"model_mapping": map[string]any{
 			"deepseek-flash":   "deepseek-v4.1-flash",
@@ -100,6 +100,24 @@ func newQuotaFallbackOutboundService(t *testing.T, handler http.Handler) (*OpenA
 		cfg:          rawChatCompletionsTestConfig(),
 		httpUpstream: &quotaFallbackOutboundUpstream{client: server.Client()},
 	}, server
+}
+
+// TestOpenCodeQuotaFallbackForwardOffAnthropicBaseURLStaysEmpty 锁定地址放行的
+// feature-off 边界：legacy opencode 未启用额度保护时不得为 Anthropic 放行 base。
+func TestOpenCodeQuotaFallbackForwardOffAnthropicBaseURLStaysEmpty(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenCode,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":      "sk-test",
+			"base_url":     "https://relay.example/v1",
+			"account_mode": AccountModeGo,
+			OpenCodeQuotaFallbackCredentialKey: map[string]any{
+				"enabled": false,
+			},
+		},
+	}
+	require.Empty(t, account.GetAnthropicProtocolBaseURL())
 }
 
 // TestOpenCodeQuotaFallbackForwardRawChatUsesTargetModel 驱动 chat 入站命中
