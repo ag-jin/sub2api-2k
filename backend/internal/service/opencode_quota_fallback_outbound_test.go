@@ -349,8 +349,22 @@ func TestOpenCodeQuotaFallbackForwardChatToNativeAnthropicUsesTargetModel(t *tes
 		gotPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
 		gotModel = gjson.GetBytes(body, "model").String()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"msg_qf_cc","type":"message","role":"assistant","model":"step-5-preview","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// 该路径无论客户端是否 stream 都强制上游 stream=true，
+		// 非流式客户端由 handleCCBufferedFromNativeAnthropic 组装，必须返回 Anthropic SSE。
+		_, _ = io.WriteString(w,
+			"event: message_start\n"+
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_qf_cc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"step-5-preview\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"+
+				"event: content_block_start\n"+
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\n"+
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"+
+				"event: content_block_stop\n"+
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+				"event: message_delta\n"+
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\n"+
+				"event: message_stop\n"+
+				"data: {\"type\":\"message_stop\"}\n\n")
 	}))
 
 	protocolRules := []any{map[string]any{"pattern": "step-5-preview", "protocol": APIProtocolAnthropic}}
@@ -379,8 +393,22 @@ func TestOpenCodeQuotaFallbackForwardResponsesToNativeAnthropicUsesTargetModel(t
 		gotPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
 		gotModel = gjson.GetBytes(body, "model").String()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"msg_qf_resp","type":"message","role":"assistant","model":"step-5-preview","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// 该路径无论客户端是否 stream 都强制上游 stream=true，
+		// 非流式客户端由 handleResponsesBufferedFromNativeAnthropic 组装，必须返回 Anthropic SSE。
+		_, _ = io.WriteString(w,
+			"event: message_start\n"+
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_qf_resp\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"step-5-preview\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"+
+				"event: content_block_start\n"+
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\n"+
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"+
+				"event: content_block_stop\n"+
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+				"event: message_delta\n"+
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\n"+
+				"event: message_stop\n"+
+				"data: {\"type\":\"message_stop\"}\n\n")
 	}))
 
 	protocolRules := []any{map[string]any{"pattern": "step-5-preview", "protocol": APIProtocolAnthropic}}
