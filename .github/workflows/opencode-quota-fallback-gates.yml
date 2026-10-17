@@ -1,12 +1,16 @@
 name: OpenCode Quota Fallback Gates
 
 # 特性 fix/opencode-free-quota-216（OpenCode 付费额度阈值模型回退）的独立门禁。
+# v0.1.217 修复版复用同一门禁：仅追加 217 分支触发；feature 门禁逻辑、BASELINE_SHA
+# 与 14 个定向用例列表保持不变。另增 runtime-regression：同一份 outbound 回归测试
+# 在 current 必绿、在 literal 216 backend 上目标断言必红。
 # 不改动、不取消既有 CI（backend-ci.yml / security-scan.yml 等按原样同时运行）。
 #
 # 覆盖：
 #   job1 build-gates         go build ./...、go vet -tags=unit（service/handler/repository）、
 #                            相对 BASELINE_SHA 的改动 Go 文件 gofmt、迁移/ent 不变检查。
 #   job2 targeted-regression feature 定向行为用例：current 必绿 / mutated 必红。
+#   job3 runtime-regression  forward 真实出站对照：current 必绿 / literal 216 目标断言必红。
 #
 # 证据性质（写发版记录必须照此表述）：
 #   - current：本提交上，feature 定向用例原样通过。
@@ -26,6 +30,8 @@ on:
     branches:
       - 'fix/opencode-free-quota-216'
       - 'release/v0.1.216-card'
+      - 'fix/opencode-forward-fallback-217'
+      - 'release/v0.1.217-card'
   workflow_dispatch:
 
 permissions:
@@ -232,6 +238,146 @@ jobs:
         if: always()
         with:
           name: opencode-quota-fallback-targeted-${{ matrix.variant }}
+          path: test-logs/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── forward 真实出站对照：current 必绿 / literal 216 目标断言必红 ─────────────
+  runtime-regression:
+    if: github.ref_name == 'fix/opencode-forward-fallback-217' || github.ref_name == 'release/v0.1.217-card'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, literal-216]
+    env:
+      REGRESSION_TEST_FILE: backend/internal/service/opencode_quota_fallback_outbound_test.go
+      FORWARD_TEST_PREFIX: TestOpenCodeQuotaFallbackForward
+      # 217 final freeze: required list expanded 6 -> 10; baseline model anchors stay the original 4.
+      FORWARD_EXPECTED_TESTS: >-
+        TestOpenCodeQuotaFallbackForwardRawChatUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardResponsesBodyUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardResponsesToChatUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardNativeAnthropicUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardUnknownDecisionAllowsConfiguredTarget
+        TestOpenCodeQuotaFallbackForwardUnknownDirectTargetUsesTargetProtocol
+        TestOpenCodeQuotaFallbackForwardMessagesChatUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardMessagesResponsesUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardChatToNativeAnthropicUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardResponsesToNativeAnthropicUsesTargetModel
+      FORWARD_MODEL_RED_TESTS: >-
+        TestOpenCodeQuotaFallbackForwardRawChatUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardResponsesBodyUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardResponsesToChatUsesTargetModel
+        TestOpenCodeQuotaFallbackForwardNativeAnthropicUsesTargetModel
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Stage regression test file
+        run: |
+          set -euo pipefail
+          cp "${REGRESSION_TEST_FILE}" /tmp/opencode_quota_fallback_outbound_test.go
+
+      # literal 216 对照：整个 backend tree 换回 0985429a2（v0.1.216-card），
+      # 再把同一份新回归测试文件 copy 回来；其余既有测试保持 216 原样。
+      - name: Rewind backend to literal 216 source (variant=literal-216)
+        if: matrix.variant == 'literal-216'
+        run: |
+          set -euo pipefail
+          git checkout 0985429a2 -- backend
+          cp /tmp/opencode_quota_fallback_outbound_test.go "${REGRESSION_TEST_FILE}"
+          git status --short
+
+      - name: Hook sanity (exact ten forward tests present)
+        run: |
+          set -euo pipefail
+          f="${REGRESSION_TEST_FILE}"
+          [ -f "$f" ] || { echo "::error::REGRESSION_FILE_MISSING: $f"; exit 1; }
+          for name in ${FORWARD_EXPECTED_TESTS}; do
+            grep -q "^func ${name}(" "$f" \
+              || { echo "::error::FORWARD_TEST_HOOK_MISSING: ${name}"; exit 1; }
+          done
+          echo "hook sanity ok: exact ten forward tests present"
+
+      # 编译前置门：两变体都必须编译通过；编译错误不得当作行为红灯。
+      - name: Compile preflight (variant=${{ matrix.variant }})
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          mkdir -p ../test-logs
+          go test -tags=unit -count=1 -run '^$' ./internal/service/ 2>&1 \
+            | tee "../test-logs/runtime_compile_${{ matrix.variant }}.log"
+          echo "compile preflight ok (variant=${{ matrix.variant }})"
+
+      - name: Run forward runtime tests (variant=${{ matrix.variant }})
+        working-directory: backend
+        run: |
+          set +e
+          mkdir -p ../test-logs
+          log="../test-logs/runtime_forward_${{ matrix.variant }}.log"
+          go test -tags=unit -count=1 -v -timeout=15m \
+            -run "^${FORWARD_TEST_PREFIX}" ./internal/service/ > "$log" 2>&1
+          rc=$?
+          echo "$rc" > "../test-logs/runtime_forward_${{ matrix.variant }}.exit"
+          tail -n 120 "$log"
+          exit 0
+
+      - name: Verify expected outcome (variant=${{ matrix.variant }})
+        run: |
+          set -uo pipefail
+          log="test-logs/runtime_forward_${{ matrix.variant }}.log"
+          rc="$(cat "test-logs/runtime_forward_${{ matrix.variant }}.exit" 2>/dev/null || echo missing)"
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ -f "$log" ] || fail "missing test log: $log"
+
+          if grep -qE '\[build failed\]|undefined: |cannot use |too many errors|syntax error' "$log"; then
+            fail "COMPILE_ERROR_IN_TEST_LOG: red is not behavior evidence"
+          fi
+          if grep -qE '(^| )(panic:|fatal error:)' "$log"; then
+            fail "PANIC_IN_TEST_LOG: red is not assertion evidence"
+          fi
+
+          if [ "${{ matrix.variant }}" = "current" ]; then
+            [ "$rc" = "0" ] || fail "current: forward runtime tests must pass (rc=$rc)"
+            grep -qE '^ok[[:space:]]' "$log" || fail "current: missing go test ok status line"
+            for name in ${FORWARD_EXPECTED_TESTS}; do
+              grep -qE "^--- PASS: ${name}([[:space:]]|$)" "$log" \
+                || fail "current: expected PASS missing for ${name}"
+            done
+            if grep -q '^--- FAIL' "$log"; then
+              fail "current: unexpected FAIL lines"
+            fi
+            echo "variant current: all ten forward runtime tests PASS"
+          else
+            [ "$rc" != "0" ] || fail "literal-216: forward tests unexpectedly PASSED; 216 regression not reproduced"
+            for name in ${FORWARD_MODEL_RED_TESTS}; do
+              grep -qE "^--- FAIL: ${name}([[:space:]]|$)" "$log" \
+                || fail "literal-216: expected model red missing for ${name}"
+            done
+            grep -qF 'expected: "step-5-preview"' "$log" \
+              || fail 'literal-216: missing expected: "step-5-preview" assertion evidence'
+            grep -qE 'actual[[:space:]]*:[[:space:]]*"deepseek-v4\.1-flash"' "$log" \
+              || fail 'literal-216: missing actual: "deepseek-v4.1-flash" assertion evidence'
+            other="$(grep -E '^--- FAIL:' "$log" | grep -vE "^--- FAIL: ${FORWARD_TEST_PREFIX}" || true)"
+            [ -z "$other" ] || fail "literal-216: failures outside forward prefix: $other"
+            echo 'variant literal-216: model assertion RED: expected step-5-preview vs actual deepseek-v4.1-flash'
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: opencode-quota-fallback-runtime-${{ matrix.variant }}
           path: test-logs/
           if-no-files-found: error
           retention-days: 7
