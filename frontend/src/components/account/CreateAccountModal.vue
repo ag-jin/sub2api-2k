@@ -1615,6 +1615,8 @@
         />
         <OpenCodeQuotaFallbackEditor
           v-if="showOpenCodeQuotaFallbackEditor"
+          ref="quotaFallbackEditorRef"
+          :key="quotaFallbackEditorKey"
           v-model="quotaFallbackConfig"
           :model-options="quotaFallbackModelOptions"
           :candidates="quotaFallbackCandidates"
@@ -4390,7 +4392,8 @@ import {
   openCodeQuotaFallbackSourceOptions,
   validateOpenCodeQuotaFallbackConfig,
   type OpenCodeQuotaFallbackCandidate,
-  type OpenCodeQuotaFallbackConfig
+  type OpenCodeQuotaFallbackConfig,
+  type OpenCodeQuotaFallbackSubmitError
 } from '@/components/account/openCodeQuotaFallback'
 import {
   applyAntigravityProjectID,
@@ -4851,6 +4854,14 @@ const openCodeQuotaFallbackMode = computed<string | undefined>(() =>
 const showOpenCodeQuotaFallbackEditor = computed(() =>
   isOpenCodeQuotaFallbackEligible(form.platform, form.type, openCodeQuotaFallbackMode.value)
 )
+// 编辑器上下文 key：平台/类型/模式变化或重新打开表单即重建，未提交草稿不得跨上下文复用。
+const quotaFallbackEditorSession = ref(0)
+const quotaFallbackEditorKey = computed(() =>
+  `${form.platform}:${form.type}:${openCodeQuotaFallbackMode.value ?? ''}:${quotaFallbackEditorSession.value}`
+)
+const quotaFallbackEditorRef = ref<{
+  validateForSubmit?: () => OpenCodeQuotaFallbackSubmitError | null
+} | null>(null)
 // source 候选 = 当前表单正常 model_mapping 的真正 targets（正常实际上游模型 ID）。
 const quotaFallbackModelOptions = computed(() =>
   openCodeQuotaFallbackSourceOptions(
@@ -5567,6 +5578,8 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      // 新打开会话：先推进编辑器上下文 key，丢弃上一次会话的未提交草稿。
+      quotaFallbackEditorSession.value += 1
       // Load TLS fingerprint profiles
       adminAPI.tlsFingerprintProfiles.list()
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
@@ -6686,7 +6699,10 @@ const handleSubmit = async () => {
       openCodeQuotaFallbackMode.value
     )
     if (quotaFallbackEligible) {
-      const quotaFallbackValidationError = validateOpenCodeQuotaFallbackConfig(quotaFallbackConfig.value)
+      // 编辑器草稿门禁优先（含只选 target、source 为空的新行），避免 mappingFromRows() 静默丢行。
+      const quotaFallbackValidationError =
+        quotaFallbackEditorRef.value?.validateForSubmit?.() ??
+        validateOpenCodeQuotaFallbackConfig(quotaFallbackConfig.value)
       if (quotaFallbackValidationError) {
         appStore.showError(t(`admin.accounts.openCodeQuotaFallback.errors.${quotaFallbackValidationError}`))
         return

@@ -1,4 +1,4 @@
-import { defineComponent } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -80,6 +80,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import CreateAccountModal from '../CreateAccountModal.vue'
+import OpenCodeQuotaFallbackEditor from '../OpenCodeQuotaFallbackEditor.vue'
 
 // 冻结 props 契约（coordinator 2026-10-16）：v-model config + modelOptions/candidates/
 // candidatesState/disabled/error + emits update:modelValue、sync-targets。
@@ -151,6 +152,39 @@ function mountModal(groups: any[] = []) {
         ModelWhitelistSelector: ModelWhitelistSelectorStub,
         QuotaLimitCard: true,
         OpenCodeQuotaFallbackEditor: QuotaFallbackEditorStub,
+      },
+    },
+  })
+}
+
+// 真实 Editor 需要可交互的 Select 才能构造“只选 target、source 为空”的草稿行。
+const RealEditorSelectStub = defineComponent({
+  name: 'Select',
+  props: ['modelValue', 'options', 'disabled', 'error'],
+  emits: ['update:modelValue'],
+  template: `
+    <div>
+      <button type="button" data-testid="select-custom" @click="$emit('update:modelValue', 'free-choice')">custom</button>
+    </div>
+  `,
+})
+
+function mountModalWithRealEditor(groups: any[] = []) {
+  return mount(CreateAccountModal, {
+    props: { show: true, proxies: [], groups },
+    global: {
+      stubs: {
+        BaseDialog: BaseDialogStub,
+        OAuthAuthorizationFlow: OAuthAuthorizationFlowStub,
+        ConfirmDialog: true,
+        Select: RealEditorSelectStub,
+        Icon: true,
+        PlatformIcon: true,
+        ProxySelector: true,
+        ProxyAdBanner: true,
+        GroupSelector: GroupSelectorStub,
+        ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        QuotaLimitCard: true,
       },
     },
   })
@@ -420,5 +454,87 @@ describe('CreateAccountModal OpenCode quota fallback', () => {
 
     expect(findEditor(wrapper).props('candidates')).toEqual([])
     expect(findEditor(wrapper).props('candidatesState')).toBe('idle')
+  })
+
+  it('blocks the real form submit when a target-only draft exists next to a valid row', async () => {
+    const wrapper = mountModalWithRealEditor()
+    await openOpenCodeGoForm(wrapper)
+
+    const editor = wrapper.findComponent(OpenCodeQuotaFallbackEditor)
+    editor.vm.$emit('update:modelValue', {
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    await wrapper
+      .get('[data-testid^="opencode-quota-fallback-target-draft-"] [data-testid="select-custom"]')
+      .trigger('click')
+
+    await submit(wrapper)
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith(
+      'admin.accounts.openCodeQuotaFallback.errors.sourceRequired'
+    )
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.sourceRequired')
+    // 合法行仍在编辑器内，整个保存被阻断，而不是丢弃草稿后照常创建。
+    expect(
+      wrapper.find('[data-testid="opencode-quota-fallback-source-deepseek-v4.1-flash"]').exists()
+    ).toBe(true)
+  })
+
+  it('allows switching protection off with a target-only draft and saves without it', async () => {
+    const wrapper = mountModalWithRealEditor()
+    await openOpenCodeGoForm(wrapper)
+
+    const editor = wrapper.findComponent(OpenCodeQuotaFallbackEditor)
+    editor.vm.$emit('update:modelValue', {
+      enabled: true,
+      threshold_percent: 98,
+      model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    await wrapper
+      .get('[data-testid^="opencode-quota-fallback-target-draft-"] [data-testid="select-custom"]')
+      .trigger('click')
+    // 关闭是显式回退草稿，不应强迫用户回头补完空行。
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+
+    await submit(wrapper)
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(showErrorMock).not.toHaveBeenCalled()
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.quota_fallback).toEqual({
+      enabled: false,
+      threshold_percent: 98,
+      model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+    })
+  })
+
+  it('commits the current source on Enter in the real form without creating an account', async () => {
+    const wrapper = mountModalWithRealEditor()
+    await openOpenCodeGoForm(wrapper)
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const input = wrapper.get<HTMLInputElement>(
+      '[data-testid^="opencode-quota-fallback-source-draft-"]'
+    )
+    await input.setValue('typed-in-modal')
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    input.element.dispatchEvent(event)
+    await nextTick()
+    await flushPromises()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.emitted('created')).toBeUndefined()
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-typed-in-modal"]').exists()).toBe(true)
   })
 })

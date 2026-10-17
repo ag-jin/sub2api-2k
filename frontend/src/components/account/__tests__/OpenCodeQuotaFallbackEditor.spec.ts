@@ -265,61 +265,106 @@ describe('OpenCodeQuotaFallbackEditor', () => {
     expect(wrapper.find('[data-testid^="opencode-quota-fallback-source-draft-"]').exists()).toBe(true)
   })
 
-  it('restores local edits when the parent resets to the pre-edit stored config', async () => {
+  it('treats a parent reset to the pre-edit stored config as authoritative (no edit replay)', async () => {
     const original = fallback({
       enabled: true,
+      threshold_percent: 95,
       model_mapping: { 'normal-a': 'free-a' }
     })
     const wrapper = mountEditor(original)
 
-    const input = sourceInput(wrapper, 'normal-a')
-    await input.setValue('normal-b')
-    await input.trigger('blur')
-    expect(lastEmitted(wrapper)?.model_mapping).toEqual({ 'normal-b': 'free-a' })
-
-    // 模拟账号自动刷新：父级 ref 被重写回编辑前的存量配置。
-    await wrapper.setProps({
-      modelValue: { enabled: true, threshold_percent: 98, model_mapping: { 'normal-a': 'free-a' } }
+    const thresholdInput = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    await thresholdInput.setValue('90')
+    await thresholdInput.trigger('change')
+    const source = sourceInput(wrapper, 'normal-a')
+    await source.setValue('normal-b')
+    await source.trigger('blur')
+    expect(lastEmitted(wrapper)).toEqual({
+      enabled: true,
+      threshold_percent: 90,
+      model_mapping: { 'normal-b': 'free-a' }
     })
+    const emittedAfterEdit = wrapper.emitted('update:modelValue')?.length ?? 0
 
-    expect(lastEmitted(wrapper)?.model_mapping).toEqual({ 'normal-b': 'free-a' })
-    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(true)
+    // 父级真实回退（例如服务端状态变化/新上下文）以父级 v-model 为准，不得复活旧编辑。
+    await wrapper.setProps({ modelValue: original })
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value).toBe('95')
+    expect(sourceInput(wrapper, 'normal-a').element.value).toBe('normal-a')
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(false)
+    // 旧启发式会在这里重新 emit 本地编辑；新归属不得回写父级。
+    expect(wrapper.emitted('update:modelValue')?.length ?? 0).toBe(emittedAfterEdit)
   })
 
-  it('restores local enabled and threshold edits when the parent resets to the pre-edit stored config', async () => {
-    const stored = fallback({
+  it('keeps an uncommitted draft row across a same-context external refresh', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const draft = wrapper.get<HTMLInputElement>('[data-testid^="opencode-quota-fallback-source-draft-"]')
+    await draft.setValue('draft-source')
+
+    await wrapper.setProps({
+      modelValue: {
+        enabled: true,
+        threshold_percent: 97,
+        model_mapping: { 'normal-a': 'free-a', 'normal-b': 'free-b' }
+      }
+    })
+
+    // 同一挂载上下文：父级 committed 值生效，未提交草稿保留。
+    expect(draft.element.value).toBe('draft-source')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value).toBe('97')
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-b"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="opencode-quota-fallback-target-normal-b"]').attributes('data-model-value'))
+      .toBe('free-b')
+  })
+
+  it('blocks submit for a target-only draft row and surfaces sourceRequired', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const draftTarget = wrapper.get('[data-testid^="opencode-quota-fallback-target-draft-"]')
+    await draftTarget.get('[data-testid="select-custom"]').trigger('click')
+    expect(draftTarget.attributes('data-model-value')).toBe('custom-free-model')
+
+    const validateForSubmit = (wrapper.vm as unknown as {
+      validateForSubmit: () => string | null
+    }).validateForSubmit
+    expect(validateForSubmit()).toBe('sourceRequired')
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.sourceRequired')
+    // 合法行仍在，父级保存必须整体阻断而不是静默丢掉草稿行。
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-normal-a"]').exists()).toBe(true)
+  })
+
+  it('explicitly discards uncommitted draft rows when protection is turned off', async () => {
+    const wrapper = mountEditor(fallback({
+      enabled: true,
+      model_mapping: { 'normal-a': 'free-a' }
+    }))
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    await wrapper.get('[data-testid^="opencode-quota-fallback-target-draft-"] [data-testid="select-custom"]')
+      .trigger('click')
+
+    // 关闭操作必须始终可完成：显式回退草稿，而不是留下不可见的保存阻断。
+    await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
+    const disabled = lastEmitted(wrapper)!
+    expect(disabled).toEqual({
       enabled: false,
       threshold_percent: 98,
       model_mapping: { 'normal-a': 'free-a' }
     })
-    const wrapper = mountEditor(stored)
 
+    await wrapper.setProps({ modelValue: disabled })
     await wrapper.get('[data-testid="opencode-quota-fallback-toggle"]').trigger('click')
-    const thresholdInput = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
-    await thresholdInput.setValue('95')
-    await thresholdInput.trigger('change')
-    expect(lastEmitted(wrapper)).toEqual({
-      enabled: true,
-      threshold_percent: 95,
-      model_mapping: { 'normal-a': 'free-a' }
-    })
-    const emittedBeforeReset = wrapper.emitted('update:modelValue')?.length ?? 0
-
-    // 模拟账号自动刷新：父级 ref 被重写回编辑前的存量配置，本地开关/阈值不得被旧值覆盖。
-    await wrapper.setProps({
-      modelValue: { enabled: false, threshold_percent: 98, model_mapping: { 'normal-a': 'free-a' } }
-    })
-
-    // 必须以一次重新 emit 恢复父级 ref，否则父级保存时会写回旧开关/阈值。
-    expect(wrapper.emitted('update:modelValue')?.length ?? 0).toBe(emittedBeforeReset + 1)
-    expect(lastEmitted(wrapper)).toEqual({
-      enabled: true,
-      threshold_percent: 95,
-      model_mapping: { 'normal-a': 'free-a' }
-    })
-    // 本地 enabled 仍为 true，阈值输入应继续可见且保留 95。
-    expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value)
-      .toBe('95')
+    expect(wrapper.find('[data-testid^="opencode-quota-fallback-source-draft-"]').exists()).toBe(false)
+    expect(wrapper.findAll('input[data-testid^="opencode-quota-fallback-source-"]')).toHaveLength(1)
   })
 
   it('keeps stored sources that are absent from the latest normal model options', () => {

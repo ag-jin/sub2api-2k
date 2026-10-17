@@ -202,6 +202,8 @@
         />
         <OpenCodeQuotaFallbackEditor
           v-if="showOpenCodeQuotaFallbackEditor"
+          ref="quotaFallbackEditorRef"
+          :key="quotaFallbackEditorKey"
           v-model="editQuotaFallbackConfig"
           :model-options="quotaFallbackModelOptions"
           :candidates="quotaFallbackCandidates"
@@ -3462,7 +3464,8 @@ import {
   parseOpenCodeQuotaFallbackConfig,
   validateOpenCodeQuotaFallbackConfig,
   type OpenCodeQuotaFallbackCandidate,
-  type OpenCodeQuotaFallbackConfig
+  type OpenCodeQuotaFallbackConfig,
+  type OpenCodeQuotaFallbackSubmitError
 } from '@/components/account/openCodeQuotaFallback'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
@@ -3866,6 +3869,14 @@ const showOpenCodeQuotaFallbackEditor = computed(() =>
     openCodeQuotaFallbackMode.value
   )
 )
+// 编辑器上下文 key：换账号或新打开会话即重建；同账号自动刷新 key 不变，未提交的本地草稿保留。
+const quotaFallbackEditorSession = ref(0)
+const quotaFallbackEditorKey = computed(() =>
+  `${props.account?.id ?? ''}:${quotaFallbackEditorSession.value}`
+)
+const quotaFallbackEditorRef = ref<{
+  validateForSubmit?: () => OpenCodeQuotaFallbackSubmitError | null
+} | null>(null)
 // source 候选 = 当前表单正常 model_mapping 的真正 targets（正常实际上游模型 ID）。
 const quotaFallbackModelOptions = computed(() =>
   openCodeQuotaFallbackSourceOptions(buildModelRestrictionMapping())
@@ -4646,7 +4657,10 @@ const applyOpenAIModelMappingCredentials = (credentials: Record<string, unknown>
   }
 }
 
-const syncFormFromAccount = (newAccount: Account | null) => {
+const syncFormFromAccount = (
+  newAccount: Account | null,
+  options?: { resetQuotaFallback?: boolean }
+) => {
   if (!newAccount) {
     return
   }
@@ -4978,9 +4992,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           cloneOpenCodeGoProtocolRules(defaultProviderProtocolRules(newAccount.platform, currentOpenCodeOrCNMode()))
       }
     }
-    // OpenCode 额度保护：回显存储配置；旧账号无字段 → 默认关闭态（等价缺省，不自动写 enabled）。
-    editQuotaFallbackConfig.value =
-      parseOpenCodeQuotaFallbackConfig(credentials.quota_fallback) ?? createOpenCodeQuotaFallbackConfig()
+    // OpenCode 额度保护：仅在新打开会话/账号切换时回显存储配置；同账号自动刷新不得覆盖
+    // 用户未提交的 enabled/threshold/mapping 编辑。旧账号无字段 → 默认关闭态（不自动写 enabled）。
+    if (options?.resetQuotaFallback !== false) {
+      editQuotaFallbackConfig.value =
+        parseOpenCodeQuotaFallbackConfig(credentials.quota_fallback) ?? createOpenCodeQuotaFallbackConfig()
+    }
     quotaFallbackCandidatesRequestVersion += 1
     quotaFallbackCandidates.value = []
     quotaFallbackCandidatesState.value = 'idle'
@@ -5121,7 +5138,12 @@ watch(
       return
     }
     if (!wasShow || newAccount !== previousAccount) {
-      syncFormFromAccount(newAccount)
+      // 新打开会话先推进上下文 key，再同步父级初始化值，确保子组件以新上下文重建。
+      if (!wasShow) quotaFallbackEditorSession.value += 1
+      syncFormFromAccount(newAccount, {
+        // 新会话或真实换账号才重置；同账号对象刷新保留用户编辑。
+        resetQuotaFallback: !wasShow || newAccount.id !== previousAccount?.id
+      })
       loadTLSProfiles()
     }
   },
@@ -5861,7 +5883,10 @@ const handleSubmit = async () => {
           openCodeQuotaFallbackMode.value
         )
         if (quotaFallbackEligible) {
-          const quotaFallbackValidationError = validateOpenCodeQuotaFallbackConfig(editQuotaFallbackConfig.value)
+          // 编辑器草稿门禁优先（含只选 target、source 为空的新行），避免 mappingFromRows() 静默丢行。
+          const quotaFallbackValidationError =
+            quotaFallbackEditorRef.value?.validateForSubmit?.() ??
+            validateOpenCodeQuotaFallbackConfig(editQuotaFallbackConfig.value)
           if (quotaFallbackValidationError) {
             appStore.showError(t(`admin.accounts.openCodeQuotaFallback.errors.${quotaFallbackValidationError}`))
             return

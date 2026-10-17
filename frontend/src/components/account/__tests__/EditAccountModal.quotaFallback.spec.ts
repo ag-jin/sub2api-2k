@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
 const {
@@ -65,6 +65,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import OpenCodeQuotaFallbackEditor from '../OpenCodeQuotaFallbackEditor.vue'
 
 // 冻结 props 契约（coordinator 2026-10-16）：v-model config + modelOptions/candidates/
 // candidatesState/disabled/error + emits update:modelValue、sync-targets。
@@ -138,6 +139,38 @@ function mountModal(account: any) {
       },
     },
   })
+}
+
+// 真实 Editor 需要可交互的 Select 才能构造“只选 target、source 为空”的草稿行。
+const RealEditorSelectStub = defineComponent({
+  name: 'Select',
+  props: ['modelValue', 'options', 'disabled', 'error'],
+  emits: ['update:modelValue'],
+  template: `
+    <div>
+      <button type="button" data-testid="select-custom" @click="$emit('update:modelValue', 'free-choice')">custom</button>
+    </div>
+  `,
+})
+
+function mountModalWithRealEditor(account: any) {
+  return mount(EditAccountModal, {
+    props: { show: true, account, proxies: [], groups: [] },
+    global: {
+      stubs: {
+        BaseDialog: BaseDialogStub,
+        Select: RealEditorSelectStub,
+        Icon: true,
+        ProxySelector: true,
+        GroupSelector: true,
+        ModelWhitelistSelector: true,
+      },
+    },
+  })
+}
+
+function findRealEditor(wrapper: ReturnType<typeof mountModalWithRealEditor>) {
+  return wrapper.findComponent(OpenCodeQuotaFallbackEditor)
 }
 
 function findEditor(wrapper: ReturnType<typeof mountModal>) {
@@ -372,5 +405,157 @@ describe('EditAccountModal OpenCode quota fallback', () => {
 
     expect(findEditor(wrapper).props('candidates')).toEqual([])
     expect(findEditor(wrapper).props('candidatesState')).toBe('idle')
+  })
+
+  it('keeps unsaved editor edits across a same-account refresh and saves them', async () => {
+    const stored = {
+      enabled: true,
+      threshold_percent: 95,
+      model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+    }
+    const account = buildOpenCodeGoAccount({ quota_fallback: stored })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModalWithRealEditor(account)
+
+    const threshold = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    await threshold.setValue('90')
+    await threshold.trigger('change')
+    await vi.waitFor(() => {
+      expect(findRealEditor(wrapper).props('modelValue')).toMatchObject({ threshold_percent: 90 })
+    })
+
+    // 同账号自动刷新：id 不变、对象更新、服务端仍返回旧配置，不得覆盖本地编辑。
+    const refreshed = buildOpenCodeGoAccount({ quota_fallback: stored })
+    await wrapper.setProps({ account: refreshed })
+    await vi.waitFor(() => {
+      expect(findRealEditor(wrapper).props('modelValue')).toMatchObject({ threshold_percent: 90 })
+    })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value)
+      .toBe('90')
+
+    const payload = await save(wrapper)
+    expect(payload?.credentials?.quota_fallback).toEqual({
+      enabled: true,
+      threshold_percent: 90,
+      model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+    })
+  })
+
+  it('resets the editor to the new account config on a real account switch', async () => {
+    const accountA = buildOpenCodeGoAccount({
+      quota_fallback: {
+        enabled: true,
+        threshold_percent: 95,
+        model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+      },
+    })
+    const accountB = {
+      ...buildOpenCodeGoAccount({
+        quota_fallback: {
+          enabled: true,
+          threshold_percent: 80,
+          model_mapping: { 'glm-5': 'free-b' },
+        },
+      }),
+      id: 8,
+      name: 'Other OpenCode',
+    }
+    updateAccountMock.mockResolvedValue(accountB)
+    const wrapper = mountModalWithRealEditor(accountA)
+
+    const threshold = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    await threshold.setValue('90')
+    await threshold.trigger('change')
+
+    await wrapper.setProps({ account: accountB })
+    await vi.waitFor(() => {
+      expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value)
+        .toBe('80')
+    })
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-glm-5"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-deepseek-v4.1-flash"]').exists())
+      .toBe(false)
+
+    const payload = await save(wrapper)
+    expect(payload?.credentials?.quota_fallback).toEqual({
+      enabled: true,
+      threshold_percent: 80,
+      model_mapping: { 'glm-5': 'free-b' },
+    })
+  })
+
+  it('does not resurrect discarded edits when the dialog is reopened', async () => {
+    const account = buildOpenCodeGoAccount({
+      quota_fallback: {
+        enabled: true,
+        threshold_percent: 95,
+        model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+      },
+    })
+    const wrapper = mountModalWithRealEditor(account)
+
+    const threshold = wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]')
+    await threshold.setValue('90')
+    await threshold.trigger('change')
+
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await vi.waitFor(() => {
+      expect(wrapper.get<HTMLInputElement>('[data-testid="opencode-quota-fallback-threshold"]').element.value)
+        .toBe('95')
+    })
+  })
+
+  it('blocks the real form save when a target-only draft exists next to a valid row', async () => {
+    const account = buildOpenCodeGoAccount({
+      quota_fallback: {
+        enabled: true,
+        threshold_percent: 98,
+        model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+      },
+    })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModalWithRealEditor(account)
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    await wrapper
+      .get('[data-testid^="opencode-quota-fallback-target-draft-"] [data-testid="select-custom"]')
+      .trigger('click')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await vi.waitFor(() => {
+      expect(showErrorMock).toHaveBeenCalledWith(
+        'admin.accounts.openCodeQuotaFallback.errors.sourceRequired'
+      )
+    })
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('admin.accounts.openCodeQuotaFallback.errors.sourceRequired')
+  })
+
+  it('commits the current source on Enter in the real edit form without updating the account', async () => {
+    const account = buildOpenCodeGoAccount({
+      quota_fallback: {
+        enabled: true,
+        threshold_percent: 98,
+        model_mapping: { 'deepseek-v4.1-flash': 'step-5-preview' },
+      },
+    })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModalWithRealEditor(account)
+
+    await wrapper.get('[data-testid="opencode-quota-fallback-add"]').trigger('click')
+    const input = wrapper.get<HTMLInputElement>(
+      '[data-testid^="opencode-quota-fallback-source-draft-"]'
+    )
+    await input.setValue('typed-in-edit')
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    input.element.dispatchEvent(event)
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.emitted('updated')).toBeUndefined()
+    expect(wrapper.find('[data-testid="opencode-quota-fallback-source-typed-in-edit"]').exists()).toBe(true)
   })
 })

@@ -27,6 +27,12 @@ export interface OpenCodeQuotaFallbackCandidate {
 
 export type OpenCodeQuotaFallbackValidationError = 'thresholdInvalid' | 'mappingInvalid'
 
+/** 提交门禁错误：除持久化校验外，还包括编辑器内尚未落成 key 的草稿行错误。 */
+export type OpenCodeQuotaFallbackSubmitError =
+  | OpenCodeQuotaFallbackValidationError
+  | 'sourceRequired'
+  | 'duplicateSource'
+
 export function createOpenCodeQuotaFallbackConfig(): OpenCodeQuotaFallbackConfig {
   return {
     enabled: false,

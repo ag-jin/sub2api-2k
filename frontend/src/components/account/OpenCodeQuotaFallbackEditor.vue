@@ -188,7 +188,8 @@ import {
   parseOpenCodeQuotaFallbackConfig,
   validateOpenCodeQuotaFallbackConfig,
   type OpenCodeQuotaFallbackCandidate,
-  type OpenCodeQuotaFallbackConfig
+  type OpenCodeQuotaFallbackConfig,
+  type OpenCodeQuotaFallbackSubmitError
 } from './openCodeQuotaFallback'
 
 interface EditableRow {
@@ -288,33 +289,27 @@ function mappingFromRows(): Record<string, string> {
   return Object.fromEntries(entries)
 }
 
-const initialSignature = configSignature(config.value)
-let lastParentSignature = initialSignature
-let localCommittedSignature = initialSignature
-/** 本地完整配置（enabled/threshold/mapping）开始偏离父级时的父级签名，用于识别账号自动刷新后的“回退”。 */
-let signatureBeforeLocalEdit: string | null = null
+function normalizedLocalConfig(): OpenCodeQuotaFallbackConfig {
+  return normalizeOpenCodeQuotaFallbackConfig({
+    enabled: enabled.value,
+    threshold_percent: threshold.value,
+    model_mapping: mappingFromRows()
+  })
+}
+
+function localSignature(): string {
+  return configSignature(normalizedLocalConfig())
+}
 
 watch(
   () => props.modelValue,
   (value) => {
     const incoming = parseOpenCodeQuotaFallbackConfig(value) ?? createOpenCodeQuotaFallbackConfig()
-    const incomingSignature = configSignature(incoming)
-    if (incomingSignature === localCommittedSignature) {
-      // 自身 emit 的回显或同值刷新：完整配置一致，不重建行，也不覆盖本地 enabled/threshold。
-      lastParentSignature = incomingSignature
-      return
-    }
-    if (signatureBeforeLocalEdit !== null && incomingSignature === signatureBeforeLocalEdit) {
-      // 父级被重置回编辑前的存量配置（例如账号自动刷新）：保留本地 enabled/threshold/映射，
-      // 并立即回写父级 ref，避免直接保存时丢掉编辑。
-      lastParentSignature = incomingSignature
-      emitFromRows()
-      return
-    }
+    // 自身 emit 的回显/同值刷新：本地已一致，保留输入框中尚未提交的草稿文本。
+    if (configSignature(incoming) === localSignature()) return
+    // 其余外部变更一律以父级 v-model 为准（父级在账号/平台上下文变化时用组件 key 重建本组件，
+    // 未提交的草稿行因此只在同一挂载上下文内保留）。
     applyExternalConfig(incoming)
-    lastParentSignature = incomingSignature
-    localCommittedSignature = incomingSignature
-    signatureBeforeLocalEdit = null
   }
 )
 
@@ -364,22 +359,21 @@ function parseInputThreshold(value: string): number {
 }
 
 function emitFromRows() {
-  const next = normalizeOpenCodeQuotaFallbackConfig({
-    enabled: enabled.value,
-    threshold_percent: threshold.value,
-    model_mapping: mappingFromRows()
-  })
-  const nextSignature = configSignature(next)
-  if (nextSignature !== localCommittedSignature) {
-    if (signatureBeforeLocalEdit === null) signatureBeforeLocalEdit = lastParentSignature
-    localCommittedSignature = nextSignature
+  emit('update:modelValue', normalizedLocalConfig())
+}
+
+/** 关闭/关闭态保存时的显式草稿回退：保留已提交行（先提交未失焦的 source），丢弃草稿行。 */
+function revertUncommittedDrafts() {
+  for (const row of rows.value) {
+    if (row.persistedSource && row.persistedSource !== row.source.trim()) commitSource(row)
   }
-  if (nextSignature === signatureBeforeLocalEdit) signatureBeforeLocalEdit = null
-  emit('update:modelValue', next)
+  rows.value = rows.value.filter(row => row.persistedSource)
 }
 
 function setEnabled(value: boolean) {
-  // Disabling is intentionally non-destructive: threshold and mappings remain available for a later re-enable.
+  // 关闭是显式的“草稿回退”动作：关闭按钮始终可用，也不会在保存时静默丢行。
+  if (!value) revertUncommittedDrafts()
+  // Disabling is intentionally non-destructive for persisted threshold/mappings.
   enabled.value = value
   emitFromRows()
 }
@@ -491,4 +485,31 @@ function rowError(row: EditableRow): string {
 function rowTestId(row: EditableRow): string {
   return row.persistedSource || `draft-${row.uid}`
 }
+
+/**
+ * 父级表单提交前的门禁：先提交未失焦的 source 文本，再拒绝未落成 key 的草稿行
+ * （典型：只选了 target 的新行），避免 mappingFromRows() 忽略草稿导致父级静默丢行。
+ * 关闭态不在此门禁内：setEnabled(false) 已显式回收草稿，关闭操作始终可完成。
+ */
+function validateForSubmit(): OpenCodeQuotaFallbackSubmitError | null {
+  if (!enabled.value) {
+    // 关闭态保存：显式回退草稿（不强迫用户补完空行），已提交行照常保存。
+    revertUncommittedDrafts()
+    return null
+  }
+  for (const row of rows.value) {
+    if (row.persistedSource !== row.source.trim()) commitSource(row)
+  }
+  for (const row of rows.value) {
+    if (row.sourceError) return row.sourceError
+  }
+  const draftRow = rows.value.find(row => !row.persistedSource)
+  if (draftRow) {
+    draftRow.sourceError = 'sourceRequired'
+    return 'sourceRequired'
+  }
+  return validateOpenCodeQuotaFallbackConfig(normalizedLocalConfig())
+}
+
+defineExpose({ validateForSubmit })
 </script>
