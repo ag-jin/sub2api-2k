@@ -212,6 +212,44 @@ func TestLockAndMergeAccountProbeExtraPreservesOpenCodeGoManagedState(t *testing
 			wantSnapshotCheck: true,
 		},
 		{
+			// legacy opencode 平台（card 血统存量值）：同身份时与 opencode_go 同语义，
+			// 必须从锁定 DB 行回填 managed keys（此前每次 admin PUT 都会丢 snapshot）。
+			name: "legacy opencode identity unchanged restores managed keys",
+			account: func() *service.Account {
+				account := openCodeGoUsageRepositoryAccount()
+				account.Platform = service.PlatformOpenCode
+				return account
+			}(),
+			groupUnchanged:   true,
+			proxyUnchanged:   true,
+			databaseAuto:     "true",
+			databaseSnapshot: openCodeGoSnapshotJSON(),
+			inputExtra: map[string]any{
+				service.OpenCodeGoUsageAutoRefreshExtraKey: false,
+				service.OpenCodeGoUsageSnapshotExtraKey:    map[string]any{"status": "forged"},
+			},
+			wantAuto:          true,
+			wantSnapshotCheck: true,
+		},
+		{
+			// identity 变了（api_key/base/proxy/mode 任一不同）仍必须清掉 legacy
+			// 账号的 managed keys，不得回填。
+			name: "legacy opencode identity change clears managed keys",
+			account: func() *service.Account {
+				account := openCodeGoUsageRepositoryAccount()
+				account.Platform = service.PlatformOpenCode
+				return account
+			}(),
+			groupUnchanged:   false,
+			proxyUnchanged:   true,
+			databaseAuto:     "true",
+			databaseSnapshot: openCodeGoSnapshotJSON(),
+			inputExtra: map[string]any{
+				service.OpenCodeGoUsageAutoRefreshExtraKey: true,
+				service.OpenCodeGoUsageSnapshotExtraKey:    openCodeGoSnapshotJSON(),
+			},
+		},
+		{
 			name:             "api key changed clears both managed keys",
 			account:          openCodeGoUsageRepositoryAccount(),
 			groupUnchanged:   false,
@@ -623,4 +661,27 @@ func TestOpenCodeGoUsageDueQueryPolicyAccountsContracts(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, mock.ExpectationsWereMet())
 	}
+}
+
+// TestOpenCodeLegacyGroupIdentityKeepBranchIsInSQL 钉死 runtime 根因：候选保存路径
+// （lockAndMergeAccountProbeExtra）的同身份判定必须包含 legacy platform=opencode 分支，
+// 否则 legacy 账号每次 admin PUT 都被判身份变化并丢掉 snapshot/auto_refresh。
+// ExpectQuery 正则直接要求该谓词文本，缺失即 unexpected call 失败。
+func TestOpenCodeLegacyGroupIdentityKeepBranchIsInSQL(t *testing.T) {
+	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+	account := openCodeGoUsageRepositoryAccount()
+	account.Platform = service.PlatformOpenCode
+	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("(platform = 'opencode' AND $2 = 'opencode'")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
+		WithArgs("key", account.ID, account.Platform, account.Type, string(credentials), nil).
+		WillReturnRows(sqlmock.NewRows(openCodeGoMergeMockColumns()).
+			AddRow(false, false, true, nil, nil, nil, nil, nil, nil, true, "true", openCodeGoSnapshotJSON()))
+
+	merged, err := lockAndMergeAccountProbeExtra(context.Background(), client, account, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, true, merged[service.OpenCodeGoUsageAutoRefreshExtraKey])
+	require.Contains(t, merged, service.OpenCodeGoUsageSnapshotExtraKey)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

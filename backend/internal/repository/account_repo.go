@@ -660,6 +660,11 @@ func lockAndMergeAccountProbeExtra(
 					(platform = 'opencode_go' AND $2 = 'opencode_go'
 						AND COALESCE(btrim(credentials ->> 'account_mode') <> 'zen', true)
 						AND COALESCE(btrim($4::jsonb ->> 'account_mode') <> 'zen', true))
+					-- legacy opencode 平台分支（card 血统存量值）：与上一分支同语义
+					-- （同平台、api_key 不变、两侧非 zen），不校验 base_url。
+					OR (platform = 'opencode' AND $2 = 'opencode'
+						AND COALESCE(btrim(credentials ->> 'account_mode') <> 'zen', true)
+						AND COALESCE(btrim($4::jsonb ->> 'account_mode') <> 'zen', true))
 					-- 挂载白名单分支：新旧平台都在白名单内且 base_url 均为官方
 					-- OpenCode Go 基址（与 Ollama 同范式，允许白名单内跨平台）。
 					OR (platform IN (`+opencodeGoUsageMountPlatformsSQL+`)
@@ -810,8 +815,8 @@ func lockAndMergeAccountProbeExtra(
 			}
 		}
 	}
-	// OpenCode Go 受管状态与 Ollama 同范式：组身份（opencode_go Go 订阅，或挂载
-	// 白名单平台 + 官方 OpenCode Go 基址，且 api_key 不变）未变时从锁定的 DB 行
+	// OpenCode Go 受管状态与 Ollama 同范式：组身份（opencode / opencode_go Go 订阅，
+	// 或挂载白名单平台 + 官方 OpenCode Go 基址，且 api_key 不变）未变时从锁定的 DB 行
 	// 回填，客户端 DTO 脱敏或并发 refresh 写入都无法覆盖/丢失；身份改变或不再
 	// eligible 时既不回填，写出的 extra 即清除旧状态。
 	// 代理不属于组身份，但 snapshot 外呼与 CAS 经代理，故代理变化时快照失效而开关保留。
