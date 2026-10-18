@@ -1,0 +1,193 @@
+name: OpenCode Quota Refresh Gates
+
+# 专项门禁：v0.1.219-card（OpenCode Go 额度刷新 ListDue SQL 名字解析修复）。
+# 不修改、不取消既有 CI（backend-ci.yml / security-scan.yml 等按原样同时运行）；
+# 本 workflow 只是发布前的额外专项证据，不替代完整 CI。
+#
+# 覆盖：
+#   job1 build                 go build ./...、go vet ./...、go vet -tags=unit
+#                              （service/handler/repository）、
+#                              go vet -tags=integration ./internal/repository、
+#                              go test -c -tags=integration（编译前置）。
+#   job2 integration-regression current 与 literal218repository 两个变体跑同一个真实
+#                              PostgreSQL 回归 TestListDueOpenCodeGoUsageAccountsPolicyContract：
+#                              - current：两个 policyAccountsOnly 子测试全部 PASS；
+#                              - literal218repository：只把
+#                                backend/internal/repository/account_repo_opencode_go_usage.go
+#                                换回基线 cf9db21 的字面版本；回归测试、helpers、validator
+#                                全部保持 current。两个子测试必须**各自独立**报
+#                                SQLSTATE=42703 + column "credentials" does not exist。
+#
+# 证据性质（写发版记录必须照此表述）：
+#   - current：本提交上真实 PostgreSQL 回归两个子测试全部通过。
+#   - literal218repository：测试进程退出码非 0，但 gate step 成功；这是设计中的红，
+#     不是 CI 失败，也不能写成“测试通过”。
+#
+# 伪红排除：只回退一个文件并断言 git diff 恰好一行；两变体先跑编译前置；显式
+# CI=true（Docker 不可用时 TestMain 硬失败而不是 os.Exit(0) skip）；gate 脚本按
+# -json 事件的 Test 字段归集输出，拒绝 skip/panic/编译/setup/非 SQL 错误/25P02。
+
+on:
+  push:
+    branches:
+      - 'fix/opencode-quota-refresh-219'
+      - 'release/v0.1.219-card'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-quota-refresh-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  BASELINE_SHA: cf9db21fcb3e9d54f3ae8189e89ec00b3aa8d707
+  REPO_FILE: backend/internal/repository/account_repo_opencode_go_usage.go
+  REGRESSION_TEST: TestListDueOpenCodeGoUsageAccountsPolicyContract
+
+jobs:
+  # ── 发布额外 Go 编译门禁 ───────────────────────────────────────────────────
+  build:
+    name: Go build and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Go version
+        working-directory: backend
+        run: go version
+
+      - name: go build ./...
+        working-directory: backend
+        run: go build ./...
+
+      - name: go vet ./...
+        working-directory: backend
+        run: go vet ./...
+
+      # backend/.golangci.yml 未配置 build-tags，golangci-lint 与 go vet ./...
+      # 都不会覆盖 unit / integration 标签下的文件，必须显式检查。
+      - name: go vet -tags=unit (service/handler/repository)
+        working-directory: backend
+        run: go vet -tags=unit ./internal/service/... ./internal/handler/... ./internal/repository/...
+
+      - name: go vet -tags=integration ./internal/repository
+        working-directory: backend
+        run: go vet -tags=integration ./internal/repository
+
+      # 只编译测试二进制、不运行 TestMain，专门暴露 import/语法/测试文件错误。
+      - name: Compile integration test binary
+        working-directory: backend
+        run: go test -c -tags=integration -o /tmp/repository-current.test ./internal/repository
+
+  # ── 真实 PostgreSQL 红绿回归 ───────────────────────────────────────────────
+  integration-regression:
+    name: Real PostgreSQL regression (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, literal218repository]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # 需要基线 cf9db21 的完整历史来做单文件字面回退。
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      # 仅 literal218repository 变体回退 repository 产品文件；测试文件与 helpers 保持 current。
+      - name: Apply literal 218 repository (variant=literal218repository)
+        if: matrix.variant == 'literal218repository'
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${BASELINE_SHA}"
+          fi
+          git cat-file -e "${BASELINE_SHA}^{commit}"
+          git show "${BASELINE_SHA}:${REPO_FILE}" > "${REPO_FILE}"
+          if git diff --quiet -- "${REPO_FILE}"; then
+            echo "::error::LITERAL218_REPOSITORY_NOT_DIFFERENT: ${REPO_FILE} is identical to ${BASELINE_SHA}"
+            exit 1
+          fi
+          changed="$(git diff --name-only)"
+          if [ "${changed}" != "${REPO_FILE}" ]; then
+            echo "::error::VARIANT_CHANGED_MORE_THAN_ONE_FILE"
+            echo "${changed}"
+            exit 1
+          fi
+          echo "literal218repository: rewound only ${REPO_FILE} to ${BASELINE_SHA}"
+          git status --short
+          git --no-pager diff --stat
+
+      # 编译前置门：两变体都必须编译通过；编译错误不得当作行为红灯。
+      - name: Compile preflight (variant=${{ matrix.variant }})
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          go build ./...
+          go vet ./...
+          go test -c -tags=integration -o "/tmp/repository-${{ matrix.variant }}.test" ./internal/repository
+          echo "compile preflight ok (variant=${{ matrix.variant }})"
+
+      # 记录真实退出码；失败证据统一交给下一步 gate 脚本，避免红绿判断散落在 shell 里。
+      - name: Run real PostgreSQL regression (variant=${{ matrix.variant }})
+        working-directory: backend
+        run: |
+          set +e
+          mkdir -p ../test-logs
+          go test -tags=integration -count=1 \
+            -run "^${REGRESSION_TEST}$" -json -v \
+            ./internal/repository \
+            > "../test-logs/${{ matrix.variant }}.json" \
+            2> "../test-logs/${{ matrix.variant }}.stderr"
+          rc=$?
+          echo "$rc" > "../test-logs/${{ matrix.variant }}.exit"
+          echo "variant=${{ matrix.variant }} go test rc=$rc"
+          tail -n 40 "../test-logs/${{ matrix.variant }}.stderr" || true
+          exit 0
+
+      - name: Verify expected outcome (variant=${{ matrix.variant }})
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/quota-refresh-gate.py \
+            "${{ matrix.variant }}" \
+            "test-logs/${{ matrix.variant }}.json" \
+            "test-logs/${{ matrix.variant }}.exit" \
+            --stderr "test-logs/${{ matrix.variant }}.stderr"
+
+      - name: Record worktree diff (variant=${{ matrix.variant }})
+        if: always()
+        run: |
+          mkdir -p test-logs
+          {
+            git status --short
+            echo '---'
+            git --no-pager diff --stat
+            echo '---'
+            git --no-pager diff
+          } > "test-logs/${{ matrix.variant }}.git-diff.txt" || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: opencode-quota-refresh-${{ matrix.variant }}
+          path: test-logs/
+          if-no-files-found: error
+          retention-days: 7

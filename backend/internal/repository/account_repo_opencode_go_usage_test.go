@@ -646,6 +646,9 @@ func TestOpenCodeAccountModeOnlyTrimmedZenIsZen(t *testing.T) {
 // 策略账号（credentials.quota_fallback.enabled=true）必须进入 eligible 集合，且在
 // policyAccountsOnly=true（全局用量开关关闭）时被显式限制为仅策略账号；同时策略
 // 账号获得与活动无关的刷新下限（idle due = fetched_at + maxWait）。
+// 查询文本还必须在 FROM accounts 作用域把布尔值投影为 quota_fallback_enabled，
+// 并让 timed 引用该列——旧代码在 timed 作用域重新展开常量，真实 PostgreSQL 报
+// 42703（本用例只做文本护栏，真实解析由集成回归覆盖）。
 func TestOpenCodeGoUsageDueQueryPolicyAccountsContracts(t *testing.T) {
 	require.Equal(t, "(credentials -> 'quota_fallback' ->> 'enabled') = 'true'", opencodeGoQuotaFallbackEnabledSQL)
 
@@ -653,7 +656,7 @@ func TestOpenCodeGoUsageDueQueryPolicyAccountsContracts(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = db.Close() })
-		mock.ExpectQuery(`(?s)opencode_go_usage_auto_refresh.*quota_fallback.*enabled`).
+		mock.ExpectQuery(`(?s)AS quota_fallback_enabled,.*opencode_go_usage_auto_refresh.*WHEN quota_fallback_enabled\s+AND parsed_fetched_at IS NOT NULL`).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "group_last_used_at"}))
 		repo := newAccountRepositoryWithSQL(nil, db, nil)
 

@@ -3,11 +3,22 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -368,4 +379,326 @@ func TestUpdateOpenCodeGoManagedStateSurvivesDesensitizedEdit(t *testing.T) {
 	snapshot, ok = loaded.Extra[service.OpenCodeGoUsageSnapshotExtraKey].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, service.OpenCodeGoUsageStatusOK, snapshot["status"], "伪造快照必须以锁定 DB 值为准")
+}
+
+// openCodeGoUsagePolicyFallbackConfig 返回与生产 524 同形的合法额度保护配置。
+// enabled=true 时必须同时提供 model_mapping，否则 service.ParseOpenCodeQuotaFallback
+// 会把配置判成非法并让 GetOpenCodeQuotaFallback().Enabled 返回 false。
+func openCodeGoUsagePolicyFallbackConfig() map[string]any {
+	return map[string]any{
+		"enabled":           true,
+		"threshold_percent": 98,
+		"model_mapping":     map[string]any{"deepseek-v4.1-flash": "step-5-preview"},
+	}
+}
+
+// assertOpenCodeGoUsageIntegrationDatabase 证明当前连接真的是 integration harness
+// 启动的 PostgreSQL，而不是被静默 skip 后的零值环境。专项 workflow 会断言该日志存在。
+func assertOpenCodeGoUsageIntegrationDatabase(t *testing.T, q sqlQueryer) {
+	t.Helper()
+	var dbName, versionNumRaw string
+	err := scanSingleRow(context.Background(), q,
+		`SELECT current_database(), current_setting('server_version_num')`,
+		nil, &dbName, &versionNumRaw)
+	require.NoError(t, err, "integration harness guard query")
+	require.Equal(t, "sub2api_test", dbName,
+		"integration tests must run against the testcontainers database")
+	versionNum, err := strconv.Atoi(versionNumRaw)
+	require.NoError(t, err, "server_version_num must be numeric: %q", versionNumRaw)
+	require.GreaterOrEqual(t, versionNum, 140000, "PostgreSQL >= 14 is required")
+	t.Logf("integration harness: database=%s server_version_num=%s", dbName, versionNumRaw)
+}
+
+// requireOpenCodeGoUsageListDueNoError 把 *pq.Error 的 SQLSTATE 显式打进失败信息。
+// lib/pq 的 Error() 只返回 "pq: <message>"，不含 SQLSTATE；不展开 pqErr.Code 时
+// 专项 gate 无法区分 42703 回归红与连接/setup 失败。
+func requireOpenCodeGoUsageListDueNoError(t *testing.T, err error, policyOnly bool) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		t.Fatalf("ListDueOpenCodeGoUsageAccounts(policyAccountsOnly=%t) failed: SQLSTATE=%s message=%s err=%v",
+			policyOnly, pqErr.Code, pqErr.Message, err)
+	}
+	t.Fatalf("ListDueOpenCodeGoUsageAccounts(policyAccountsOnly=%t) failed with non-SQL error: %v",
+		policyOnly, err)
+}
+
+type openCodeGoUsagePolicyFixtures struct {
+	accounts map[string]*service.Account
+	keys     map[string]string
+	dedupKey string
+}
+
+// expectedCounts 按 verification-plan §3.5 的矩阵返回每个 api_key 的期望行数。
+// 同一 kDedup key 的两条 fixture（K/L）合并统计。
+func (f *openCodeGoUsagePolicyFixtures) expectedCounts(policyOnly bool) map[string]int {
+	keys := f.keys
+	if policyOnly {
+		return map[string]int{
+			keys["A"]: 1, keys["B"]: 0, keys["C"]: 0, keys["D"]: 0, keys["E"]: 0,
+			keys["F"]: 1, keys["G"]: 0, keys["H"]: 0, keys["I"]: 0, keys["J"]: 0,
+			f.dedupKey: 1, keys["M"]: 1,
+		}
+	}
+	return map[string]int{
+		keys["A"]: 1, keys["B"]: 1, keys["C"]: 0, keys["D"]: 0, keys["E"]: 0,
+		keys["F"]: 1, keys["G"]: 0, keys["H"]: 0, keys["I"]: 1, keys["J"]: 0,
+		f.dedupKey: 1, keys["M"]: 1,
+	}
+}
+
+// createOpenCodeGoUsagePolicyContractFixtures 在调用方自己的 testEntTx 事务内创建
+// A–M 全套 fixture。每条 fixture 都显式设置 Type=apikey/Status=active 并在创建后断言，
+// 因为 mustCreateAccount 对空 Type 的默认值是 AccountTypeOAuth。
+func createOpenCodeGoUsagePolicyContractFixtures(t *testing.T, client *dbent.Client, now time.Time) *openCodeGoUsagePolicyFixtures {
+	t.Helper()
+	runID := fmt.Sprintf("ocq219-%d", time.Now().UnixNano())
+	apiKey := func(label string) string { return "sk-" + runID + "-" + label }
+	at := func(offset time.Duration) *time.Time {
+		ts := now.Add(offset)
+		return &ts
+	}
+	plainCredentials := func(key string) map[string]any {
+		return map[string]any{"api_key": key}
+	}
+	policyCredentials := func(key string) map[string]any {
+		return map[string]any{
+			"api_key": key,
+			service.OpenCodeQuotaFallbackCredentialKey: openCodeGoUsagePolicyFallbackConfig(),
+		}
+	}
+	extraWithSnapshot := func(autoRefresh bool, fetchedAt, lastAttemptAt, nextRefreshAt time.Time) map[string]any {
+		extra := map[string]any{
+			service.OpenCodeGoUsageSnapshotExtraKey: map[string]any{
+				"status":          service.OpenCodeGoUsageStatusOK,
+				"fetched_at":      fetchedAt,
+				"last_attempt_at": lastAttemptAt,
+				"next_refresh_at": nextRefreshAt,
+			},
+		}
+		if autoRefresh {
+			extra[service.OpenCodeGoUsageAutoRefreshExtraKey] = true
+		}
+		return extra
+	}
+	autoRefreshExtra := func() map[string]any {
+		return map[string]any{service.OpenCodeGoUsageAutoRefreshExtraKey: true}
+	}
+
+	fixtures := &openCodeGoUsagePolicyFixtures{
+		accounts: make(map[string]*service.Account, 13),
+		keys:     make(map[string]string, 13),
+	}
+	create := func(label, platform string, credentials, extra map[string]any, lastUsedAt *time.Time) *service.Account {
+		t.Helper()
+		account := mustCreateAccount(t, client, &service.Account{
+			Name:        runID + "-" + label,
+			Platform:    platform,
+			Type:        service.AccountTypeAPIKey,
+			Status:      service.StatusActive,
+			Credentials: credentials,
+			Extra:       extra,
+			LastUsedAt:  lastUsedAt,
+		})
+		require.Equal(t, service.AccountTypeAPIKey, account.Type, "fixture %s must be apikey", label)
+		require.Equal(t, service.StatusActive, account.Status, "fixture %s must be active", label)
+		fixtures.accounts[label] = account
+		fixtures.keys[label] = credentials["api_key"].(string)
+		return account
+	}
+
+	// A: legacy opencode + account_mode 缺省 + auto_refresh 缺省 + policy enabled，
+	// 无 snapshot / 无 last_used → fail-open 必入选。
+	create("A", service.PlatformOpenCode, policyCredentials(apiKey("A")), map[string]any{}, nil)
+	// B: opencode_go + account_mode 缺省 + 仅 auto_refresh，无 snapshot。
+	create("B", service.PlatformOpenCodeGo, plainCredentials(apiKey("B")), autoRefreshExtra(), at(-10*time.Minute))
+	// C: 非策略且无 auto_refresh → 两种模式都排除。
+	create("C", service.PlatformOpenCodeGo, plainCredentials(apiKey("C")), map[string]any{}, nil)
+	// D/E: Zen 模式（opencode_go / legacy）必须排除。
+	zenGo := policyCredentials(apiKey("D"))
+	zenGo["account_mode"] = service.AccountModeZen
+	create("D", service.PlatformOpenCodeGo, zenGo, autoRefreshExtra(), nil)
+	zenLegacy := policyCredentials(apiKey("E"))
+	zenLegacy["account_mode"] = service.AccountModeZen
+	create("E", service.PlatformOpenCode, zenLegacy, autoRefreshExtra(), nil)
+	// F: 策略账号，ok 快照空闲且 fetched+maxWait 已到期 → 必入选。
+	create("F", service.PlatformOpenCodeGo, policyCredentials(apiKey("F")),
+		extraWithSnapshot(false, now.Add(-20*time.Minute), now.Add(-20*time.Minute), now.Add(-5*time.Minute)),
+		at(-30*time.Minute))
+	// G: 策略账号，ok 快照空闲但 fetched+maxWait 未到期 → 不入选。
+	create("G", service.PlatformOpenCodeGo, policyCredentials(apiKey("G")),
+		extraWithSnapshot(false, now.Add(-5*time.Minute), now.Add(-5*time.Minute), now.Add(10*time.Minute)),
+		at(-20*time.Minute))
+	// H: 非策略账号的 idle ok 快照不得走 policy 分支 → 两种模式都排除。
+	create("H", service.PlatformOpenCodeGo, plainCredentials(apiKey("H")),
+		extraWithSnapshot(true, now.Add(-20*time.Minute), now.Add(-20*time.Minute), now.Add(-5*time.Minute)),
+		at(-30*time.Minute))
+	// I: 非策略活动驱动到期（last_used 晚于 fetched）→ false 入选 / true 排除。
+	create("I", service.PlatformOpenCodeGo, plainCredentials(apiKey("I")),
+		extraWithSnapshot(true, now.Add(-10*time.Minute), now.Add(-10*time.Minute), now.Add(5*time.Minute)),
+		at(-2*time.Minute))
+	// J: age 未到 debounce（last_used+1m 恒晚于同一 now）→ 不入选。
+	create("J", service.PlatformOpenCodeGo, plainCredentials(apiKey("J")),
+		extraWithSnapshot(true, now.Add(-10*time.Minute), now.Add(-10*time.Minute), now.Add(5*time.Minute)),
+		at(-10*time.Second))
+	// K/L: 同一 api_key 的两条 eligible 行。K 必须先创建，保证 K.ID < L.ID。
+	fixtures.dedupKey = apiKey("K")
+	create("K", service.PlatformOpenCodeGo, policyCredentials(fixtures.dedupKey), map[string]any{}, at(-10*time.Minute))
+	create("L", service.PlatformOpenCode, policyCredentials(fixtures.dedupKey), map[string]any{}, at(-time.Minute))
+	// M: 显式 go 模式的正向控制。
+	goMode := policyCredentials(apiKey("M"))
+	goMode["account_mode"] = service.AccountModeGo
+	create("M", service.PlatformOpenCodeGo, goMode, map[string]any{}, nil)
+	return fixtures
+}
+
+// TestListDueOpenCodeGoUsageAccountsPolicyContract 是本修复的决定性真实 PostgreSQL
+// 回归：直接执行 repository 方法，让 PostgreSQL 解析 SQL。旧 v0.1.218 代码在 timed
+// 作用域重新展开 quota_fallback 表达式，引用不存在的 credentials 列，报 SQLSTATE
+// 42703；本测试的两个子测试各自使用独立 testEntTx，因此旧代码下必须各自独立出现
+// 42703，而不是第二个子测试退化为 25P02。
+func TestListDueOpenCodeGoUsageAccountsPolicyContract(t *testing.T) {
+	for _, policyOnly := range []bool{false, true} {
+		policyOnly := policyOnly
+		t.Run(fmt.Sprintf("policyAccountsOnly=%t", policyOnly), func(t *testing.T) {
+			ctx := context.Background()
+			tx := testEntTx(t)
+			assertOpenCodeGoUsageIntegrationDatabase(t, tx)
+			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+			// 每个子测试只捕获一次 now；fixture 与 ListDue 都使用这同一个值。
+			now := time.Now().UTC()
+			fixtures := createOpenCodeGoUsagePolicyContractFixtures(t, tx.Client(), now)
+
+			accounts, err := repo.ListDueOpenCodeGoUsageAccounts(
+				ctx, now, time.Minute, 15*time.Minute, 10000, policyOnly)
+			requireOpenCodeGoUsageListDueNoError(t, err, policyOnly)
+
+			expected := fixtures.expectedCounts(policyOnly)
+			got := make(map[string][]service.Account, len(expected))
+			for _, account := range accounts {
+				key, _ := account.Credentials["api_key"].(string)
+				if _, tracked := expected[key]; !tracked {
+					continue // 共享测试库中其它测试留下的已提交账号
+				}
+				got[key] = append(got[key], account)
+			}
+			for key, want := range expected {
+				bucket := got[key]
+				ids := make([]int64, 0, len(bucket))
+				for _, account := range bucket {
+					ids = append(ids, account.ID)
+				}
+				require.Len(t, bucket, want, "policyAccountsOnly=%t key=%s ids=%v", policyOnly, key, ids)
+				for _, account := range bucket {
+					require.Equal(t, service.AccountTypeAPIKey, account.Type, "returned account %d type", account.ID)
+					require.Equal(t, service.StatusActive, account.Status, "returned account %d status", account.ID)
+					require.Equal(t, key, account.Credentials["api_key"], "returned account %d key", account.ID)
+				}
+			}
+
+			dedup := got[fixtures.dedupKey]
+			require.Len(t, dedup, 1, "same api_key must yield at most one due candidate")
+			require.Equal(t, fixtures.accounts["K"].ID, dedup[0].ID,
+				"same due_class/due_at must pick the lowest id (K created before L)")
+			require.NotNil(t, dedup[0].LastUsedAt)
+			require.WithinDuration(t, now.Add(-time.Minute), *dedup[0].LastUsedAt, time.Second,
+				"returned LastUsedAt must be the group MAX(last_used_at)")
+
+			require.Nil(t, got[fixtures.keys["A"]][0].LastUsedAt, "fixture A has no activity")
+
+			for _, label := range []string{"A", "F", "K", "M"} {
+				require.True(t, fixtures.accounts[label].GetOpenCodeQuotaFallback().Enabled,
+					"fixture %s must be policy-enabled", label)
+			}
+			for _, label := range []string{"B", "I"} {
+				require.False(t, fixtures.accounts[label].GetOpenCodeQuotaFallback().Enabled,
+					"fixture %s must not be policy-enabled", label)
+			}
+		})
+	}
+}
+
+const openCodeGoUsageRealRepositoryFixture = `{"usage":{"rolling":{"status":"ok","percent":6,"resetsAt":"2026-08-13T18:26:39.281Z"},"weekly":{"status":"ok","percent":2,"resetsAt":"2026-08-17T00:00:00.281Z"},"monthly":{"status":"ok","percent":1,"resetsAt":"2026-09-13T13:24:47.281Z"}}}`
+
+type openCodeGoUsageControlledUpstream struct {
+	body  []byte
+	calls atomic.Int64
+}
+
+func (u *openCodeGoUsageControlledUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.calls.Add(1)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(u.body)),
+		Request:    req,
+	}, nil
+}
+
+func (u *openCodeGoUsageControlledUpstream) DoWithTLS(
+	req *http.Request, proxyURL string, accountID int64, accountConcurrency int,
+	_ *tlsfingerprint.Profile,
+) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+// TestOpenCodeGoUsageRefreshWritesSnapshotThroughRealRepository 覆盖运行时链路：
+// service.runner 经受控 transport 拿到 200 响应后，必须通过**真实 repository**
+// （事务内 ent client）把解码后的快照写回 accounts.extra，而不是只在内存里更新。
+//
+// 这里使用 service.Refresh（内部就是 RunDue 调用的 refreshAccount）而不是 RunDue
+// 本身：RunDue 的 ListDue 固定 limit=20，共享测试库中其它已提交候选会令“本轮 fixture
+// 是否进入前 20”不确定；ListDue 的选择语义（含 policyOnly 两种模式）由上面的契约
+// 回归在 limit=10000 下确定性覆盖。
+func TestOpenCodeGoUsageRefreshWritesSnapshotThroughRealRepository(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	assertOpenCodeGoUsageIntegrationDatabase(t, tx)
+	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+
+	runID := fmt.Sprintf("ocq219-runtime-%d", time.Now().UnixNano())
+	account := mustCreateAccount(t, tx.Client(), &service.Account{
+		Name:     runID,
+		Platform: service.PlatformOpenCodeGo,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Credentials: map[string]any{
+			"api_key": "sk-" + runID,
+			service.OpenCodeQuotaFallbackCredentialKey: openCodeGoUsagePolicyFallbackConfig(),
+		},
+		Extra: map[string]any{},
+	})
+	require.Equal(t, service.AccountTypeAPIKey, account.Type)
+	require.Equal(t, service.StatusActive, account.Status)
+
+	upstream := &openCodeGoUsageControlledUpstream{body: []byte(openCodeGoUsageRealRepositoryFixture)}
+	settingRepo := NewSettingRepository(tx.Client())
+	svc := service.NewOpenCodeGoUsageService(repo, upstream, service.NewSettingService(settingRepo, nil))
+
+	state, err := svc.Refresh(ctx, account.ID)
+	require.NoError(t, err, "service runner refresh")
+	require.NotNil(t, state.Snapshot)
+	require.Equal(t, service.OpenCodeGoUsageStatusOK, state.Snapshot.Status)
+	require.Equal(t, int64(1), upstream.calls.Load(), "controlled transport must be called exactly once")
+
+	// 直接从数据库读回 accounts.extra，证明快照真的落库（而不是只在内存 state 上）。
+	var extraJSON string
+	err = scanSingleRow(ctx, tx, `SELECT extra::text FROM accounts WHERE id = $1`, []any{account.ID}, &extraJSON)
+	require.NoError(t, err)
+	var stored map[string]any
+	require.NoError(t, json.Unmarshal([]byte(extraJSON), &stored))
+	rawSnapshot, ok := stored[service.OpenCodeGoUsageSnapshotExtraKey].(map[string]any)
+	require.True(t, ok, "opencode_go_usage_snapshot must be persisted in accounts.extra: %s", extraJSON)
+	require.Equal(t, service.OpenCodeGoUsageStatusOK, rawSnapshot["status"])
+	require.NotEmpty(t, rawSnapshot["last_attempt_at"])
+	require.NotEmpty(t, rawSnapshot["next_refresh_at"])
+	rawData, ok := rawSnapshot["data"].(map[string]any)
+	require.True(t, ok, "ok snapshot must persist a non-empty data object: %s", extraJSON)
+	for _, window := range []string{"rolling", "weekly", "monthly"} {
+		_, present := rawData[window]
+		require.True(t, present, "snapshot data must contain %s window: %s", window, extraJSON)
+	}
 }

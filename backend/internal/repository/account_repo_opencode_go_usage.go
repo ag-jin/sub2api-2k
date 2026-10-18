@@ -405,6 +405,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 		WITH eligible AS (
 			SELECT id,
 				credentials ->> 'api_key' AS api_key,
+				`+opencodeGoQuotaFallbackEnabledSQL+` AS quota_fallback_enabled,
 				last_used_at,
 				extra -> 'opencode_go_usage_snapshot' AS snapshot
 			FROM accounts
@@ -421,7 +422,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 				AND jsonb_typeof(credentials -> 'api_key') = 'string'
 			GROUP BY credentials ->> 'api_key'
 		), joined AS (
-			SELECT e.id, e.api_key, e.snapshot, g.group_last_used_at,
+			SELECT e.id, e.api_key, e.snapshot, e.quota_fallback_enabled, g.group_last_used_at,
 				e.snapshot #>> '{status}' AS status,
 				e.snapshot #>> '{fetched_at}' AS fetched_at,
 				e.snapshot #>> '{last_attempt_at}' AS last_attempt_at,
@@ -429,7 +430,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 			FROM eligible e
 			JOIN group_activity g ON g.api_key = e.api_key
 		), parsed AS MATERIALIZED (
-			SELECT id, api_key, snapshot, group_last_used_at, status,
+			SELECT id, api_key, snapshot, quota_fallback_enabled, group_last_used_at, status,
 				`+ollamaCloudUsageParseRFC3339SQL("fetched_at")+` AS parsed_fetched_at,
 				`+ollamaCloudUsageParseRFC3339SQL("last_attempt_at")+` AS parsed_last_attempt_at,
 				`+ollamaCloudUsageParseRFC3339SQL("next_refresh_at")+` AS parsed_next_refresh_at
@@ -459,7 +460,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 						),
 						COALESCE(parsed_next_refresh_at::timestamptz, '-infinity'::timestamptz)
 					)
-					WHEN `+opencodeGoQuotaFallbackEnabledSQL+`
+					WHEN quota_fallback_enabled
 						AND parsed_fetched_at IS NOT NULL
 					THEN parsed_fetched_at::timestamptz + make_interval(secs => $3::double precision)
 					ELSE NULL
