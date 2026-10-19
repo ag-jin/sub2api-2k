@@ -42,6 +42,23 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 	if err == nil {
 		return fallback
 	}
+	// A 404 model_not_found fallback is authoritative and must not be downgraded
+	// to a rate-limit verdict. classifyNoAccountError only reaches it through
+	// DiagnoseModelAvailabilityForPlatform, a dedicated database query over
+	// persistent eligibility (active + schedulable + model_mapping) that already
+	// established no account in the group can serve this model at all. A transient
+	// per-model cooldown on one of the remaining candidates does not make "all
+	// available accounts are rate-limited" true.
+	//
+	// Reporting 429 here is actively harmful: retrying can never succeed, and
+	// clients that treat 429 as a rate limit retry hard and swallow the body
+	// (Codex surfaces only "exceeded retry limit, last status: 429"), losing the
+	// one message that names the real problem. It also flips the ops attribution
+	// from a local model-configuration issue to routing capacity, because call
+	// sites gate markOpsRoutingCapacityLimitedIfNoAvailable on ModelNotFound.
+	if fallback.ModelNotFound {
+		return fallback
+	}
 	match := selectionModelRateLimitedPattern.FindStringSubmatch(strings.ToLower(err.Error()))
 	if len(match) != 2 {
 		return fallback
@@ -106,10 +123,14 @@ func classifyNoAccountError(
 
 	result := diag.DiagnoseModelAvailabilityForPlatform(ctx, apiKey.GroupID, routingModel, platform)
 	if result.HasAccountsInPool && !result.HasModelSupport {
+		message := fmt.Sprintf("Model %q is not supported by any configured account in this group", displayModel)
+		if result.HasRetiredSubscriptionModel {
+			message = fmt.Sprintf("Model %q targets GPT-5.5, which retired from Codex with ChatGPT sign-in on October 14, 2026. Select an available replacement such as GPT-6.1 Sol or GPT-6 Luna, or configure an API-key upstream that supports GPT-5.5.", displayModel)
+		}
 		return noAccountErrorClassification{
 			Status:        http.StatusNotFound,
 			ErrType:       "model_not_found",
-			Message:       fmt.Sprintf("Model %q is not supported by any configured account in this group", displayModel),
+			Message:       message,
 			ModelNotFound: true,
 		}
 	}
