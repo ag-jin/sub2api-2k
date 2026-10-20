@@ -54,7 +54,7 @@ type UsageLogRepository interface {
 	GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usagestats.UserBreakdownDimension, limit int) ([]usagestats.UserBreakdownItem, error)
 	GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error)
 	GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.APIKeyUsageTrendPoint, error)
-	GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.UserUsageTrendPoint, error)
+	GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string) ([]usagestats.UserUsageTrendPoint, error)
 	GetUserSpendingRanking(ctx context.Context, startTime, endTime time.Time, limit int) (*usagestats.UserSpendingRankingResponse, error)
 	GetBatchUserUsageStats(ctx context.Context, userIDs []int64, startTime, endTime time.Time) (map[int64]*usagestats.BatchUserUsageStats, error)
 	GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*usagestats.BatchAPIKeyUsageStats, error)
@@ -433,11 +433,9 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	}
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
-		usage, err := s.getOpenAIUsage(ctx, account, forceProbe)
-		if err == nil {
-			s.tryClearRecoverableAccountError(ctx, account)
-		}
-		return usage, err
+		// Usage can come from a stored snapshot even when a probe fails. Neither
+		// that nor a working access token proves a rejected refresh token recovered.
+		return s.getOpenAIUsage(ctx, account, forceProbe)
 	}
 
 	if account.Platform == PlatformGemini {
@@ -813,6 +811,9 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 					if updates := buildCodexSparkWindowExtraUpdates(quotaUsage, now); len(updates) > 0 {
 						mergeAccountExtra(account, updates)
 						s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+						if account.ParentAccountID != nil {
+							notifyOpenAIAutoReset(*account.ParentAccountID)
+						}
 						if usage.UpdatedAt == nil {
 							usage.UpdatedAt = &now
 						}
@@ -1005,7 +1006,9 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 	go func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer updateCancel()
-		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
+		if err := s.accountRepo.UpdateExtra(updateCtx, accountID, updates); err == nil {
+			notifyOpenAIAutoReset(accountID)
+		}
 	}()
 }
 
