@@ -64,6 +64,9 @@ type openAIStreamContinuationSnapshot struct {
 	nextOutputIndex int
 	lastSequence    int64
 	keepOriginalID  bool // v1 恒 true
+	// zeroPartial 冻结 BeginContinuation 时的 !hasOpenText：
+	// true 表示 attempt-1 未打开任何文本 item，续跑段走拼接器零快照模式。
+	zeroPartial bool
 
 	// 观测计数器（裁定 #5）：由 05 通过 state 的 Add* 方法写入，07 读取打日志。
 	overlapTrimmedBytes    int
@@ -94,7 +97,7 @@ type openAIStreamContinuationState struct {
 	openTextIndex     int
 	openTextContent   int
 	hasOpenText       bool
-	inProgressNonText map[string]struct{}
+	inProgressNonText map[string]string // key: item id/索引，value: item type
 	completedItems    []json.RawMessage
 	nextOutputIndex   int
 	lastSequence      int64
@@ -162,7 +165,7 @@ func (s *OpenAIGatewayService) newOpenAIStreamContinuationState(
 		enabled:           true,
 		accountID:         account.ID,
 		currentBody:       append([]byte(nil), body...),
-		inProgressNonText: make(map[string]struct{}),
+		inProgressNonText: make(map[string]string),
 	}
 }
 
@@ -214,6 +217,47 @@ func (st *openAIStreamContinuationState) HasOpenTextItem() bool {
 
 func (st *openAIStreamContinuationState) HasInProgressNonText() bool {
 	return st != nil && len(st.inProgressNonText) > 0
+}
+
+// HasInProgressNonReasoningItem 只把非 reasoning 的进行中 item 视为阻断。
+// 生产目标场景是“长推理期间被容量降载”，进行中的 reasoning 必须放行。
+func (st *openAIStreamContinuationState) HasInProgressNonReasoningItem() bool {
+	if st == nil {
+		return false
+	}
+	for _, itemType := range st.inProgressNonText {
+		if itemType != "reasoning" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCompletedNonReasoningItem 扫描已冻结的已完成 items。
+// 解析失败的 raw 按“非 reasoning”保守处理（拒绝续跑）。
+func (st *openAIStreamContinuationState) HasCompletedNonReasoningItem() bool {
+	if st == nil {
+		return false
+	}
+	for _, raw := range st.completedItems {
+		if strings.TrimSpace(gjson.GetBytes(raw, "type").String()) != "reasoning" {
+			return true
+		}
+	}
+	return false
+}
+
+// continuationOutputShapeEligible 是输出形态资格的唯一事实源（design §3 决策 1）。
+//   - A（hasOpenText）：v1 partial 形态，逐字保持“任何进行中非文本项都拒绝”。
+//   - B（!hasOpenText）：v1.1 零 partial 形态，仅允许 reasoning 作为不可回滚帧。
+func (st *openAIStreamContinuationState) continuationOutputShapeEligible() bool {
+	if st == nil || st.sawRefusal || st.sawImageOutput {
+		return false
+	}
+	if st.hasOpenText {
+		return !st.HasInProgressNonText()
+	}
+	return !st.HasInProgressNonReasoningItem() && !st.HasCompletedNonReasoningItem()
 }
 
 func (st *openAIStreamContinuationState) SawRefusal() bool {
@@ -299,7 +343,7 @@ func (st *openAIStreamContinuationState) CanContinue(now time.Time) (bool, strin
 	if st.textBytes > openAIStream503AutoContinueMaxPartialBytes {
 		return false, openAIStream503AutoContinueReasonPartialTooBig
 	}
-	if !st.HasOpenTextItem() || st.HasInProgressNonText() || st.SawRefusal() || st.SawImageOutput() {
+	if !st.continuationOutputShapeEligible() {
 		return false, openAIStream503AutoContinueReasonIneligibleOutput
 	}
 	return true, ""
@@ -329,6 +373,7 @@ func (st *openAIStreamContinuationState) BeginContinuation(priorUsage OpenAIUsag
 		nextOutputIndex:        st.nextOutputIndex,
 		lastSequence:           st.lastSequence,
 		keepOriginalID:         true,
+		zeroPartial:            !st.hasOpenText,
 		overlapTrimmedBytes:    st.OverlapTrimmedBytes(),
 		droppedReasoningEvents: st.DroppedReasoningEvents(),
 	}
@@ -342,21 +387,23 @@ func (st *openAIStreamContinuationState) BeginContinuation(priorUsage OpenAIUsag
 	st.completedItems = append([]json.RawMessage(nil), snapshot.completedItems...)
 	st.nextOutputIndex = snapshot.nextOutputIndex
 	st.lastSequence = snapshot.lastSequence
-	st.inProgressNonText = make(map[string]struct{})
+	st.inProgressNonText = make(map[string]string)
 	st.sawRefusal = false
 	st.sawImageOutput = false
 }
 
-// NextRequestBody 始终基于原始上游 body + 当前累计 partial 文本构造。
+// NextRequestBody 在零 partial 时逐字节重放原始上游 body；
+// 有 partial 时基于原始 body + partial 构造续写上下文。
+// ErrNoPartial 的语义收窄为“nil snapshot 哨兵”与 builder 的空 partial 校验。
 func (st *openAIStreamContinuationState) NextRequestBody() ([]byte, error) {
-	if st == nil {
+	if st == nil || st.snapshot == nil {
 		return nil, ErrNoPartial
 	}
-	partial := ""
-	if st.snapshot != nil {
-		partial = st.snapshot.partialText
+	if st.snapshot.partialText == "" {
+		// 零 partial：原始 body 的独立拷贝，不原地改写调用方切片。
+		return append([]byte(nil), st.currentBody...), nil
 	}
-	return buildOpenAIStreamContinuationBody(st.currentBody, partial)
+	return buildOpenAIStreamContinuationBody(st.currentBody, st.snapshot.partialText)
 }
 
 // Backoff 返回本次续跑前的等待时间：第 1 次 300ms，之后 900ms，±20% 抖动。
@@ -381,8 +428,7 @@ func (s *OpenAIGatewayService) openAIStream503AutoContinueEligible(
 	if account == nil || account.Platform != PlatformOpenAI {
 		return false, openAIStream503AutoContinueReasonAccount
 	}
-	if !outputStarted || cyberHit ||
-		!st.HasOpenTextItem() || st.HasInProgressNonText() || st.SawRefusal() || st.SawImageOutput() {
+	if !outputStarted || cyberHit || !st.continuationOutputShapeEligible() {
 		return false, openAIStream503AutoContinueReasonIneligibleOutput
 	}
 	if !isOpenAIUpstreamCapacityShedEvent(data) {
@@ -442,7 +488,7 @@ func (s *OpenAIGatewayService) observeOpenAIStreamContinuationEvent(
 			}
 		case isOpenAIStreamContinuationNonTextItemType(itemType):
 			key := openAIStreamContinuationItemKey(item.Get("id").String(), itemType, outputIndex)
-			st.inProgressNonText[key] = struct{}{}
+			st.inProgressNonText[key] = itemType
 			if itemType == "image_generation_call" {
 				st.sawImageOutput = true
 			}
