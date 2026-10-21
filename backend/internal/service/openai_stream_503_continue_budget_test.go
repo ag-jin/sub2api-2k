@@ -137,7 +137,8 @@ func TestOpenAIStream503ContinueBudgetSettingsOverride(t *testing.T) {
 	require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, reason)
 
 	// 未覆盖的字段（退避封顶）保持默认 2000ms。
-	// 5 次 Begin 后 st.continuations=5，Backoff=delay(5)=100<<4=1600ms < 2000ms 封顶。
+	// 5 次 Begin 后 st.continuations=5，Backoff=delay(5)=100<<4=1600ms < 2000ms 封顶，
+	// 再叠 ±20% 抖动 → 断言区间 [1280,1920]ms。
 	st2 := contTestState(t, svc, c, account)
 	st2.BeginContinuation(OpenAIUsage{}, nil)
 	st2.BeginContinuation(OpenAIUsage{}, nil)
@@ -145,8 +146,8 @@ func TestOpenAIStream503ContinueBudgetSettingsOverride(t *testing.T) {
 	st2.BeginContinuation(OpenAIUsage{}, nil)
 	st2.BeginContinuation(OpenAIUsage{}, nil)
 	backoff := st2.Backoff()
-	require.GreaterOrEqual(t, backoff, 1600*time.Millisecond)
-	require.LessOrEqual(t, backoff, 2400*time.Millisecond)
+	require.GreaterOrEqual(t, backoff, 1280*time.Millisecond)
+	require.LessOrEqual(t, backoff, 1920*time.Millisecond)
 }
 
 func TestOpenAIStream503ContinueBudgetTimeSettingsOverride(t *testing.T) {
