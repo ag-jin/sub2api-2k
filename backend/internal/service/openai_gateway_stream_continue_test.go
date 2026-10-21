@@ -417,20 +417,20 @@ func TestOpenAIStreamContinuationEligibility(t *testing.T) {
 		require.Equal(t, "client_gone", reason)
 	})
 
-	t.Run("budget", func(t *testing.T) {
+	t.Run("budget_attempts", func(t *testing.T) {
 		c, account, st := newBase(t)
-		st.continuations = openAIStream503AutoContinueMaxContinuations
+		st.continuations = openAIStream503ContinueDefaultMaxContinuations
 		ok, reason := svc.openAIStream503AutoContinueEligible(c, account, st, capacity, true, false)
 		require.False(t, ok)
-		require.Equal(t, "budget", reason)
+		require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, reason)
 	})
 
-	t.Run("elapsed", func(t *testing.T) {
+	t.Run("budget_time", func(t *testing.T) {
 		c, account, st := newBase(t)
-		st.firstTriggerAt = time.Now().Add(-openAIStream503AutoContinueMaxElapsed - time.Second)
+		st.firstTriggerAt = time.Now().Add(-openAIStream503ContinueDefaultTotalBudget - time.Second)
 		ok, reason := svc.openAIStream503AutoContinueEligible(c, account, st, capacity, true, false)
 		require.False(t, ok)
-		require.Equal(t, "elapsed", reason)
+		require.Equal(t, openAIStream503AutoContinueReasonBudgetTime, reason)
 	})
 
 	t.Run("partial_too_large", func(t *testing.T) {
@@ -446,28 +446,29 @@ func TestOpenAIStreamContinuationCanContinueBudget(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	st := contTestObservedState(t, svc, contTestGinContext("/v1/responses"), contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false))
 
-	require.Equal(t, 2, openAIStream503AutoContinueMaxContinuations)
-	for i := 0; i < openAIStream503AutoContinueMaxContinuations; i++ {
+	require.Equal(t, 6, openAIStream503ContinueDefaultMaxContinuations,
+		"v1.2 默认续跑次数上限加大到 6")
+	for i := 0; i < openAIStream503ContinueDefaultMaxContinuations; i++ {
 		ok, reason := st.CanContinue(time.Now())
 		require.True(t, ok, "continuation %d should be allowed: %s", i+1, reason)
 		st.BeginContinuation(OpenAIUsage{}, nil)
 	}
-	require.Equal(t, 2, st.Continuations())
+	require.Equal(t, 6, st.Continuations())
 	require.True(t, st.InContinuation())
 
 	ok, reason := st.CanContinue(time.Now())
 	require.False(t, ok)
-	require.Equal(t, "budget", reason)
+	require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, reason)
 }
 
 func TestOpenAIStreamContinuationCanContinueElapsed(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	st := contTestObservedState(t, svc, contTestGinContext("/v1/responses"), contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false))
-	st.firstTriggerAt = time.Now().Add(-openAIStream503AutoContinueMaxElapsed - time.Second)
+	st.firstTriggerAt = time.Now().Add(-openAIStream503ContinueDefaultTotalBudget - time.Second)
 
 	ok, reason := st.CanContinue(time.Now())
 	require.False(t, ok)
-	require.Equal(t, "elapsed", reason)
+	require.Equal(t, openAIStream503AutoContinueReasonBudgetTime, reason)
 }
 
 func TestOpenAIStreamContinuationCanContinuePartialTooLarge(t *testing.T) {
@@ -668,14 +669,15 @@ func TestOpenAIStreamContinuationBackoff(t *testing.T) {
 		require.LessOrEqual(t, d, max)
 	}
 
+	// v1.2 默认序列：150ms 起每次翻倍、封顶 2000ms，±20% 抖动。
+	st.BeginContinuation(OpenAIUsage{}, nil)
+	assertInRange(st.Backoff(), 120*time.Millisecond, 180*time.Millisecond)
+
 	st.BeginContinuation(OpenAIUsage{}, nil)
 	assertInRange(st.Backoff(), 240*time.Millisecond, 360*time.Millisecond)
 
 	st.BeginContinuation(OpenAIUsage{}, nil)
-	assertInRange(st.Backoff(), 720*time.Millisecond, 1080*time.Millisecond)
-
-	st.BeginContinuation(OpenAIUsage{}, nil)
-	assertInRange(st.Backoff(), 720*time.Millisecond, 1080*time.Millisecond)
+	assertInRange(st.Backoff(), 480*time.Millisecond, 720*time.Millisecond)
 }
 
 func TestAddOpenAIUsageSumsEveryField(t *testing.T) {

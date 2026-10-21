@@ -495,6 +495,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyClaudeCodeVersionAutoSyncEnabled] = strconv.FormatBool(settings.ClaudeCodeVersionAutoSyncEnabled)
 	// SettingKeyClaudeCodeClientVersionSynced 由自动同步任务独占写入，此处不得覆盖，
 	// 否则面板保存会把同步结果清空。
+	// 503 断流自动续跑重试预算（v1.2）：写入前按硬限归一，0/负数/越界落库为默认值。
+	continueBudget := openAIStream503ContinueBudgetFromSystemSettings(settings)
+	updates[SettingKeyOpenAIStream503MaxContinuations] = strconv.Itoa(continueBudget.maxContinuations)
+	updates[SettingKeyOpenAIStream503BackoffInitialMs] = strconv.Itoa(int(continueBudget.backoffInitial / time.Millisecond))
+	updates[SettingKeyOpenAIStream503BackoffMaxMs] = strconv.Itoa(int(continueBudget.backoffMax / time.Millisecond))
+	updates[SettingKeyOpenAIStream503TotalBudgetMs] = strconv.Itoa(int(continueBudget.totalBudget / time.Millisecond))
 	// codex_cli_only 加固
 	updates[SettingKeyMinCodexVersion] = strings.TrimSpace(settings.MinCodexVersion)
 	updates[SettingKeyMaxCodexVersion] = strings.TrimSpace(settings.MaxCodexVersion)
@@ -773,6 +779,13 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	// 这里没有它的最新值，重算会把同步结果覆盖成陈旧值。
 	s.InvalidateOpenAICodexClientVersionCache()
 	s.InvalidateClaudeCodeClientVersionCache()
+	// 503 续跑重试预算（v1.2）：从本次保存的 SystemSettings 直接重算并立即生效；
+	// 部分保存场景 refreshCachedSettingsAfterWrite 已回源全量，字段恒有有效值。
+	s.openAIStream503ContinueBudgetSF.Forget(openAIStream503ContinueBudgetSFKey)
+	s.openAIStream503ContinueBudgetCache.Store(&cachedOpenAIStream503ContinueBudget{
+		budget:    openAIStream503ContinueBudgetFromSystemSettings(settings),
+		expiresAt: time.Now().Add(openAIStream503ContinueBudgetCacheTTL).UnixNano(),
+	})
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		lowUpstreamRatePriorityEnabled: settings.OpenAILowUpstreamRatePriorityEnabled,

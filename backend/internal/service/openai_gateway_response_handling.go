@@ -1232,10 +1232,11 @@ func (s *OpenAIGatewayService) openAIStreamCapacityContinueSignal(
 
 // isOpenAIStream503AutoContinueExhaustedReason 限定放弃日志的 reason 集合：
 // disabled / account / not_capacity 不记录，避免开关关闭或非目标账号时产生噪声。
+// v1.2 起次数/时间耗尽细分为 budget_attempts / budget_time。
 func isOpenAIStream503AutoContinueExhaustedReason(reason string) bool {
 	switch reason {
-	case openAIStream503AutoContinueReasonBudget,
-		openAIStream503AutoContinueReasonElapsed,
+	case openAIStream503AutoContinueReasonBudgetAttempts,
+		openAIStream503AutoContinueReasonBudgetTime,
 		openAIStream503AutoContinueReasonIneligibleOutput,
 		openAIStream503AutoContinueReasonPartialTooBig,
 		openAIStream503AutoContinueReasonClientGone:
@@ -1275,7 +1276,8 @@ func logOpenAIStream503AutoContinueTrigger(
 	if cont == nil {
 		return
 	}
-	budgetLeft := openAIStream503AutoContinueMaxContinuations - cont.Continuations()
+	// v1.2：budget_left 按本请求生效的设置预算计算（默认 6），不再读包内常量。
+	budgetLeft := cont.EffectiveMaxContinuations() - cont.Continuations()
 	if budgetLeft < 0 {
 		budgetLeft = 0
 	}
@@ -1301,6 +1303,8 @@ func logOpenAIStream503AutoContinueTrigger(
 }
 
 // logOpenAIStream503AutoContinueExhausted 是 design §7.1 的放弃日志（Warn）。
+// v1.2 增强：补 budget_left（按生效设置预算）与 elapsed_ms（自首次触发），
+// 配合 reason 细分（budget_attempts/budget_time）供生产对比救回率。
 func logOpenAIStream503AutoContinueExhausted(
 	ctx context.Context,
 	c *gin.Context,
@@ -1311,9 +1315,22 @@ func logOpenAIStream503AutoContinueExhausted(
 	if cont == nil {
 		return
 	}
+	budgetLeft := cont.EffectiveMaxContinuations() - cont.Continuations()
+	if budgetLeft < 0 {
+		budgetLeft = 0
+	}
+	var elapsedMS int64
+	if !cont.firstTriggerAt.IsZero() {
+		elapsedMS = time.Since(cont.firstTriggerAt).Milliseconds()
+		if elapsedMS < 0 {
+			elapsedMS = 0
+		}
+	}
 	fields := []zap.Field{
 		zap.String("reason", reason),
 		zap.Int("continuation_index", cont.Continuations()+1),
+		zap.Int("budget_left", budgetLeft),
+		zap.Int64("elapsed_ms", elapsedMS),
 		zap.String("path", "native_sse"),
 		zap.String("endpoint", openAIStreamContinuationEndpoint(c)),
 	}

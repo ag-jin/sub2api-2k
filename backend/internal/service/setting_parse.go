@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -250,6 +251,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyClaudeCodeClientVersion:                            "",
 		SettingKeyClaudeCodeClientVersionSynced:                      "",
 		SettingKeyClaudeCodeVersionAutoSyncEnabled:                   "true",
+		SettingKeyOpenAIStream503MaxContinuations:                    strconv.Itoa(openAIStream503ContinueDefaultMaxContinuations),
+		SettingKeyOpenAIStream503BackoffInitialMs:                    strconv.Itoa(int(openAIStream503ContinueDefaultBackoffInitial / time.Millisecond)),
+		SettingKeyOpenAIStream503BackoffMaxMs:                        strconv.Itoa(int(openAIStream503ContinueDefaultBackoffMax / time.Millisecond)),
+		SettingKeyOpenAIStream503TotalBudgetMs:                       strconv.Itoa(int(openAIStream503ContinueDefaultTotalBudget / time.Millisecond)),
 		SettingPaymentVisibleMethodAlipaySource:                      "",
 		SettingPaymentVisibleMethodWxpaySource:                       "",
 		SettingPaymentVisibleMethodAlipayEnabled:                     "false",
@@ -904,6 +909,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else {
 		result.ClaudeCodeVersionAutoSyncEnabled = true
 	}
+	// 503 断流自动续跑重试预算（v1.2）：统一走硬限归一，回显值=生效值
+	// （缺失/非法/越界字段在此处已回默认）。
+	continueBudget := normalizeOpenAIStream503ContinueBudget(settings)
+	result.OpenAIStream503MaxContinuations = continueBudget.maxContinuations
+	result.OpenAIStream503BackoffInitialMs = int(continueBudget.backoffInitial / time.Millisecond)
+	result.OpenAIStream503BackoffMaxMs = int(continueBudget.backoffMax / time.Millisecond)
+	result.OpenAIStream503TotalBudgetMs = int(continueBudget.totalBudget / time.Millisecond)
 	// codex_cli_only 加固
 	result.MinCodexVersion = settings[SettingKeyMinCodexVersion]
 	result.MaxCodexVersion = settings[SettingKeyMaxCodexVersion]

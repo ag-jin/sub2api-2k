@@ -336,6 +336,12 @@ func TestOpenAIStream503AutoContinueForward_BudgetExhausted(t *testing.T) {
 	}
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{failing(), failing(), failing()}}
 	svc := contTestService(config.GatewayConfig{})
+	// v1.2：预算设置驱动（新默认 6 次会超出本用例准备的 3 个失败响应）。
+	// 注入 max_continuations=2 保持用例原语义——1 次原始 + 2 次续跑后放弃——
+	// 同时覆盖 Forward 全链路的设置读取。
+	repo := newMockSettingRepo()
+	require.NoError(t, repo.Set(context.Background(), SettingKeyOpenAIStream503MaxContinuations, "2"))
+	svc.settingService = NewSettingService(repo, &config.Config{})
 	svc.httpUpstream = upstream
 	c, rec, body := contForwardContext(nil)
 
@@ -345,7 +351,7 @@ func TestOpenAIStream503AutoContinueForward_BudgetExhausted(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr), "续跑路径不得退化为换号 failover")
 
-	require.Len(t, upstream.requests, 3, "1 次原始 + maxContinuations(2) 次续跑，第 4 次不得发生")
+	require.Len(t, upstream.requests, 3, "1 次原始 + max_continuations(2) 次续跑，第 4 次不得发生")
 
 	downstream := rec.Body.String()
 	require.Equal(t, 1, strings.Count(downstream, "event: response.failed"))
@@ -357,6 +363,11 @@ func TestOpenAIStream503AutoContinueForward_BudgetExhausted(t *testing.T) {
 	require.Equal(t, 30, result.Usage.InputTokens)
 	require.Equal(t, 15, result.Usage.OutputTokens)
 	require.True(t, logSink.ContainsMessage("gateway.openai_stream_503_auto_continue_exhausted"))
+	exhaustedFields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
+	require.NotNil(t, exhaustedFields)
+	require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, exhaustedFields["reason"])
+	require.EqualValues(t, 0, exhaustedFields["budget_left"])
+	require.Contains(t, exhaustedFields, "elapsed_ms")
 }
 
 // B1 回归：续跑 attempt 在“上游还没出流”就返回 HTTP 503 时，
@@ -855,13 +866,17 @@ func TestOpenAIStream503AutoContinueForward_ZeroPartialBudgetExhausted(t *testin
 		contForwardZeroPartialFailure(),
 	}}
 	svc := contTestService(config.GatewayConfig{})
+	// v1.2：预算设置驱动，注入 max_continuations=2 保持本用例准备的 3 个响应形态。
+	repo := newMockSettingRepo()
+	require.NoError(t, repo.Set(context.Background(), SettingKeyOpenAIStream503MaxContinuations, "2"))
+	svc.settingService = NewSettingService(repo, &config.Config{})
 	svc.httpUpstream = upstream
 	c, rec, body := contForwardContext(nil)
 
 	result, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
 	require.Error(t, err)
 	require.NotNil(t, result)
-	require.Len(t, upstream.requests, 3, "1 次原始 + maxContinuations(2) 次续跑，第 4 次不得发生")
+	require.Len(t, upstream.requests, 3, "1 次原始 + max_continuations(2) 次续跑，第 4 次不得发生")
 
 	downstream := rec.Body.String()
 	require.Equal(t, 1, strings.Count(downstream, "event: response.failed"), "客户端恰好收到一个 response.failed")

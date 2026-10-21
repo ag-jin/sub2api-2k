@@ -260,6 +260,13 @@ type UpdateSettingsRequest struct {
 	ClaudeCodeClientVersion                *string `json:"claude_code_client_version"`
 	ClaudeCodeVersionAutoSyncEnabled       *bool   `json:"claude_code_version_auto_sync_enabled"`
 
+	// 503 断流自动续跑重试预算（v1.2）。nil=保持现值（指针字段不参与
+	// omitted 整体清空保护，与其它 *int 字段同语义）。
+	OpenAIStream503MaxContinuations *int `json:"openai_stream_503_max_continuations"`
+	OpenAIStream503BackoffInitialMs *int `json:"openai_stream_503_backoff_initial_ms"`
+	OpenAIStream503BackoffMaxMs     *int `json:"openai_stream_503_backoff_max_ms"`
+	OpenAIStream503TotalBudgetMs    *int `json:"openai_stream_503_total_budget_ms"`
+
 	// codex_cli_only 加固（global-only）
 	MinCodexVersion                      string `json:"min_codex_version"`
 	MaxCodexVersion                      string `json:"max_codex_version"`
@@ -1805,6 +1812,32 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.ClaudeCodeVersionAutoSyncEnabled
 		}(),
+		// 503 断流自动续跑重试预算（v1.2）：nil=保持现值；越界/非法值由
+		// service 层落库归一为默认，不在 handler 层报错。
+		OpenAIStream503MaxContinuations: func() int {
+			if req.OpenAIStream503MaxContinuations != nil {
+				return *req.OpenAIStream503MaxContinuations
+			}
+			return previousSettings.OpenAIStream503MaxContinuations
+		}(),
+		OpenAIStream503BackoffInitialMs: func() int {
+			if req.OpenAIStream503BackoffInitialMs != nil {
+				return *req.OpenAIStream503BackoffInitialMs
+			}
+			return previousSettings.OpenAIStream503BackoffInitialMs
+		}(),
+		OpenAIStream503BackoffMaxMs: func() int {
+			if req.OpenAIStream503BackoffMaxMs != nil {
+				return *req.OpenAIStream503BackoffMaxMs
+			}
+			return previousSettings.OpenAIStream503BackoffMaxMs
+		}(),
+		OpenAIStream503TotalBudgetMs: func() int {
+			if req.OpenAIStream503TotalBudgetMs != nil {
+				return *req.OpenAIStream503TotalBudgetMs
+			}
+			return previousSettings.OpenAIStream503TotalBudgetMs
+		}(),
 		MinCodexVersion:       strings.TrimSpace(req.MinCodexVersion),
 		MaxCodexVersion:       strings.TrimSpace(req.MaxCodexVersion),
 		CodexCLIOnlyBlacklist: strings.TrimSpace(req.CodexCLIOnlyBlacklist),
@@ -2360,6 +2393,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ClaudeCodeClientVersion:                                updatedSettings.ClaudeCodeClientVersion,
 		ClaudeCodeClientVersionSynced:                          updatedSettings.ClaudeCodeClientVersionSynced,
 		ClaudeCodeVersionAutoSyncEnabled:                       updatedSettings.ClaudeCodeVersionAutoSyncEnabled,
+		OpenAIStream503MaxContinuations:                        updatedSettings.OpenAIStream503MaxContinuations,
+		OpenAIStream503BackoffInitialMs:                        updatedSettings.OpenAIStream503BackoffInitialMs,
+		OpenAIStream503BackoffMaxMs:                            updatedSettings.OpenAIStream503BackoffMaxMs,
+		OpenAIStream503TotalBudgetMs:                           updatedSettings.OpenAIStream503TotalBudgetMs,
 		MinCodexVersion:                                        updatedSettings.MinCodexVersion,
 		MaxCodexVersion:                                        updatedSettings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                                  updatedSettings.CodexCLIOnlyBlacklist,

@@ -133,6 +133,20 @@ const claudeCodeClientVersionDBTimeout = 5 * time.Second
 // claudeCodeClientVersionSFKey singleflight 键。
 const claudeCodeClientVersionSFKey = "claude_code_client_version"
 
+// cachedOpenAIStream503ContinueBudget 缓存 503 断流自动续跑的重试预算（v1.2）。
+// 进程内缓存 60s TTL；网关每次创建续跑 state 读取一次，避免热路径访问 DB。
+type cachedOpenAIStream503ContinueBudget struct {
+	budget    openAIStream503ContinueBudget
+	expiresAt int64 // unix nano
+}
+
+const openAIStream503ContinueBudgetCacheTTL = 60 * time.Second
+const openAIStream503ContinueBudgetErrorTTL = 5 * time.Second
+const openAIStream503ContinueBudgetDBTimeout = 5 * time.Second
+
+// openAIStream503ContinueBudgetSFKey singleflight 键。
+const openAIStream503ContinueBudgetSFKey = "openai_stream_503_continue_budget"
+
 type cachedOpenAIQuotaAutoPauseSettings struct {
 	settings  OpsOpenAIAccountQuotaAutoPauseSettings
 	expiresAt int64
@@ -497,6 +511,56 @@ func (s *SettingService) InvalidateClaudeCodeClientVersionCache() {
 	}
 	s.claudeCodeVersionSF.Forget(claudeCodeClientVersionSFKey)
 	s.claudeCodeVersionCache.Store((*cachedClaudeCodeClientVersion)(nil))
+}
+
+// GetOpenAIStream503ContinueBudget 返回 503 断流自动续跑的重试预算（v1.2 设置化）。
+// 四个键（openai_stream_503_max_continuations / backoff_initial_ms / backoff_max_ms /
+// total_budget_ms）一起读取并逐字段归一：缺失/非法/越硬限回默认值（默认值较 v1
+// 已加大）。DB 错误时回默认值并短缓存快速重试；设置保存由 refreshCachedSettings
+// 主动刷新本缓存。
+func (s *SettingService) GetOpenAIStream503ContinueBudget(ctx context.Context) openAIStream503ContinueBudget {
+	if s == nil || s.settingRepo == nil {
+		return defaultOpenAIStream503ContinueBudget()
+	}
+	if cached, ok := s.openAIStream503ContinueBudgetCache.Load().(*cachedOpenAIStream503ContinueBudget); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.budget
+		}
+	}
+	result, _, _ := s.openAIStream503ContinueBudgetSF.Do(openAIStream503ContinueBudgetSFKey, func() (any, error) {
+		if cached, ok := s.openAIStream503ContinueBudgetCache.Load().(*cachedOpenAIStream503ContinueBudget); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached, nil
+			}
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIStream503ContinueBudgetDBTimeout)
+		defer cancel()
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyOpenAIStream503MaxContinuations,
+			SettingKeyOpenAIStream503BackoffInitialMs,
+			SettingKeyOpenAIStream503BackoffMaxMs,
+			SettingKeyOpenAIStream503TotalBudgetMs,
+		})
+		entry := &cachedOpenAIStream503ContinueBudget{
+			budget:    defaultOpenAIStream503ContinueBudget(),
+			expiresAt: time.Now().Add(openAIStream503ContinueBudgetCacheTTL).UnixNano(),
+		}
+		if err != nil {
+			slog.Warn("failed to get openai stream 503 continue budget settings", "error", err)
+			entry.expiresAt = time.Now().Add(openAIStream503ContinueBudgetErrorTTL).UnixNano()
+		} else {
+			entry.budget = normalizeOpenAIStream503ContinueBudget(values)
+		}
+		s.openAIStream503ContinueBudgetCache.Store(entry)
+		return entry, nil
+	})
+	if entry, ok := result.(*cachedOpenAIStream503ContinueBudget); ok && entry != nil {
+		return entry.budget
+	}
+	return defaultOpenAIStream503ContinueBudget()
 }
 
 // GetOpenAICodexCanonicalUserAgent 返回出站规范 Codex User-Agent。
