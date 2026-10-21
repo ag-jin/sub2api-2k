@@ -1560,18 +1560,6 @@ func grokComposerTextFromPart(part any) string {
 	}
 }
 
-func addOpenAIUsage(dst *OpenAIUsage, usage OpenAIUsage) {
-	if dst == nil {
-		return
-	}
-	dst.InputTokens += usage.InputTokens
-	dst.ImageInputTokens += usage.ImageInputTokens
-	dst.OutputTokens += usage.OutputTokens
-	dst.CacheCreationInputTokens += usage.CacheCreationInputTokens
-	dst.CacheReadInputTokens += usage.CacheReadInputTokens
-	dst.ImageOutputTokens += usage.ImageOutputTokens
-}
-
 func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, cacheIdentity string, cfg *config.Config, settings ...*SettingService) (*http.Request, error) {
 	targetURL, err := buildGrokResponsesURL(account, cfg, settings...)
 	if err != nil {
