@@ -343,6 +343,10 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err != nil {
 		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
 	}
+	accountExtra, err = normalizeOpenAIStream503AutoContinueExtra(input.Platform, accountExtra)
+	if err != nil {
+		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
+	}
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
@@ -434,6 +438,59 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 	return normalized, nil
 }
 
+// ValidateOpenAIStream503AutoContinueExtra validates the OpenAI 503 auto-continue flag when present.
+func ValidateOpenAIStream503AutoContinueExtra(platform string, extra map[string]any) error {
+	if platform != PlatformOpenAI {
+		return nil
+	}
+	raw, exists := extra[openAIStream503AutoContinueKey]
+	if !exists {
+		return nil
+	}
+	if _, ok := raw.(bool); !ok {
+		return infraerrors.BadRequest(
+			"OPENAI_STREAM_503_AUTO_CONTINUE_INVALID",
+			"openai_stream_503_auto_continue must be a boolean",
+		)
+	}
+	return nil
+}
+
+func normalizeOpenAIStream503AutoContinueExtra(platform string, extra map[string]any) (map[string]any, error) {
+	if platform != PlatformOpenAI {
+		return extra, nil
+	}
+	if err := ValidateOpenAIStream503AutoContinueExtra(platform, extra); err != nil {
+		return nil, err
+	}
+
+	normalized := maps.Clone(extra)
+	if normalized == nil {
+		normalized = make(map[string]any, 1)
+	}
+	_, exists := normalized[openAIStream503AutoContinueKey]
+	if !exists {
+		normalized[openAIStream503AutoContinueKey] = false
+	}
+	return normalized, nil
+}
+
+func normalizeOpenAIStream503AutoContinueUpdateExtra(account *Account, input *UpdateAccountInput) (map[string]any, error) {
+	normalized, err := normalizeOpenAIStream503AutoContinueExtra(account.Platform, input.Extra)
+	if err != nil || account.Platform != PlatformOpenAI {
+		return normalized, err
+	}
+
+	_, provided := input.Extra[openAIStream503AutoContinueKey]
+	current, hasCurrent := account.Extra[openAIStream503AutoContinueKey].(bool)
+	if !provided {
+		if hasCurrent {
+			normalized[openAIStream503AutoContinueKey] = current
+		}
+	}
+	return normalized, nil
+}
+
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
@@ -506,6 +563,10 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
+	if err != nil {
+		return nil, err
+	}
+	accountExtra, err = normalizeOpenAIStream503AutoContinueExtra(input.Platform, accountExtra)
 	if err != nil {
 		return nil, err
 	}
@@ -626,6 +687,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
+		if err != nil {
+			return nil, err
+		}
+		normalizedExtra, err = normalizeOpenAIStream503AutoContinueUpdateExtra(account, input)
 		if err != nil {
 			return nil, err
 		}
@@ -992,6 +1057,15 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 			return err
 		}
 		if err := ValidateOpenAILongContextBillingExtra(account.Platform, updates); err != nil {
+			return err
+		}
+	}
+	if _, exists := updates[openAIStream503AutoContinueKey]; exists {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := ValidateOpenAIStream503AutoContinueExtra(account.Platform, updates); err != nil {
 			return err
 		}
 	}
