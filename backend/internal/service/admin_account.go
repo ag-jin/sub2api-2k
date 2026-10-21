@@ -490,7 +490,8 @@ func normalizeOpenAIStream503AutoContinueUpdateExtra(account *Account, input *Up
 		normalized = make(map[string]any, 1)
 	}
 	if raw, provided := input.Extra[openAIStream503AutoContinueKey]; provided {
-		normalized[openAIStream503AutoContinueKey] = raw.(bool)
+		value, _ := raw.(bool)
+		normalized[openAIStream503AutoContinueKey] = value
 	} else if current, hasCurrent := account.Extra[openAIStream503AutoContinueKey].(bool); hasCurrent {
 		normalized[openAIStream503AutoContinueKey] = current
 	} else {

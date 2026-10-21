@@ -137,7 +137,7 @@ func newOpenAIStreamContinuationReplayer(
 		// partial 为空时不存在可裁剪的重复前缀，直接放行以保住 TTFT。
 		overlapDone: snapshot.partialText == "",
 	}
-	replayer.runningText.WriteString(snapshot.partialText)
+	_, _ = replayer.runningText.WriteString(snapshot.partialText)
 	return replayer
 }
 
@@ -436,7 +436,7 @@ func (r *openAIStreamContinuationReplayer) handleMappedDelta(eventLine string, h
 	}
 	if r.overlapDone {
 		rewritten := r.rewriteMappedDeltaCoordinates(data, delta)
-		r.runningText.WriteString(delta)
+		_, _ = r.runningText.WriteString(delta)
 		return r.deliverJSON(eventLine, hasEvent, rewritten)
 	}
 	r.pendingDeltas = append(r.pendingDeltas, openAIStreamPendingDelta{
@@ -470,7 +470,7 @@ func (r *openAIStreamContinuationReplayer) flushOverlap() error {
 
 	var combined strings.Builder
 	for _, item := range pending {
-		combined.WriteString(item.delta)
+		_, _ = combined.WriteString(item.delta)
 	}
 	prefix := combined.String()
 	if len(prefix) > openAIStreamContinuationOverlapWindow {
@@ -501,7 +501,7 @@ func (r *openAIStreamContinuationReplayer) flushOverlap() error {
 		if delta == "" {
 			continue
 		}
-		r.runningText.WriteString(delta)
+		_, _ = r.runningText.WriteString(delta)
 		if err := r.deliverJSON(item.eventLine, item.hasEvent, r.rewriteMappedDeltaCoordinates(item.payload, delta)); err != nil {
 			return err
 		}
