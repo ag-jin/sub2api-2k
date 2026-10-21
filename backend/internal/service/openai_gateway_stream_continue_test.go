@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,21 @@ func contTestAccount(platform, accountType string, enabled, passthrough bool) *A
 		extra["openai_passthrough"] = true
 	}
 	return &Account{ID: 7, Name: "cont-test", Platform: platform, Type: accountType, Extra: extra}
+}
+
+// contTestObserveTextDelta 走真实热路径（同一个 observe 入口），
+// 避免测试直接写 state 内部字段。
+func contTestObserveTextDelta(t *testing.T, svc *OpenAIGatewayService, st *openAIStreamContinuationState, delta string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"type":          "response.output_text.delta",
+		"item_id":       "msg_test",
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         delta,
+	})
+	require.NoError(t, err)
+	svc.observeOpenAIStreamContinuationEvent(st, payload, "")
 }
 
 func contTestObservedState(t *testing.T, svc *OpenAIGatewayService, c *gin.Context, account *Account) *openAIStreamContinuationState {
@@ -183,6 +199,46 @@ func TestOpenAIStreamContinuationObserveKeepsMaxSequence(t *testing.T) {
 	require.Equal(t, int64(9), snap.lastSequence)
 }
 
+// S1: 累加必须是 O(1) 追加 + 独立字节计数；超过上限后只停止存储文本，
+// 资格判定仍按真实字节数触发 partial_too_large。
+func TestOpenAIStreamContinuationObserveCapsPartialTextButCountsBytes(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	st := svc.newOpenAIStreamContinuationState(contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false), contTestGinContext("/v1/responses"), true, nil)
+	require.NotNil(t, st)
+	svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestCreatedEvent), "")
+	svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestMessageEvent), "")
+
+	contTestObserveTextDelta(t, svc, st, strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes+1))
+
+	require.Len(t, st.ObservedPartialText(), openAIStream503AutoContinueMaxPartialBytes,
+		"stored partial text is capped at the limit")
+	ok, reason := st.CanContinue(time.Now())
+	require.False(t, ok)
+	require.Equal(t, "partial_too_large", reason,
+		"eligibility must use the true byte count, not the capped text length")
+}
+
+func TestOpenAIStreamContinuationObserveAccumulatesManyDeltas(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	st := svc.newOpenAIStreamContinuationState(contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false), contTestGinContext("/v1/responses"), true, nil)
+	require.NotNil(t, st)
+	svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestCreatedEvent), "")
+	svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestMessageEvent), "")
+
+	for i := 0; i < 2000; i++ {
+		contTestObserveTextDelta(t, svc, st, "ab")
+	}
+
+	require.Equal(t, strings.Repeat("ab", 2000), st.ObservedPartialText())
+	ok, reason := st.CanContinue(time.Now())
+	require.True(t, ok, "small deltas stay eligible: %s", reason)
+
+	st.BeginContinuation(OpenAIUsage{}, nil)
+	snap := st.Snapshot()
+	require.NotNil(t, snap)
+	require.Equal(t, strings.Repeat("ab", 2000), snap.partialText)
+}
+
 func TestOpenAIStreamContinuationEligibility(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	capacity := []byte(contTestCapacityJSON)
@@ -320,7 +376,7 @@ func TestOpenAIStreamContinuationEligibility(t *testing.T) {
 
 	t.Run("partial_too_large", func(t *testing.T) {
 		c, account, st := newBase(t)
-		st.text = strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes+1)
+		contTestObserveTextDelta(t, svc, st, strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes+1))
 		ok, reason := svc.openAIStream503AutoContinueEligible(c, account, st, capacity, true, false)
 		require.False(t, ok)
 		require.Equal(t, "partial_too_large", reason)
@@ -357,13 +413,21 @@ func TestOpenAIStreamContinuationCanContinueElapsed(t *testing.T) {
 
 func TestOpenAIStreamContinuationCanContinuePartialTooLarge(t *testing.T) {
 	svc := &OpenAIGatewayService{}
-	st := contTestObservedState(t, svc, contTestGinContext("/v1/responses"), contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false))
+	newState := func() *openAIStreamContinuationState {
+		st := svc.newOpenAIStreamContinuationState(contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false), contTestGinContext("/v1/responses"), true, nil)
+		require.NotNil(t, st)
+		svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestCreatedEvent), "")
+		svc.observeOpenAIStreamContinuationEvent(st, []byte(contTestMessageEvent), "")
+		return st
+	}
 
-	st.text = strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes)
+	st := newState()
+	contTestObserveTextDelta(t, svc, st, strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes))
 	ok, reason := st.CanContinue(time.Now())
 	require.True(t, ok, "exactly at the limit stays eligible: %s", reason)
 
-	st.text = strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes+1)
+	st = newState()
+	contTestObserveTextDelta(t, svc, st, strings.Repeat("x", openAIStream503AutoContinueMaxPartialBytes+1))
 	ok, reason = st.CanContinue(time.Now())
 	require.False(t, ok)
 	require.Equal(t, "partial_too_large", reason)

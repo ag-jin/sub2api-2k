@@ -854,7 +854,7 @@ export default {
           'Disabled by default. Enable only when this account\'s upstream charges OpenAI API long-context rates above the model threshold.',
         stream503AutoContinue: '503 stream auto-continue',
         stream503AutoContinueDesc:
-          'Disabled by default. When enabled, the gateway automatically continues generation and stitches the remaining output if the upstream returns 503 or the stream is interrupted mid-response (OpenAI OAuth / Setup Token accounts only).',
+          'Disabled by default. When enabled, the gateway automatically continues generation and stitches the remaining output only when the upstream sheds capacity with HTTP 503 ("Our servers are currently overloaded"); other errors or plain stream interruptions are not continued (OpenAI OAuth / Setup Token accounts only).',
         stream503AutoContinuePassthroughHint:
           'Auto passthrough is enabled for this account: this switch has no effect in passthrough mode yet. Turn off auto passthrough to enable it.',
         responsesWebsocketsV2: 'Responses WebSocket v2',

@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"strings"
@@ -164,6 +165,19 @@ func TestOpenAIStreamContinuationBodyRewritesTerminalAndUsage(t *testing.T) {
 	require.Equal(t, int64(13), usage.Get("input_tokens").Int())
 	require.Equal(t, int64(7), usage.Get("output_tokens").Int())
 	require.Equal(t, int64(6), usage.Get("cache_read_input_tokens").Int())
+}
+
+// S2: 重叠裁剪必须落在完整 rune 边界上，否则会向下游切出非法 UTF-8。
+func TestOpenAIStreamContinuationOverlapKeepsRuneBoundary(t *testing.T) {
+	// prior 尾部是两个残缺字节（上游异常流），旧实现会匹配出 k=2，
+	// 恰好把 prefix 首个多字节 rune（世 = e4 b8 96）切在中间。
+	require.Equal(t, 0, openAIStreamContinuationOverlap("abc\xe4\xb8", "世ok"))
+}
+
+func TestOpenAIStreamContinuationOverlapMatchesWholeRunes(t *testing.T) {
+	prior := "你好世界"
+	prefix := "世界！"
+	require.Equal(t, len("世界"), openAIStreamContinuationOverlap(prior, prefix))
 }
 
 func TestOpenAIStreamContinuationBodyTrimsOverlap(t *testing.T) {
@@ -434,6 +448,38 @@ func TestOpenAIStreamContinuationBodyForwardsUnparseableData(t *testing.T) {
 	output := contBodyRun(t, upstream, snapshot, nil, 0)
 
 	require.Contains(t, output, "data: not-json-payload")
+}
+
+// S3: sjson 改写失败时必须保留原帧（降级），并把失败（帧类型 + 原始错误）
+// 上报给收尾的单条 WARN 日志，而不是静默吞掉。
+func TestSetOpenAIStreamJSONReportsRewriteError(t *testing.T) {
+	payload := []byte(`[1,2]`)
+	out, err := setOpenAIStreamJSON(payload, "sequence_number", 1)
+	require.Error(t, err)
+	require.Equal(t, string(payload), string(out), "failed rewrite keeps the original frame")
+}
+
+func TestSetOpenAIStreamRawJSONReportsRewriteError(t *testing.T) {
+	payload := []byte(`[1,2]`)
+	out, err := setOpenAIStreamRawJSON(payload, "response.output", []byte(`[]`))
+	require.Error(t, err)
+	require.Equal(t, string(payload), string(out), "failed rewrite keeps the original frame")
+}
+
+func TestOpenAIStreamContinuationReplayerRecordsFirstRewriteFailure(t *testing.T) {
+	r := newOpenAIStreamContinuationReplayer(contBodyTestSnapshot("Hello"), nil, bufio.NewWriter(io.Discard))
+	r.frameType = "response.completed"
+
+	out := r.setJSON([]byte(`[1,2]`), "sequence_number", 9)
+	require.Equal(t, "[1,2]", string(out))
+	require.NotNil(t, r.rewriteFailure)
+	require.Equal(t, "response.completed", r.rewriteFailure.frameType)
+	require.Equal(t, "sequence_number", r.rewriteFailure.path)
+	require.Error(t, r.rewriteFailure.err)
+
+	r.setRawJSON([]byte(`[1,2]`), "response.output", []byte(`[]`))
+	require.Equal(t, "sequence_number", r.rewriteFailure.path,
+		"only the first failure is kept so the stream logs exactly one WARN")
 }
 
 func TestOpenAIStreamContinuationBodyCloseStopsWriter(t *testing.T) {

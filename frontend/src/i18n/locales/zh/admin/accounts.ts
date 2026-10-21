@@ -971,7 +971,7 @@ export default {
         longContextBillingDesc: '默认关闭。仅当该账号的上游会按模型阈值收取 OpenAI API 长上下文费率时开启。',
         stream503AutoContinue: '503 断流自动继续',
         stream503AutoContinueDesc:
-          '默认关闭。开启后，上游返回 503 或流式响应在输出中途意外中断时，网关会自动继续生成并拼接剩余内容（仅 OpenAI OAuth / Setup Token 账号）。',
+          '默认关闭。开启后，仅当上游因容量过载返回 503（“Our servers are currently overloaded”）时，网关才会自动续写并拼接剩余内容；其它错误或普通断流不会续跑（仅 OpenAI OAuth / Setup Token 账号）。',
         stream503AutoContinuePassthroughHint:
           '当前账号已开启自动透传：透传模式下该开关暂不生效，如需启用请先关闭自动透传。',
         responsesWebsocketsV2: 'Responses WebSocket v2',
