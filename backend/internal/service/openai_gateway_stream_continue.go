@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,28 +19,28 @@ import (
 //
 // 本文件不实现 SSE 帧重写（见 05）也不做编排（见 06/07）。所有状态只在
 // Forward 编排 goroutine 写；续跑 attempt 只读 BeginContinuation 冻结的快照。
+//
+// v1.2：次数/退避/总预算窗不再是包内常量，而是 state 创建时从 gateway 设置缓存
+// 解析的 openAIStream503ContinueBudget（默认值加大；见 openai_stream_503_continue_budget.go）。
 const (
-	openAIStream503AutoContinueMaxContinuations = 2
-	openAIStream503AutoContinueMaxElapsed       = 90 * time.Second
-	openAIStream503AutoContinueMaxPartialBytes  = 128 << 10
-	openAIStream503AutoContinueInstruction      = "Continue the assistant response exactly where it was interrupted. Output only the remaining content; do not repeat anything already written; do not add a preamble."
+	openAIStream503AutoContinueMaxPartialBytes = 128 << 10
+	openAIStream503AutoContinueInstruction     = "Continue the assistant response exactly where it was interrupted. Output only the remaining content; do not repeat anything already written; do not add a preamble."
 )
 
-const (
-	openAIStream503AutoContinueBackoffFirst  = 300 * time.Millisecond
-	openAIStream503AutoContinueBackoffLater  = 900 * time.Millisecond
-	openAIStream503AutoContinueBackoffJitter = 0.2
-)
+// 退避抖动幅度（±20%），与 v1 保持一致；退避基值序列由预算的 delay 决定。
+const openAIStream503AutoContinueBackoffJitter = 0.2
 
 // 资格谓词 reason 枚举（用于日志 / ops，稳定字符串）。
+// v1.2 细分：原 budget/elapsed 拆为 budget_attempts/budget_time，便于生产
+// 对比"次数耗尽"与"时间窗耗尽"的救回率。
 const (
 	openAIStream503AutoContinueReasonDisabled         = "disabled"
 	openAIStream503AutoContinueReasonAccount          = "account"
 	openAIStream503AutoContinueReasonIneligibleOutput = "ineligible_output"
 	openAIStream503AutoContinueReasonNotCapacity      = "not_capacity"
 	openAIStream503AutoContinueReasonClientGone       = "client_gone"
-	openAIStream503AutoContinueReasonBudget           = "budget"
-	openAIStream503AutoContinueReasonElapsed          = "elapsed"
+	openAIStream503AutoContinueReasonBudgetAttempts   = "budget_attempts"
+	openAIStream503AutoContinueReasonBudgetTime       = "budget_time"
 	openAIStream503AutoContinueReasonPartialTooBig    = "partial_too_large"
 )
 
@@ -78,8 +79,11 @@ type openAIStreamContinuationSnapshot struct {
 // 可变的观察态（text/openText*/completedItems/...）在 BeginContinuation 时
 // 冻结进 snapshot，然后从 snapshot 继承，作为下一次续跑 attempt 的初值。
 type openAIStreamContinuationState struct {
-	enabled        bool
-	accountID      int64
+	enabled   bool
+	accountID int64
+	// budget 是本次请求冻结的重试预算（v1.2 设置化）。零值 state（测试/兜底
+	// 直接构造）经 EffectiveBudget 归一回默认，行为与"设置未配置"一致。
+	budget         openAIStream503ContinueBudget
 	continuations  int
 	firstTriggerAt time.Time
 	snapshot       *openAIStreamContinuationSnapshot
@@ -164,9 +168,38 @@ func (s *OpenAIGatewayService) newOpenAIStreamContinuationState(
 	return &openAIStreamContinuationState{
 		enabled:           true,
 		accountID:         account.ID,
+		budget:            s.resolveOpenAIStream503ContinueBudget(c),
 		currentBody:       append([]byte(nil), body...),
 		inProgressNonText: make(map[string]string),
 	}
+}
+
+// resolveOpenAIStream503ContinueBudget 从 gateway 设置缓存解析本次请求的续跑预算。
+// 无 settingService（单元测试/误配）时用内置默认值；缓存读取不进热路径 DB。
+func (s *OpenAIGatewayService) resolveOpenAIStream503ContinueBudget(c *gin.Context) openAIStream503ContinueBudget {
+	if s == nil || s.settingService == nil {
+		return defaultOpenAIStream503ContinueBudget()
+	}
+	var ctx context.Context
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	} else {
+		ctx = context.Background()
+	}
+	return s.settingService.GetOpenAIStream503ContinueBudget(ctx)
+}
+
+// EffectiveBudget 返回生效预算；nil/零值 state 回退默认。
+func (st *openAIStreamContinuationState) EffectiveBudget() openAIStream503ContinueBudget {
+	if st == nil {
+		return defaultOpenAIStream503ContinueBudget()
+	}
+	return st.budget.normalized()
+}
+
+// EffectiveMaxContinuations 是预算中生效的续跑次数上限（日志/展示用）。
+func (st *openAIStreamContinuationState) EffectiveMaxContinuations() int {
+	return st.EffectiveBudget().maxContinuations
 }
 
 func (st *openAIStreamContinuationState) InContinuation() bool {
@@ -330,15 +363,18 @@ func (st *openAIStreamContinuationState) RecordCapacitySignal(sig *openAIStreamC
 
 // CanContinue 只做预算/耗时/文本形态判定（资格谓词的权威门是
 // openAIStream503AutoContinueEligible）。now 由调用方注入便于测试。
+// v1.2：预算来自 state 冻结的设置解析值；放弃 reason 细分为
+// budget_attempts（次数耗尽）/ budget_time（总预算窗耗尽）。
 func (st *openAIStreamContinuationState) CanContinue(now time.Time) (bool, string) {
 	if st == nil || !st.enabled {
 		return false, openAIStream503AutoContinueReasonDisabled
 	}
-	if st.continuations >= openAIStream503AutoContinueMaxContinuations {
-		return false, openAIStream503AutoContinueReasonBudget
+	budget := st.EffectiveBudget()
+	if st.continuations >= budget.maxContinuations {
+		return false, openAIStream503AutoContinueReasonBudgetAttempts
 	}
-	if !st.firstTriggerAt.IsZero() && now.Sub(st.firstTriggerAt) > openAIStream503AutoContinueMaxElapsed {
-		return false, openAIStream503AutoContinueReasonElapsed
+	if !st.firstTriggerAt.IsZero() && now.Sub(st.firstTriggerAt) > budget.totalBudget {
+		return false, openAIStream503AutoContinueReasonBudgetTime
 	}
 	if st.textBytes > openAIStream503AutoContinueMaxPartialBytes {
 		return false, openAIStream503AutoContinueReasonPartialTooBig
@@ -406,11 +442,13 @@ func (st *openAIStreamContinuationState) NextRequestBody() ([]byte, error) {
 	return buildOpenAIStreamContinuationBody(st.currentBody, st.snapshot.partialText)
 }
 
-// Backoff 返回本次续跑前的等待时间：第 1 次 300ms，之后 900ms，±20% 抖动。
+// Backoff 返回本次续跑前的等待时间：默认 150ms 起每次翻倍、封顶 2000ms，±20%
+// 抖动；序列可经 openai_stream_503_backoff_initial_ms / _max_ms 覆盖（v1.2）。
+// 调用点在 BeginContinuation 之后，st.continuations 即本次续跑的 1-based 序号。
 func (st *openAIStreamContinuationState) Backoff() time.Duration {
-	base := openAIStream503AutoContinueBackoffFirst
-	if st != nil && st.continuations >= 2 {
-		base = openAIStream503AutoContinueBackoffLater
+	base := st.EffectiveBudget().delay(st.Continuations())
+	if base <= 0 {
+		base = openAIStream503ContinueDefaultBackoffInitial
 	}
 	factor := 1 + openAIStream503AutoContinueBackoffJitter*(2*rand.Float64()-1)
 	return time.Duration(float64(base) * factor)

@@ -167,7 +167,7 @@ func TestOpenAIStream503AutoContinue_FailedAfterOutputReturnsSignal(t *testing.T
 	require.Equal(t, PlatformOpenAI, fields["platform"])
 	require.EqualValues(t, 7, fields["partial_text_bytes"])
 	require.EqualValues(t, 1, fields["continuation_index"])
-	require.EqualValues(t, openAIStream503AutoContinueMaxContinuations, fields["budget_left"])
+	require.EqualValues(t, openAIStream503ContinueDefaultMaxContinuations, fields["budget_left"])
 	require.Contains(t, fields, "elapsed_ms")
 	require.Contains(t, fields, "client_request_id")
 }
@@ -245,7 +245,7 @@ func TestOpenAIStream503AutoContinue_BudgetExhaustedKeepsLegacyPath(t *testing.T
 	c, rec := contTestContext()
 	account := contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false)
 	cont := contTestState(t, svc, c, account)
-	cont.continuations = openAIStream503AutoContinueMaxContinuations
+	cont.continuations = openAIStream503ContinueDefaultMaxContinuations
 
 	_, err := contTestRun(t, svc, c, account, cont, io.NopCloser(strings.NewReader(contTestSSE(
 		contTestCreatedFrame,
@@ -265,7 +265,7 @@ func TestOpenAIStream503AutoContinue_BudgetExhaustedKeepsLegacyPath(t *testing.T
 	require.Equal(t, 1, countContinuationLogMessages(logSink, "gateway.openai_stream_503_auto_continue_exhausted"))
 	fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
 	require.NotNil(t, fields)
-	require.Equal(t, openAIStream503AutoContinueReasonBudget, fields["reason"])
+	require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, fields["reason"])
 }
 
 // 回归（v1.1 门禁）：续跑 attempt 在全局 keepalive 关闭时由 5s 兜底切到异步扫描路径。
@@ -301,7 +301,7 @@ func TestOpenAIStream503AutoContinue_KeepaliveAsyncPathKeepsStagedOutputOnExhaus
 			c, rec := contTestContext()
 			account := contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false)
 			cont := contTestState(t, svc, c, account)
-			cont.continuations = openAIStream503AutoContinueMaxContinuations
+			cont.continuations = openAIStream503ContinueDefaultMaxContinuations
 			require.True(t, cont.InContinuation())
 			require.Equal(t, 5*time.Second, openAIStreamKeepaliveInterval(0, cont.InContinuation()),
 				"续跑 attempt 必须命中 keepalive 兜底的异步扫描路径")
@@ -321,7 +321,7 @@ func TestOpenAIStream503AutoContinue_KeepaliveAsyncPathKeepsStagedOutputOnExhaus
 			require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
 			fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
 			require.NotNil(t, fields)
-			require.Equal(t, openAIStream503AutoContinueReasonBudget, fields["reason"])
+			require.Equal(t, openAIStream503AutoContinueReasonBudgetAttempts, fields["reason"])
 		})
 	}
 }

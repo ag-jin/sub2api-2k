@@ -726,6 +726,18 @@ const (
 	// 迁移后等价规则写入 SettingKeyCodexCLIOnlyWhitelist，不再参与运行时判定。
 	SettingKeyOpenAIAllowClaudeCodeCodexPlugin = "openai_allow_claude_code_codex_plugin"
 
+	// 503 流式断开自动续跑的重试预算/节奏（v1.2 设置化；默认值与硬限的裁决在
+	// openai_stream_503_continue_budget.go，越界/非法值回默认）。账号级开关仍是
+	// accounts.extra.openai_stream_503_auto_continue，这四个键只调预算不改语义。
+	// SettingKeyOpenAIStream503MaxContinuations 续跑次数上限（默认 6，硬上限 10）。
+	SettingKeyOpenAIStream503MaxContinuations = "openai_stream_503_max_continuations"
+	// SettingKeyOpenAIStream503BackoffInitialMs 首次续跑退避毫秒（默认 150，硬下限 50）。
+	SettingKeyOpenAIStream503BackoffInitialMs = "openai_stream_503_backoff_initial_ms"
+	// SettingKeyOpenAIStream503BackoffMaxMs 退避封顶毫秒（默认 2000，硬上限 10000）。
+	SettingKeyOpenAIStream503BackoffMaxMs = "openai_stream_503_backoff_max_ms"
+	// SettingKeyOpenAIStream503TotalBudgetMs 首次触发起的总预算窗毫秒（默认 30000，硬上限 120000）。
+	SettingKeyOpenAIStream503TotalBudgetMs = "openai_stream_503_total_budget_ms"
+
 	// 余额不足提醒
 	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"      // 全局开关
 	SettingKeyBalanceLowNotifyThreshold   = "balance_low_notify_threshold"    // 默认阈值（USD）

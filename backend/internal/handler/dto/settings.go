@@ -221,6 +221,12 @@ type SystemSettings struct {
 	ClaudeCodeClientVersionSynced          string `json:"claude_code_client_version_synced"`
 	ClaudeCodeVersionAutoSyncEnabled       bool   `json:"claude_code_version_auto_sync_enabled"`
 
+	// 503 断流自动续跑重试预算（v1.2；服务端按硬限归一，越界/非法值回默认）
+	OpenAIStream503MaxContinuations int `json:"openai_stream_503_max_continuations"`
+	OpenAIStream503BackoffInitialMs int `json:"openai_stream_503_backoff_initial_ms"`
+	OpenAIStream503BackoffMaxMs     int `json:"openai_stream_503_backoff_max_ms"`
+	OpenAIStream503TotalBudgetMs    int `json:"openai_stream_503_total_budget_ms"`
+
 	// codex_cli_only 加固
 	MinCodexVersion                      string `json:"min_codex_version"`
 	MaxCodexVersion                      string `json:"max_codex_version"`
