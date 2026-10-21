@@ -26,6 +26,7 @@ type FrameConn interface {
 
 type Usage struct {
 	InputTokens              int
+	ImageInputTokens         int
 	OutputTokens             int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
@@ -33,9 +34,12 @@ type Usage struct {
 }
 
 type RelayResult struct {
-	RequestModel            string
-	ResponseModel           string
-	ResponseModelConflict   bool
+	RequestModel          string
+	ResponseModel         string
+	ResponseModelConflict bool
+	// ResponseServiceTier is the raw service_tier declared by the last terminal
+	// response event; "" when the upstream never declared one.
+	ResponseServiceTier     string
 	Usage                   Usage
 	RequestID               string
 	TerminalEventType       string
@@ -50,6 +54,7 @@ type RelayTurnResult struct {
 	RequestModel          string
 	ResponseModel         string
 	ResponseModelConflict bool
+	ResponseServiceTier   string
 	Usage                 Usage
 	RequestID             string
 	TerminalEventType     string
@@ -96,19 +101,21 @@ type RelayTraceEvent struct {
 }
 
 type relayState struct {
-	usage             Usage
-	turnUsage         Usage
-	requestModelMu    sync.RWMutex
-	requestModel      string
-	pendingTurnStart  atomic.Pointer[time.Time]
-	lastResponseID    string
-	lastResponseModel string
-	responseConflict  bool
-	terminalEventType string
-	firstTokenMs      *int
-	turnTimingByID    map[string]*relayTurnTiming
-	activeTurn        *relayTurnTiming
-	pendingBareError  *observedUpstreamEvent
+	usage                   Usage
+	turnUsage               Usage
+	turnWroteDownstream     atomic.Bool
+	requestModelMu          sync.RWMutex
+	requestModel            string
+	pendingTurnStart        atomic.Pointer[time.Time]
+	lastResponseID          string
+	lastResponseModel       string
+	lastResponseServiceTier string
+	responseConflict        bool
+	terminalEventType       string
+	firstTokenMs            *int
+	turnTimingByID          map[string]*relayTurnTiming
+	activeTurn              *relayTurnTiming
+	pendingBareError        *observedUpstreamEvent
 }
 
 type relayExitSignal struct {
@@ -119,15 +126,16 @@ type relayExitSignal struct {
 }
 
 type observedUpstreamEvent struct {
-	terminal         bool
-	eventType        string
-	responseID       string
-	usage            Usage
-	startedAt        time.Time
-	responseModel    string
-	responseConflict bool
-	duration         time.Duration
-	firstToken       *int
+	terminal            bool
+	eventType           string
+	responseID          string
+	usage               Usage
+	startedAt           time.Time
+	responseModel       string
+	responseConflict    bool
+	responseServiceTier string
+	duration            time.Duration
+	firstToken          *int
 }
 
 type relayTurnTiming struct {
@@ -136,6 +144,9 @@ type relayTurnTiming struct {
 	firstResponseModel    string
 	terminalResponseModel string
 	responseModelConflict bool
+	// terminalResponseServiceTier is only taken from terminal events: earlier
+	// events echo the requested tier, not the one the upstream actually used.
+	terminalResponseServiceTier string
 }
 
 func Relay(
@@ -195,7 +206,8 @@ func Relay(
 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
 	}
 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
-		if isClientResponseCreateFrame(msgType, payload) {
+		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
+		if isResponseCreate {
 			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
 			turnStartedAt := time.Time{}
 			if options.TakeNextTurnStartedAt != nil {
@@ -205,8 +217,18 @@ func Relay(
 				turnStartedAt = nowFn()
 			}
 			state.setPendingTurnStartedAt(turnStartedAt)
+			// The policy-enforcing client connection has accepted this turn.
+			// Reset before the write so an immediate upstream response cannot race
+			// with the transport returning from WriteFrame.
+			state.turnWroteDownstream.Store(false)
 		}
-		return writeUpstream(msgType, payload)
+		err := writeUpstream(msgType, payload)
+		if err != nil && isResponseCreate {
+			// The relay exits on this error, but retain the previous turn's state
+			// for accurate diagnostics while the two relay goroutines settle.
+			state.turnWroteDownstream.Store(true)
+		}
+		return err
 	}
 	writeClient := func(msgType coderws.MessageType, payload []byte) error {
 		// 下行写超时故意不挂在 relayCtx 上：coder/websocket 在已武装的 write
@@ -524,24 +546,37 @@ func runUpstreamToClient(
 		msgType, payload, err := upstreamConn.ReadFrame(ctx)
 		if err != nil {
 			emitTurnComplete(onTurnComplete, state, finalizePendingBareError(state, nowFn()))
+			graceful := isDisconnectError(err)
+			// A clean WebSocket close only describes the transport handshake. Once
+			// the upstream has started a Responses turn, success still requires a
+			// terminal protocol event. Treat an early 1000/EOF as a relay failure so
+			// the adapter does not report relay_completed with an active turn.
+			if graceful && state.hasUnfinishedTurn() {
+				graceful = false
+				err = errors.New("upstream websocket closed before terminal event: " + err.Error())
+			}
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:           "read_upstream_failed",
 				Direction:       "upstream_to_client",
 				Error:           err.Error(),
-				Graceful:        isDisconnectError(err),
+				Graceful:        graceful,
 				WroteDownstream: wroteDownstream,
 			})
 			exitCh <- relayExitSignal{
 				stage:           "read_upstream",
 				err:             err,
-				graceful:        isDisconnectError(err),
+				graceful:        graceful,
 				wroteDownstream: wroteDownstream,
 			}
 			return
 		}
 		markActivity()
 		if beforeWriteClient != nil {
-			if err := beforeWriteClient(msgType, payload, wroteDownstream); err != nil {
+			wroteDownstreamInTurn := wroteDownstream
+			if state != nil {
+				wroteDownstreamInTurn = state.turnWroteDownstream.Load()
+			}
+			if err := beforeWriteClient(msgType, payload, wroteDownstreamInTurn); err != nil {
 				emitRelayTrace(onTrace, RelayTraceEvent{
 					Stage:           "upstream_message_rejected",
 					Direction:       "upstream_to_client",
@@ -567,7 +602,14 @@ func runUpstreamToClient(
 			}
 			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
 		case coderws.MessageBinary:
-			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
+			// Binary frames remain opaque for usage/result observation, but a JSON
+			// terminal still settles relay lifecycle. Otherwise the pending-turn
+			// disconnect guard would turn an already-delivered terminal into a false
+			// missing-terminal failure when the upstream closes normally.
+			if isTerminalEvent(strings.TrimSpace(gjson.GetBytes(payload, "type").String())) {
+				state.consumePendingTurnStartedAt()
+				openAIWSRelayDiscardActiveTurnTiming(state)
+			}
 		}
 		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
@@ -612,6 +654,9 @@ func runUpstreamToClient(
 			return
 		}
 		wroteDownstream = true
+		if state != nil {
+			state.turnWroteDownstream.Store(true)
+		}
 		if afterWriteClient != nil {
 			afterWriteClient(msgType, payload)
 		}
@@ -757,6 +802,7 @@ func observeUpstreamMessage(
 	if !isTerminalEvent(eventType) {
 		return observed
 	}
+	observeRelayTurnResponseServiceTier(turnTiming, firstRelayResponseServiceTier(message))
 	state.terminalEventType = eventType
 	if eventType == "error" {
 		// Some Responses servers emit error immediately before response.failed.
@@ -815,8 +861,10 @@ func finalizeObservedRelayTerminal(state *relayState, observed observedUpstreamE
 		if turnTiming, ok := openAIWSRelayDeleteTurnTiming(state, responseID); ok {
 			observed.responseModel = relayTurnResponseModel(&turnTiming)
 			observed.responseConflict = turnTiming.responseModelConflict
+			observed.responseServiceTier = turnTiming.terminalResponseServiceTier
 			state.lastResponseModel = observed.responseModel
 			state.responseConflict = observed.responseConflict
+			state.lastResponseServiceTier = observed.responseServiceTier
 			duration := now.Sub(turnTiming.startAt)
 			if duration < 0 {
 				duration = 0
@@ -852,6 +900,7 @@ func emitTurnComplete(
 		RequestModel:          requestModel,
 		ResponseModel:         observed.responseModel,
 		ResponseModelConflict: observed.responseConflict,
+		ResponseServiceTier:   observed.responseServiceTier,
 		Usage:                 observed.usage,
 		RequestID:             responseID,
 		TerminalEventType:     observed.eventType,
@@ -908,6 +957,31 @@ func relayTurnResponseModel(turn *relayTurnTiming) string {
 	return turn.firstResponseModel
 }
 
+func firstRelayResponseServiceTier(message []byte) string {
+	if len(message) == 0 {
+		return ""
+	}
+	values := gjson.GetManyBytes(message, "response.service_tier", "service_tier")
+	for _, value := range values {
+		if value.Type != gjson.String {
+			continue
+		}
+		if tier := strings.TrimSpace(value.String()); tier != "" {
+			return tier
+		}
+	}
+	return ""
+}
+
+func observeRelayTurnResponseServiceTier(turn *relayTurnTiming, tier string) {
+	if turn == nil {
+		return
+	}
+	if tier = strings.TrimSpace(tier); tier != "" {
+		turn.terminalResponseServiceTier = tier
+	}
+}
+
 func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now time.Time) *relayTurnTiming {
 	if state == nil {
 		return nil
@@ -946,6 +1020,13 @@ func (s *relayState) consumePendingTurnStartedAt() time.Time {
 		return time.Time{}
 	}
 	return *startedAt
+}
+
+func (s *relayState) hasUnfinishedTurn() bool {
+	if s == nil {
+		return false
+	}
+	return s.pendingTurnStart.Load() != nil || s.activeTurn != nil
 }
 
 func openAIWSRelayDeleteTurnTiming(state *relayState, responseID string) (relayTurnTiming, bool) {
@@ -1037,6 +1118,21 @@ func parseUsageAndAccumulate(
 	if imageTokens == 0 {
 		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
 	}
+	imageInputTokens := usageResult.Get("input_tokens_details.image_tokens").Int()
+	if imageInputTokens <= 0 {
+		imageInputTokens = usageResult.Get("prompt_tokens_details.image_tokens").Int()
+	}
+	// 与 HTTP Responses 同口径：usage 缺图片计数时由托管工具 tool_usage.image_gen 回填。
+	imageGen := gjson.GetBytes(message, "response.tool_usage.image_gen")
+	if !imageGen.Exists() {
+		imageGen = gjson.GetBytes(message, "tool_usage.image_gen")
+	}
+	if imageTokens <= 0 {
+		imageTokens = max(imageGen.Get("output_tokens_details.image_tokens").Int(), 0)
+	}
+	if imageInputTokens <= 0 {
+		imageInputTokens = max(imageGen.Get("input_tokens_details.image_tokens").Int(), 0)
+	}
 
 	requireTotals := isTerminalEvent(strings.TrimSpace(eventType))
 	inputTokens, inputOK := parseUsageIntField(inputResult, requireTotals)
@@ -1061,6 +1157,7 @@ func parseUsageAndAccumulate(
 	}
 	parsedUsage := Usage{
 		InputTokens:              inputTokens,
+		ImageInputTokens:         int(imageInputTokens),
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
 		CacheReadInputTokens:     cachedTokens,
@@ -1081,7 +1178,7 @@ func parseUsageAndAccumulate(
 func relayUsageHasTokens(usage Usage) bool {
 	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 ||
-		usage.ImageOutputTokens > 0
+		usage.ImageInputTokens > 0 || usage.ImageOutputTokens > 0
 }
 
 func mergeRelayUsageNonZero(dst *Usage, src Usage) {
@@ -1100,6 +1197,9 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 	if src.CacheReadInputTokens > 0 {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
 	}
+	if src.ImageInputTokens > 0 {
+		dst.ImageInputTokens = src.ImageInputTokens
+	}
 	if src.ImageOutputTokens > 0 {
 		dst.ImageOutputTokens = src.ImageOutputTokens
 	}
@@ -1111,6 +1211,7 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
 	}
 	turnUsage := state.turnUsage
 	state.usage.InputTokens += turnUsage.InputTokens
+	state.usage.ImageInputTokens += turnUsage.ImageInputTokens
 	state.usage.OutputTokens += turnUsage.OutputTokens
 	state.usage.CacheCreationInputTokens += turnUsage.CacheCreationInputTokens
 	state.usage.CacheReadInputTokens += turnUsage.CacheReadInputTokens
@@ -1165,6 +1266,7 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.RequestModel = state.currentRequestModel()
 	result.ResponseModel = state.lastResponseModel
 	result.ResponseModelConflict = state.responseConflict
+	result.ResponseServiceTier = state.lastResponseServiceTier
 	result.Usage = state.usage
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
