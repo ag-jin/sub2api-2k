@@ -221,9 +221,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 	}
 	// 零 partial 续跑段可能存在“上游在跑但无可转发帧”的静默窗口；
 	// 全局 keepalive 关闭时对续跑 attempt 兜底 5s（不改变首段与开关关闭行为）。
-	if continuationAttempt && keepaliveInterval == 0 {
-		keepaliveInterval = 5 * time.Second
-	}
+	keepaliveInterval = openAIStreamKeepaliveInterval(keepaliveInterval, continuationAttempt)
 	// 下游 keepalive 仅用于防止代理空闲断开
 	var keepaliveTicker *time.Ticker
 	if keepaliveInterval > 0 {
@@ -2682,4 +2680,16 @@ func (s *OpenAIGatewayService) replaceModelInSSEBody(body, fromModel, toModel st
 		lines[i] = s.replaceModelInSSELine(line, fromModel, toModel)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// openAIStreamKeepaliveInterval 返回下游 SSE keepalive 的生效间隔。
+//
+// 全局 keepalive 开启时沿用配置值（首段与续跑一致）；关闭时只对续跑 attempt
+// 兜底 5s：续跑段可能在上游仍在生成时出现“无可转发帧”的静默窗口，
+// 完全静默会让代理/NAT 按空闲断开（design-v1.1 决策 4）。
+func openAIStreamKeepaliveInterval(configured time.Duration, continuationAttempt bool) time.Duration {
+	if configured == 0 && continuationAttempt {
+		return 5 * time.Second
+	}
+	return configured
 }

@@ -826,6 +826,7 @@ func TestOpenAIStream503AutoContinueForward_ZeroPartialContinuation(t *testing.T
 	require.Equal(t, int64(1), messageIndex, "message 的 output_index 从 snapshot.nextOutputIndex 起")
 
 	terminal := contForwardTerminal(t, downstream)
+	require.Len(t, terminal.Get("response.output").Array(), 1, "终态 output 恰 1 项：attempt-2 的 message（attempt-1 无已完成 item）")
 	require.Equal(t, "answer", terminal.Get("response.output.0.content.0.text").String())
 	require.Equal(t, int64(12), terminal.Get("response.usage.input_tokens").Int())
 	require.Equal(t, int64(9), terminal.Get("response.usage.output_tokens").Int())

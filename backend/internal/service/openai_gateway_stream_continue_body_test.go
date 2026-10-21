@@ -342,6 +342,56 @@ func TestOpenAIStreamContinuationBodyZeroPartialHandlesDeltaWithoutItemAdded(t *
 	require.Equal(t, "answer", items[0].Get("content.0.text").String())
 }
 
+// P2: attempt-2 全程省略 item_id 时，终态里带 id 的真实 message 必须被合并后的
+// message 取代，而不是与合成 message 并存（否则文本重复且出现空 id item）。
+func TestOpenAIStreamContinuationBodyZeroPartialWithoutItemIDsDedupesTerminalMessage(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]},"sequence_number":1}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer","sequence_number":2}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":3}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	require.NotContains(t, output, `"id":""`, "终态不得出现空 id 的合成 message")
+
+	completed := contBodyFrames(t, output)[len(contBodyFrames(t, output))-1]
+	items := completed.Get("response.output").Array()
+	require.Len(t, items, 1, "终态只能有一个 message：合成项不得与上游真实 message 并存")
+	require.Equal(t, "msg_2", items[0].Get("id").String(), "合成 message 必须从终态回填真实 id")
+	require.Equal(t, "answer", items[0].Get("content.0.text").String())
+}
+
+// T2: 零模式下已转发 delta 且终态 output 自带同一个 message 时，终态合并必须跳过
+// 上游 message（mergedTextItem 非 nil 分支），最终 output 恰 1 项。
+func TestOpenAIStreamContinuationBodyZeroPartialSkipsTerminalMessageAfterDelta(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":1}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":2}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":3}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	completed := contBodyFrames(t, output)[len(contBodyFrames(t, output))-1]
+	items := completed.Get("response.output").Array()
+	require.Len(t, items, 1, "终态 message 必须被合并项替换，不得重复")
+	require.Equal(t, "msg_2", items[0].Get("id").String())
+	require.Equal(t, "answer", items[0].Get("content.0.text").String())
+}
+
 func TestOpenAIStreamContinuationBodySplicesFirstMessage(t *testing.T) {
 	snapshot := contBodyTestSnapshot("Hello wor")
 	upstream := contBodySSE(

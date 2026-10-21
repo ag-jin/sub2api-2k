@@ -112,8 +112,8 @@ type openAIStreamContinuationReplayer struct {
 	// zeroPartial 取自 snapshot：true 时走零快照模式——保留 attempt-2 自己的
 	// item id，只重排 output_index / sequence_number。
 	zeroPartial bool
-	// mappedOutputIndex 是零模式下首个文本 message 分配到的 output_index。
-	mappedOutputIndex int
+	// firstTextOutputIndex 是零模式下首个文本 message 分配到的 output_index。
+	firstTextOutputIndex int
 
 	pendingDeltas []openAIStreamPendingDelta
 	pendingBytes  int
@@ -340,7 +340,7 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 			// runningText 覆盖 content，否则保留上游原文。不加入 newCompletedItems，
 			// 否则终态 output 会出现两个 message。
 			r.registerZeroModeTextItem(itemID, data)
-			rewritten := r.setJSON(data, "output_index", r.mappedOutputIndex)
+			rewritten := r.setJSON(data, "output_index", r.firstTextOutputIndex)
 			if content := r.runningText.String(); content != "" {
 				rewritten = r.rewriteMessageContent(rewritten, "item.content", content)
 			}
@@ -461,41 +461,40 @@ func (r *openAIStreamContinuationReplayer) isMappedDelta(data []byte) bool {
 	return r.mappedItemID == ""
 }
 
+// textItemMatches 判断事件是否属于当前登记的首个文本 message。
+// 上游省略 item.id 时用 output_index 兜底（R12）。
+func (r *openAIStreamContinuationReplayer) textItemMatches(itemID string, data []byte) bool {
+	if itemID != "" && r.mappedItemID != "" {
+		return itemID == r.mappedItemID
+	}
+	if index := gjson.GetBytes(data, "output_index"); index.Exists() && r.seenTextMessage {
+		return int(index.Int()) == r.mappedUpstreamIndex
+	}
+	return !r.seenTextMessage
+}
+
 func (r *openAIStreamContinuationReplayer) isMappedMessageItem(itemID string, data []byte) bool {
 	if r.zeroPartial {
 		return false // 零模式不映射到既有 item，content_part 正常转发。
 	}
-	if itemID != "" && r.mappedItemID != "" {
-		return itemID == r.mappedItemID
-	}
-	if index := gjson.GetBytes(data, "output_index"); index.Exists() && r.seenTextMessage {
-		return int(index.Int()) == r.mappedUpstreamIndex
-	}
-	return !r.seenTextMessage
+	return r.textItemMatches(itemID, data)
 }
 
 // isZeroModeTextItem 判断 done 帧是否属于零模式下已登记的文本 message。
-// 上游省略 item.id 时用 output_index 兜底（R12）。
 func (r *openAIStreamContinuationReplayer) isZeroModeTextItem(itemID string, data []byte) bool {
-	if itemID != "" && r.mappedItemID != "" {
-		return itemID == r.mappedItemID
-	}
-	if index := gjson.GetBytes(data, "output_index"); index.Exists() && r.seenTextMessage {
-		return int(index.Int()) == r.mappedUpstreamIndex
-	}
-	return !r.seenTextMessage
+	return r.textItemMatches(itemID, data)
 }
 
 // registerZeroModeTextItem 把 attempt-2 的首个文本 message 登记到新坐标。
-// 已登记时直接返回 mappedOutputIndex（幂等）。
+// 已登记时直接返回 firstTextOutputIndex（幂等）。
 func (r *openAIStreamContinuationReplayer) registerZeroModeTextItem(itemID string, data []byte) int {
 	if r.seenTextMessage {
-		return r.mappedOutputIndex
+		return r.firstTextOutputIndex
 	}
 	index := r.allocateOutputIndex()
 	r.seenTextMessage = true
 	r.mappedItemID = itemID
-	r.mappedOutputIndex = index
+	r.firstTextOutputIndex = index
 	if upstream := gjson.GetBytes(data, "output_index"); upstream.Exists() {
 		r.mappedUpstreamIndex = int(upstream.Int())
 	}
@@ -515,7 +514,7 @@ func (r *openAIStreamContinuationReplayer) rewriteZeroModeTextIndex(data []byte)
 	if r.seenTextMessage {
 		if upstream := gjson.GetBytes(data, "output_index"); upstream.Exists() &&
 			int(upstream.Int()) == r.mappedUpstreamIndex {
-			return r.setJSON(data, "output_index", r.mappedOutputIndex)
+			return r.setJSON(data, "output_index", r.firstTextOutputIndex)
 		}
 		return data
 	}
@@ -636,7 +635,7 @@ func (r *openAIStreamContinuationReplayer) terminalItems(payload []byte, merged 
 	// 零模式下没有任何文本输出（也没有 message done）时 mergedTextItem 返回 nil，
 	// 不合成空 message；映射模式在 partialText 非空时永远非 nil，行为不变。
 	if mergedItem := r.mergedTextItem(merged); mergedItem != nil {
-		items = append(items, mergedItem)
+		items = append(items, r.fillZeroModeMergedItemID(payload, mergedItem))
 	}
 	if len(r.newCompletedItems) > 0 {
 		items = append(items, r.newCompletedItems...)
@@ -649,8 +648,9 @@ func (r *openAIStreamContinuationReplayer) terminalItems(payload []byte, merged 
 // terminalFallbackItems 覆盖“续跑段没有单独 output_item.done、终态才带 output”
 // 的上游形态：取终态 output 中除 reasoning 和被映射 message 之外的 items。
 //
-// 零模式仅在本次确实会追加 mergedTextItem 时才跳过 id == mappedItemID 的 message；
-// 否则不跳过任何 message（避免误丢上游终态里唯一的 message）。
+// 零模式仅在本次确实会追加 mergedTextItem 时才跳过与合并项对应的 message；
+// 否则不跳过任何 message（避免误丢上游终态里唯一的 message）。合并项在零模式下
+// 可能没有 mappedItemID（上游全程省略 item_id），此时按位置跳首个 message。
 func (r *openAIStreamContinuationReplayer) terminalFallbackItems(payload []byte) []json.RawMessage {
 	output := gjson.GetBytes(payload, "response.output")
 	if !output.IsArray() {
@@ -669,7 +669,8 @@ func (r *openAIStreamContinuationReplayer) terminalFallbackItems(payload []byte)
 		}
 		if itemType == "message" {
 			if r.zeroPartial {
-				if skipMappedMessage && !skippedMappedMessage && item.Get("id").String() == r.mappedItemID {
+				if skipMappedMessage && !skippedMappedMessage &&
+					(r.mappedItemID == "" || item.Get("id").String() == r.mappedItemID) {
 					skippedMappedMessage = true
 					continue
 				}
@@ -684,6 +685,33 @@ func (r *openAIStreamContinuationReplayer) terminalFallbackItems(payload []byte)
 		items = append(items, json.RawMessage(append([]byte(nil), item.Raw...)))
 	}
 	return items
+}
+
+// fillZeroModeMergedItemID 为合并后的 message 回填真实 item id。
+//
+// 上游可能在 added/delta/done 中全部省略 item.id，此时合成的 message id 为空；
+// 终态 output 中带 id 的真实 message 才是权威来源。回填后终态不会出现空 id item，
+// 也让 terminalFallbackItems 的按位置跳过与其保持一致。
+func (r *openAIStreamContinuationReplayer) fillZeroModeMergedItemID(payload []byte, item json.RawMessage) json.RawMessage {
+	if !r.zeroPartial || r.mappedItemID != "" {
+		return item
+	}
+	if gjson.GetBytes(item, "id").String() != "" {
+		return item
+	}
+	output := gjson.GetBytes(payload, "response.output")
+	if !output.IsArray() {
+		return item
+	}
+	for _, candidate := range output.Array() {
+		if candidate.Get("type").String() != "message" {
+			continue
+		}
+		if id := candidate.Get("id").String(); id != "" {
+			return json.RawMessage(r.setJSON(item, "id", id))
+		}
+	}
+	return item
 }
 
 func (r *openAIStreamContinuationReplayer) mergedTextItem(merged string) json.RawMessage {
