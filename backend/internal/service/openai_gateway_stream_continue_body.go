@@ -458,13 +458,15 @@ func (r *openAIStreamContinuationReplayer) flushOverlap() error {
 	if r.overlapDone {
 		return nil
 	}
-	r.overlapDone = true
 	pending := r.pendingDeltas
-	r.pendingDeltas = nil
-	r.pendingBytes = 0
 	if len(pending) == 0 {
+		// 首个 delta 之前的非 delta 事件（如 output_item.added）也会走到这里；
+		// 没有可裁内容时不得消耗重叠判定窗口，等首个带内容的 flush 再决策。
 		return nil
 	}
+	r.overlapDone = true
+	r.pendingDeltas = nil
+	r.pendingBytes = 0
 
 	var combined strings.Builder
 	for _, item := range pending {

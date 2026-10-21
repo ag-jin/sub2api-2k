@@ -475,18 +475,26 @@ func normalizeOpenAIStream503AutoContinueExtra(platform string, extra map[string
 	return normalized, nil
 }
 
-func normalizeOpenAIStream503AutoContinueUpdateExtra(account *Account, input *UpdateAccountInput) (map[string]any, error) {
-	normalized, err := normalizeOpenAIStream503AutoContinueExtra(account.Platform, input.Extra)
-	if err != nil || account.Platform != PlatformOpenAI {
-		return normalized, err
+func normalizeOpenAIStream503AutoContinueUpdateExtra(account *Account, input *UpdateAccountInput, merged map[string]any) (map[string]any, error) {
+	if account.Platform != PlatformOpenAI {
+		return merged, nil
+	}
+	if err := ValidateOpenAIStream503AutoContinueExtra(account.Platform, input.Extra); err != nil {
+		return nil, err
 	}
 
-	_, provided := input.Extra[openAIStream503AutoContinueKey]
-	current, hasCurrent := account.Extra[openAIStream503AutoContinueKey].(bool)
-	if !provided {
-		if hasCurrent {
-			normalized[openAIStream503AutoContinueKey] = current
-		}
+	// 必须从上一步合并结果（merged）继续链式归一化；直接归一化 input.Extra
+	// 会把未随本次更新提供的其它平台键全部丢弃（long-context 保留语义回归）。
+	normalized := maps.Clone(merged)
+	if normalized == nil {
+		normalized = make(map[string]any, 1)
+	}
+	if raw, provided := input.Extra[openAIStream503AutoContinueKey]; provided {
+		normalized[openAIStream503AutoContinueKey] = raw.(bool)
+	} else if current, hasCurrent := account.Extra[openAIStream503AutoContinueKey].(bool); hasCurrent {
+		normalized[openAIStream503AutoContinueKey] = current
+	} else {
+		normalized[openAIStream503AutoContinueKey] = false
 	}
 	return normalized, nil
 }
@@ -690,7 +698,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err != nil {
 			return nil, err
 		}
-		normalizedExtra, err = normalizeOpenAIStream503AutoContinueUpdateExtra(account, input)
+		normalizedExtra, err = normalizeOpenAIStream503AutoContinueUpdateExtra(account, input, normalizedExtra)
 		if err != nil {
 			return nil, err
 		}

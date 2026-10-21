@@ -127,7 +127,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 	t.Run("omitted key preserves previous enabled value", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{openAIStream503AutoContinueKey: true}}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{"other": "value"}})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{"other": "value"}}, map[string]any{"other": "value"})
 
 		require.NoError(t, err)
 		require.Equal(t, true, extra[openAIStream503AutoContinueKey])
@@ -136,7 +136,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 	t.Run("omitted key preserves previous disabled value", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{openAIStream503AutoContinueKey: false}}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{}})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{}}, map[string]any{})
 
 		require.NoError(t, err)
 		require.Equal(t, false, extra[openAIStream503AutoContinueKey])
@@ -145,7 +145,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 	t.Run("explicit true overrides previous disabled value", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{openAIStream503AutoContinueKey: false}}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: true}})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: true}}, map[string]any{openAIStream503AutoContinueKey: true})
 
 		require.NoError(t, err)
 		require.Equal(t, true, extra[openAIStream503AutoContinueKey])
@@ -154,7 +154,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 	t.Run("explicit false overrides previous enabled value", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{openAIStream503AutoContinueKey: true}}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: false}})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: false}}, map[string]any{openAIStream503AutoContinueKey: false})
 
 		require.NoError(t, err)
 		require.Equal(t, false, extra[openAIStream503AutoContinueKey])
@@ -163,7 +163,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 	t.Run("malformed value is rejected", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{openAIStream503AutoContinueKey: true}}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: "true"}})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: map[string]any{openAIStream503AutoContinueKey: "true"}}, map[string]any{})
 
 		require.Nil(t, extra)
 		require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
@@ -174,7 +174,7 @@ func TestNormalizeOpenAIStream503AutoContinueUpdateExtra(t *testing.T) {
 		account := &Account{Platform: PlatformAnthropic}
 		original := map[string]any{openAIStream503AutoContinueKey: "provider-owned"}
 
-		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: original})
+		extra, err := normalizeOpenAIStream503AutoContinueUpdateExtra(account, &UpdateAccountInput{Extra: original}, original)
 
 		require.NoError(t, err)
 		require.Equal(t, original, extra)
