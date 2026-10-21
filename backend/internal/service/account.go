@@ -90,6 +90,12 @@ type OpenAIEndpointCapability string
 
 const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"
 
+// OpenAIStream503AutoContinueExtraKey 跨包（repository 白名单）共享，避免字符串漂移。
+const OpenAIStream503AutoContinueExtraKey = "openai_stream_503_auto_continue"
+
+// openAIStream503AutoContinueKey 包内别名，对齐现有 key 命名风格。
+const openAIStream503AutoContinueKey = OpenAIStream503AutoContinueExtraKey
+
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
@@ -2268,6 +2274,18 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 		return enabled
 	}
 	return false
+}
+
+// IsOpenAIStream503AutoContinueEnabled 返回 OpenAI 账号是否开启“503 流式断开自动续跑”。
+//
+// 字段：accounts.extra.openai_stream_503_auto_continue（bool，默认 false）。
+// 字段缺失或类型不正确按 false 处理；平台门禁在此，账号类型门禁在转发层状态创建处。
+func (a *Account) IsOpenAIStream503AutoContinueEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[openAIStream503AutoContinueKey].(bool)
+	return ok && enabled
 }
 
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
