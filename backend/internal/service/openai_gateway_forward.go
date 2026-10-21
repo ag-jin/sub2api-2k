@@ -1117,6 +1117,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		attemptBody := body
 		if isContinuation {
+			// v1.1：零 partial 时 NextRequestBody 返回原始上游 body 的逐字节拷贝
+			// （纯重试，不追加 assistant 项/续写指令）；有 partial 时仍走 v1 拼接。
 			nextBody, buildErr := contState.NextRequestBody()
 			if buildErr != nil {
 				logOpenAIStream503AutoContinueExhausted(ctx, c, account, contState, "continuation_failed")
@@ -1414,6 +1416,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				if sig, ok := asOpenAIStreamContinueSignal(err); ok && contState != nil {
 					// 先聚合本次失败尝试的 attempt-local usage（裁定 #1：失败尝试也计入），
 					// 再决定是否继续。
+					// v1.1：预算/退避/总耗时对 partial 与零 partial 形态完全一致，
+					// 不区分形态、不新增配置项（design §3 决策 5）。
 					attemptUsage := OpenAIUsage{}
 					if streamResult != nil && streamResult.usage != nil {
 						attemptUsage = *streamResult.usage

@@ -219,6 +219,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 	if s.cfg != nil && s.cfg.Gateway.StreamKeepaliveInterval > 0 {
 		keepaliveInterval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
+	// 零 partial 续跑段可能存在“上游在跑但无可转发帧”的静默窗口；
+	// 全局 keepalive 关闭时对续跑 attempt 兜底 5s（不改变首段与开关关闭行为）。
+	if continuationAttempt && keepaliveInterval == 0 {
+		keepaliveInterval = 5 * time.Second
+	}
 	// 下游 keepalive 仅用于防止代理空闲断开
 	var keepaliveTicker *time.Ticker
 	if keepaliveInterval > 0 {
@@ -634,6 +639,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 					pendingCapacityMessage = failedMessage
 				}
 				// T1/T2 资格评估（权威门：openAIStream503AutoContinueEligible，裁定 #7）。
+				// v1.1 起输出形态分 A/B 两形态，由同一个 continuationOutputShapeEligible 判定：
+				// A = 文本 item 已打开（v1 partial 形态，判定逐字不变）；
+				// B = 零 partial 形态（只有 reasoning 帧，允许续跑）。
 				// T1 response.failed 对所有账号生效；T2 裸 error 仅对非 codex 终态账号生效
 				// —— OAuth/SetupToken 的上游可能随后翻盘成 response.completed。
 				var continuationSignal *openAIStreamContinueSignal

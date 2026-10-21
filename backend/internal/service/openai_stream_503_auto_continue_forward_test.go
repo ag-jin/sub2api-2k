@@ -53,7 +53,41 @@ const (
 
 	contForwardFunctionAdded = `{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":""},"sequence_number":4}`
 	contForwardFunctionDone  = `{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":"{}"},"sequence_number":5}`
+
+	// v1.1 零 partial：attempt-1 只下发 created / reasoning 帧。
+	contForwardZeroAttemptOneReasoningAdded = `{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]},"sequence_number":2}`
+	contForwardZeroAttemptOneReasoningDelta = `{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"thinking","sequence_number":3}`
+	contForwardZeroAttemptTwoReasoningAdded = `{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_2","type":"reasoning","summary":[]},"sequence_number":2}`
+	contForwardZeroAttemptTwoReasoningDelta = `{"type":"response.reasoning_summary_text.delta","item_id":"rs_2","output_index":0,"summary_index":0,"delta":"more","sequence_number":3}`
+	contForwardZeroMessageAdded             = `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":4}`
+	contForwardZeroAnswerDelta              = `{"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":5}`
 )
+
+// contForwardZeroPartialFailure 是“推理期容量降载”的 attempt-1：
+// 客户端只见过 created + reasoning 帧，没有任何文本 item。
+func contForwardZeroPartialFailure() *http.Response {
+	return contForwardStream(contForwardFirstRequestID,
+		contForwardCreatedFrame,
+		contForwardZeroAttemptOneReasoningAdded,
+		contForwardZeroAttemptOneReasoningDelta,
+		contForwardOverloaded,
+		contForwardFailedFrame,
+	)
+}
+
+// contForwardZeroPartialSuccess 是零 partial 的 attempt-2：
+// 新 reasoning 应被丢弃，message 保留自己的 id 并重排索引。
+func contForwardZeroPartialSuccess(requestID string) *http.Response {
+	return contForwardStream(requestID,
+		contForwardContinuationCreated,
+		contForwardZeroAttemptTwoReasoningAdded,
+		contForwardZeroAttemptTwoReasoningDelta,
+		contForwardZeroMessageAdded,
+		contForwardZeroAnswerDelta,
+		contForwardCompletedFrame(`{"input_tokens":2,"output_tokens":4}`,
+			`[{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]`),
+	)
+}
 
 func contForwardRequest() []byte {
 	return []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"say hello"}]}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
@@ -753,3 +787,166 @@ func (b *contForwardDelayedBody) Read(p []byte) (int, error) {
 }
 
 func (b *contForwardDelayedBody) Close() error { return nil }
+
+func TestOpenAIStream503AutoContinueForward_ZeroPartialContinuation(t *testing.T) {
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardZeroPartialFailure(),
+		contForwardZeroPartialSuccess(contForwardSecondRequestID),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	result, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	downstream := rec.Body.String()
+	require.Equal(t, 1, strings.Count(downstream, "event: response.created"), "只能有一个 response.created")
+	require.Equal(t, 1, strings.Count(downstream, "event: response.completed"), "只能有一个 response.completed")
+	require.Zero(t, strings.Count(downstream, "event: error"))
+	require.Zero(t, strings.Count(downstream, "event: response.failed"))
+	require.NotContains(t, downstream, "rs_2", "attempt-2 的 reasoning 事件必须不可见")
+	require.Equal(t, 1, strings.Count(downstream, `"id":"rs_1"`), "attempt-1 的 reasoning 只出现一次")
+	require.Equal(t, "answer", contForwardDeltas(downstream), "最终文本必须等于 attempt-2 文本且无重复")
+	requireContForwardSequencesAscending(t, downstream)
+
+	var messageIndex int64 = -1
+	for _, payload := range contForwardEventPayloads(downstream) {
+		if gjson.Get(payload, "type").String() == "response.output_item.added" &&
+			gjson.Get(payload, "item.type").String() == "message" {
+			messageIndex = gjson.Get(payload, "output_index").Int()
+			require.Equal(t, "msg_2", gjson.Get(payload, "item.id").String(),
+				"零模式必须保留 attempt-2 自己的 item id")
+		}
+	}
+	require.Equal(t, int64(1), messageIndex, "message 的 output_index 从 snapshot.nextOutputIndex 起")
+
+	terminal := contForwardTerminal(t, downstream)
+	require.Equal(t, "answer", terminal.Get("response.output.0.content.0.text").String())
+	require.Equal(t, int64(12), terminal.Get("response.usage.input_tokens").Int())
+	require.Equal(t, int64(9), terminal.Get("response.usage.output_tokens").Int())
+
+	require.Len(t, upstream.requests, 2)
+	require.True(t, bytes.Equal(upstream.bodies[0], upstream.bodies[1]),
+		"零 partial 续跑请求体必须与第 1 次逐字节相等")
+	require.NotContains(t, string(upstream.bodies[1]), "assistant")
+	require.NotContains(t, string(upstream.bodies[1]), openAIStream503AutoContinueInstruction)
+
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Equal(t, 9, result.Usage.OutputTokens)
+	require.Equal(t, contForwardFirstRequestID, result.RequestID)
+	require.Equal(t, "resp_1", result.ResponseID)
+
+	fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue")
+	require.NotNil(t, fields)
+	require.EqualValues(t, 0, fields["partial_text_bytes"])
+	require.EqualValues(t, 1, fields["continuation_index"])
+}
+
+func TestOpenAIStream503AutoContinueForward_ZeroPartialBudgetExhausted(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardZeroPartialFailure(),
+		contForwardZeroPartialFailure(),
+		contForwardZeroPartialFailure(),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	result, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 3, "1 次原始 + maxContinuations(2) 次续跑，第 4 次不得发生")
+
+	downstream := rec.Body.String()
+	require.Equal(t, 1, strings.Count(downstream, "event: response.failed"), "客户端恰好收到一个 response.failed")
+	require.Equal(t, 1, strings.Count(downstream, `"code":"server_error"`))
+	require.NotContains(t, downstream, "server_is_overloaded")
+	require.Contains(t, downstream, "Our servers are currently overloaded", "上游原文必须保留")
+
+	require.Equal(t, 30, result.Usage.InputTokens)
+	require.Equal(t, 15, result.Usage.OutputTokens)
+}
+
+func TestOpenAIStream503AutoContinueForward_ZeroPartialFunctionCallInProgressNotContinued(t *testing.T) {
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardStream(contForwardFirstRequestID,
+			contForwardCreatedFrame,
+			contForwardZeroAttemptOneReasoningAdded,
+			contForwardZeroAttemptOneReasoningDelta,
+			contForwardFunctionAdded,
+			contForwardOverloaded,
+			contForwardFailedFrame,
+		),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	_, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 1, "进行中的 function_call 不得续跑")
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: response.failed"))
+
+	fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
+	require.NotNil(t, fields)
+	require.Equal(t, "ineligible_output", fields["reason"])
+}
+
+func TestOpenAIStream503AutoContinueForward_ZeroPartialKeepaliveDuringSilentContinuation(t *testing.T) {
+	// 续跑 attempt 在等待上游首帧时是静默的；现有 keepalive 必须覆盖这段窗口。
+	// 延迟取 2.2s（> 2×keepalive）以确定性跨越一次 tick：1.5s 可能在
+	// `time.Since(lastDownstreamWriteAt) < keepaliveInterval` 的边界上被跳过。
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardZeroPartialFailure(),
+		contForwardResponse(contForwardSecondRequestID, &contForwardDelayedBody{
+			payload: []byte(contForwardSSE(
+				contForwardContinuationCreated,
+				contForwardZeroAttemptTwoReasoningAdded,
+				contForwardZeroAttemptTwoReasoningDelta,
+				contForwardZeroMessageAdded,
+				contForwardZeroAnswerDelta,
+				contForwardCompletedFrame(`{"input_tokens":2,"output_tokens":4}`,
+					`[{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]`),
+			)),
+			delay: 2200 * time.Millisecond,
+		}),
+	}}
+	svc := contTestService(config.GatewayConfig{StreamKeepaliveInterval: 1})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	result, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	downstream := rec.Body.String()
+	require.Contains(t, downstream, ":\n\n", "续跑静默期必须收到 SSE 注释 keepalive")
+	require.Equal(t, 1, strings.Count(downstream, "event: response.completed"))
+	require.Equal(t, "answer", contForwardDeltas(downstream))
+}
+
+func TestOpenAIStream503AutoContinueForward_ZeroPartialSwitchOffKeepsLegacy(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardZeroPartialFailure(),
+		contForwardZeroPartialSuccess(contForwardSecondRequestID),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	_, err := contForwardRun(t, svc, c, contForwardAccount(false), body)
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 1, "开关关闭时零 partial 请求只发 1 次上游")
+
+	downstream := rec.Body.String()
+	require.Equal(t, 1, strings.Count(downstream, "event: response.failed"))
+	require.Equal(t, 1, strings.Count(downstream, `"code":"server_error"`))
+}
