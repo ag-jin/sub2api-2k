@@ -85,6 +85,263 @@ func contBodySSE(lines ...string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// contBodyZeroSnapshot 是 v1.1 零快照模式的基线快照：
+// attempt-1 没有打开任何文本 item，因此 nextOutputIndex 从 1 起。
+func contBodyZeroSnapshot() *openAIStreamContinuationSnapshot {
+	return &openAIStreamContinuationSnapshot{
+		responseID:      "resp_first",
+		createdAt:       1700000000,
+		priorUsage:      OpenAIUsage{InputTokens: 10, OutputTokens: 5},
+		partialText:     "",
+		openTextItemID:  "",
+		openTextIndex:   0,
+		openTextContent: 0,
+		nextOutputIndex: 1,
+		lastSequence:    10,
+		keepOriginalID:  true,
+		zeroPartial:     true,
+	}
+}
+
+// contBodyZeroTextUpstream 模拟“attempt-1 只发过 reasoning”后 attempt-2 的流：
+// reasoning 应被丢弃，message 保留 attempt-2 自己的 id 并重排索引。
+func contBodyZeroTextUpstream() string {
+	return contBodySSE(
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_second"},"sequence_number":1}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_2","type":"reasoning","summary":[]},"sequence_number":2}`,
+		"",
+		"event: response.reasoning_summary_text.delta",
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_2","output_index":0,"summary_index":0,"delta":"thinking","sequence_number":3}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":4}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":5}`,
+		"",
+		"event: response.output_text.done",
+		`data: {"type":"response.output_text.done","item_id":"msg_2","output_index":0,"content_index":0,"text":"answer","sequence_number":6}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"answer","annotations":[]}]},"sequence_number":7}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[],"usage":{"input_tokens":2,"output_tokens":4}},"sequence_number":8}`,
+		"",
+	)
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialKeepsMessageIdentity(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	output := contBodyRun(t, contBodyZeroTextUpstream(), snapshot, nil, 0)
+
+	require.NotContains(t, output, `"type":"response.created"`)
+	require.NotContains(t, output, "reasoning")
+
+	frames := contBodyFrames(t, output)
+	require.Len(t, frames, 5)
+
+	added := frames[0]
+	require.Equal(t, "response.output_item.added", added.Get("type").String())
+	require.Equal(t, int64(1), added.Get("output_index").Int(), "首个 message 从 snapshot.nextOutputIndex 起")
+	require.Equal(t, "msg_2", added.Get("item.id").String(), "零模式保留 attempt-2 的 item id")
+
+	delta := frames[1]
+	require.Equal(t, "response.output_text.delta", delta.Get("type").String())
+	require.Equal(t, int64(1), delta.Get("output_index").Int())
+	require.Equal(t, "msg_2", delta.Get("item_id").String())
+	require.Equal(t, "answer", delta.Get("delta").String())
+
+	completed := frames[4]
+	require.Equal(t, "response.completed", completed.Get("type").String())
+	items := completed.Get("response.output").Array()
+	require.Len(t, items, 1)
+	require.Equal(t, "message", items[0].Get("type").String())
+	require.Equal(t, "msg_2", items[0].Get("id").String())
+	require.Equal(t, "answer", items[0].Get("content.0.text").String())
+
+	for index, frame := range frames {
+		require.Equal(t, int64(11+index), frame.Get("sequence_number").Int(),
+			"sequence_number 必须从 lastSequence+1 起严格递增")
+	}
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialMergesAttemptOneCompletedItems(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	snapshot.completedItems = []json.RawMessage{json.RawMessage(`{"id":"rs_1","type":"reasoning","summary":[]}`)}
+
+	output := contBodyRun(t, contBodyZeroTextUpstream(), snapshot, nil, 0)
+	completed := contBodyFrames(t, output)[len(contBodyFrames(t, output))-1]
+	items := completed.Get("response.output").Array()
+	require.Len(t, items, 2)
+	require.Equal(t, "reasoning", items[0].Get("type").String())
+	require.Equal(t, "rs_1", items[0].Get("id").String())
+	require.Equal(t, "message", items[1].Get("type").String())
+	require.Equal(t, "msg_2", items[1].Get("id").String())
+	require.Equal(t, "answer", items[1].Get("content.0.text").String())
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialAllocatesAfterHighestIndex(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	snapshot.nextOutputIndex = 2
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":1}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":2}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":""},"sequence_number":3}`,
+		"",
+		"event: response.function_call_arguments.delta",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"{}","sequence_number":4}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":5}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	messageIndex := int64(-1)
+	functionIndex := int64(-1)
+	for _, frame := range contBodyFrames(t, output) {
+		switch frame.Get("type").String() {
+		case "response.output_item.added":
+			switch frame.Get("item.type").String() {
+			case "message":
+				messageIndex = frame.Get("output_index").Int()
+			case "function_call":
+				functionIndex = frame.Get("output_index").Int()
+			}
+		case "response.function_call_arguments.delta":
+			require.Equal(t, int64(3), frame.Get("output_index").Int())
+		}
+	}
+	require.Equal(t, int64(2), messageIndex)
+	require.Equal(t, int64(3), functionIndex)
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialOmitsSyntheticMessageWhenNoText(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":""},"sequence_number":1}`,
+		"",
+		"event: response.function_call_arguments.delta",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{}","sequence_number":2}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":"{}"},"sequence_number":3}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[{"id":"fc_1","type":"function_call","name":"lookup","arguments":"{}"}],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":4}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	require.NotContains(t, output, `"type":"message"`)
+
+	completed := contBodyFrames(t, output)[len(contBodyFrames(t, output))-1]
+	items := completed.Get("response.output").Array()
+	require.Len(t, items, 1)
+	require.Equal(t, "function_call", items[0].Get("type").String())
+	require.Equal(t, "fc_1", items[0].Get("id").String())
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialKeepsDoneTextWithoutDeltas(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":1}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"full answer","annotations":[]}]},"sequence_number":2}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":3}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	var itemDone gjson.Result
+	for _, frame := range contBodyFrames(t, output) {
+		if frame.Get("type").String() == "response.output_item.done" {
+			itemDone = frame
+		}
+	}
+	require.True(t, itemDone.Exists())
+	require.Equal(t, "full answer", itemDone.Get("item.content.0.text").String())
+
+	completed := contBodyFrames(t, output)[len(contBodyFrames(t, output))-1]
+	require.Equal(t, "full answer", completed.Get("response.output.0.content.0.text").String(),
+		"空 runningText 不得清空上游 done 里的全文")
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialForwardsContentParts(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","content":[]},"sequence_number":1}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","item_id":"msg_2","output_index":0,"content_index":0,"part":{"type":"output_text","text":""},"sequence_number":2}`,
+		"",
+		"event: response.content_part.done",
+		`data: {"type":"response.content_part.done","item_id":"msg_2","output_index":0,"content_index":0,"part":{"type":"output_text","text":"answer"},"sequence_number":3}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":4}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":5}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	parts := 0
+	for _, frame := range contBodyFrames(t, output) {
+		switch frame.Get("type").String() {
+		case "response.content_part.added", "response.content_part.done":
+			parts++
+			require.Equal(t, int64(1), frame.Get("output_index").Int(), "content_part 索引必须重写为新索引")
+			require.Equal(t, "msg_2", frame.Get("item_id").String())
+			require.Equal(t, int64(0), frame.Get("content_index").Int())
+		}
+	}
+	require.Equal(t, 2, parts, "零模式下 content_part 不得被丢弃")
+}
+
+func TestOpenAIStreamContinuationBodyZeroPartialHandlesDeltaWithoutItemAdded(t *testing.T) {
+	snapshot := contBodyZeroSnapshot()
+	upstream := contBodySSE(
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"answer","sequence_number":1}`,
+		"",
+		"event: response.output_text.done",
+		`data: {"type":"response.output_text.done","item_id":"msg_2","output_index":0,"content_index":0,"text":"answer","sequence_number":2}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_second","output":[],"usage":{"input_tokens":1,"output_tokens":1}},"sequence_number":3}`,
+		"",
+	)
+
+	output := contBodyRun(t, upstream, snapshot, nil, 0)
+	frames := contBodyFrames(t, output)
+	require.Len(t, frames, 3)
+	require.Equal(t, "response.output_text.delta", frames[0].Get("type").String())
+	require.Equal(t, int64(1), frames[0].Get("output_index").Int())
+	require.Equal(t, "msg_2", frames[0].Get("item_id").String())
+
+	items := frames[2].Get("response.output").Array()
+	require.Len(t, items, 1)
+	require.Equal(t, "msg_2", items[0].Get("id").String(), "终态不得出现空 id 的合成 message")
+	require.Equal(t, "answer", items[0].Get("content.0.text").String())
+}
+
 func TestOpenAIStreamContinuationBodySplicesFirstMessage(t *testing.T) {
 	snapshot := contBodyTestSnapshot("Hello wor")
 	upstream := contBodySSE(
