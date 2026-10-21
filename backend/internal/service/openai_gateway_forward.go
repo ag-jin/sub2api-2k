@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // Forward forwards request to OpenAI API
@@ -1033,16 +1034,117 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	compactModelFallbackRetried := false
 	agentTaskRecoveryTried := false
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
+
+	// 503 流式断开自动续跑（design §5）：状态只在本次 Forward 的编排 goroutine 写。
+	// contState == nil（开关关闭 / 非目标账号 / 非流式）时所有新增分支短路，
+	// 第 1 次请求的 body 与行为保持逐字节一致。
+	contState := s.newOpenAIStreamContinuationState(account, c, reqStream, body)
+	aggregatedUsage := OpenAIUsage{}
+	aggregatedImageCount := 0
+	aggregatedSearchCount := 0
+	var aggregatedImageOutputSizes []string
+	var firstAttempt *openAIStreamFirstAttemptResult
+
+	// buildForwardResult 统一构造唯一一条 Forward 结果：usage 取聚合值，
+	// 身份/时间字段取第 1 次 attempt（design §6.2），Duration 覆盖整次 Forward。
+	buildForwardResult := func(
+		resp *http.Response,
+		responseID string,
+		firstTokenMs *int,
+		serviceTier *string,
+		upstreamModel string,
+		usage OpenAIUsage,
+		imageCount int,
+		searchCount int,
+		imageOutputSizes []string,
+	) *OpenAIForwardResult {
+		requestID := ""
+		var upstreamHeaders http.Header
+		if resp != nil {
+			requestID = resp.Header.Get("x-request-id")
+			upstreamHeaders = resp.Header
+		}
+		resultResponseID := responseID
+		resultFirstTokenMs := firstTokenMs
+		resultUpstreamModel := upstreamModel
+		resultServiceTier := resolvedOpenAIUpstreamServiceTier(c, serviceTier)
+		if contState != nil && firstAttempt != nil {
+			requestID = firstAttempt.requestID
+			upstreamHeaders = firstAttempt.upstreamHeaders
+			resultResponseID = firstAttempt.responseID
+			resultFirstTokenMs = firstAttempt.firstTokenMs
+			resultUpstreamModel = firstAttempt.upstreamModel
+			resultServiceTier = resolvedOpenAIUpstreamServiceTier(c, firstAttempt.serviceTier)
+		}
+		result := &OpenAIForwardResult{
+			RequestID:                     requestID,
+			UpstreamHeaders:               upstreamHeaders,
+			ResponseID:                    resultResponseID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			BillingModel:                  billingModel,
+			UpstreamModel:                 resultUpstreamModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+			ServiceTier:                   resultServiceTier,
+			ReasoningEffort:               reasoningEffort,
+			Stream:                        reqStream,
+			OpenAIWSMode:                  false,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  resultFirstTokenMs,
+		}
+		if imageCount > 0 {
+			result.ImageCount = imageCount
+			result.ImageSize = imageSizeTier
+			result.ImageInputSize = imageInputSize
+			result.ImageOutputSizes = imageOutputSizes
+			result.BillingModel = imageBillingModel
+		}
+		if searchCount > 0 && account != nil && account.IsGrok() {
+			result.SearchCount = searchCount
+		}
+		stampOpenAIResponsesUpstreamEndpoint(c, result)
+		return result
+	}
+
 	for {
+		isContinuation := contState != nil && contState.InContinuation()
+		if contState != nil && !isContinuation {
+			// 始终以“原始上游 body”为续跑请求体的基座：循环内的 retry 分支可能改写
+			// body，续跑 attempt 本身不覆盖它，避免第二次续跑重复追加 assistant item。
+			contState.SetCurrentBody(body)
+		}
+		attemptBody := body
+		if isContinuation {
+			nextBody, buildErr := contState.NextRequestBody()
+			if buildErr != nil {
+				logOpenAIStream503AutoContinueExhausted(ctx, c, account, contState, "continuation_failed")
+				s.writeOpenAIStreamContinuationExhausted(c, contState, contState.lastSignal, originalModel)
+				return buildForwardResult(
+					nil, "", nil, extractOpenAIServiceTierFromBody(body), upstreamModel,
+					aggregatedUsage, aggregatedImageCount, aggregatedSearchCount, aggregatedImageOutputSizes,
+				), fmt.Errorf("build openai stream continuation body: %w", buildErr)
+			}
+			attemptBody = nextBody
+		}
+
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		// R8：续跑 attempt 不再建 first-output header guard（startTime 仍是第 1 次的，
+		// 建 guard 会立刻以第 1 次的时间判超时）。
+		attemptFirstOutputTimeout := firstOutputTimeout
+		if isContinuation {
+			attemptFirstOutputTimeout = 0
+			upstreamCtx = withOpenAIContinuationAttempt(upstreamCtx)
+		}
 		var headerGuard *openAIFirstOutputHeaderGuard
-		if firstOutputTimeout > 0 {
+		if attemptFirstOutputTimeout > 0 {
 			upstreamCtx, headerGuard = newOpenAIFirstOutputHeaderGuard(
-				upstreamCtx, releaseUpstreamCtx, startTime.Add(firstOutputTimeout),
+				upstreamCtx, releaseUpstreamCtx, startTime.Add(attemptFirstOutputTimeout),
 			)
 		}
-		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
+		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, attemptBody, token, reqStream, promptCacheKey, isCodexCLI)
 		if headerGuard == nil {
 			releaseUpstreamCtx()
 		}
@@ -1071,7 +1173,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, s.newOpenAIFirstOutputTimeoutError(
 				ctx, c, account, opsUpstreamProxyID(account), opsUpstreamProxyName(account),
 				startTime, originalModel, reasoningEffortValue,
-				firstOutputTimeout, "response_headers", nil,
+				attemptFirstOutputTimeout, "response_headers", nil,
 			)
 		}
 		if err != nil {
@@ -1202,11 +1304,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		defer func() { _ = resp.Body.Close() }()
 
+		maxLineSize := defaultMaxLineSize
+		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+			maxLineSize = s.cfg.Gateway.MaxLineSize
+		}
+		// 顺序硬要求（design §3 决策 3）：拼接器必须最内层（紧贴上游），先于
+		// client-tool 还原器，这样它面对的是原始上游事件语义。
+		if isContinuation {
+			resp.Body = newOpenAIStreamContinuationBody(resp.Body, contState.Snapshot(), maxLineSize, contState)
+		}
 		if mapping, ok := openAIResponsesClientToolMapping(c); ok && isEventStreamResponse(resp.Header) {
-			maxLineSize := defaultMaxLineSize
-			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
-				maxLineSize = s.cfg.Gateway.MaxLineSize
-			}
 			resp.Body = newResponsesClientToolStreamBody(resp.Body, mapping, maxLineSize)
 		}
 
@@ -1221,8 +1328,24 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageCount := 0
 		searchCount := 0
 		var imageOutputSizes []string
+		captureFirstAttempt := func(result *openaiStreamingResult) {
+			if contState == nil || firstAttempt != nil {
+				return
+			}
+			attempt := &openAIStreamFirstAttemptResult{
+				requestID:       resp.Header.Get("x-request-id"),
+				upstreamHeaders: resp.Header,
+				serviceTier:     serviceTier,
+				upstreamModel:   upstreamModel,
+			}
+			if result != nil {
+				attempt.responseID = strings.TrimSpace(result.responseID)
+				attempt.firstTokenMs = result.firstTokenMs
+			}
+			firstAttempt = attempt
+		}
 		if reqStream {
-			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			streamResult, err := s.handleStreamingResponseWithReasoningState(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue, contState)
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
@@ -1260,8 +1383,81 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					}
 					return s.handleErrorResponse(ctx, compactResp, c, account, body, resolveOpenAIErrorSchedulingModel(billingModel, upstreamModel))
 				}
+				if sig, ok := asOpenAIStreamContinueSignal(err); ok && contState != nil {
+					// 先聚合本次失败尝试的 attempt-local usage（裁定 #1：失败尝试也计入），
+					// 再决定是否继续。
+					attemptUsage := OpenAIUsage{}
+					if streamResult != nil && streamResult.usage != nil {
+						attemptUsage = *streamResult.usage
+					}
+					addOpenAIUsage(&aggregatedUsage, attemptUsage)
+					if streamResult != nil {
+						aggregatedImageCount += streamResult.imageCount
+						aggregatedSearchCount += streamResult.searchCount
+						aggregatedImageOutputSizes = append(aggregatedImageOutputSizes, streamResult.imageOutputSizes...)
+					}
+					captureFirstAttempt(streamResult)
+					contState.RecordCapacitySignal(sig)
+					s.appendOpenAIStreamContinuationRetryOps(c, account, sig)
+					if canContinue, reason := contState.CanContinue(time.Now()); canContinue {
+						contState.BeginContinuation(aggregatedUsage, sig)
+						if !sleepCtx(contState.Backoff(), c.Request.Context()) {
+							// 客户端在退避期间取消：不再发上游请求。
+							return nil, context.Canceled
+						}
+						continue
+					} else {
+						logOpenAIStream503AutoContinueExhausted(ctx, c, account, contState, reason)
+					}
+					// 拒绝续跑：走现有 sanitize 路径写出恰好一个 response.failed，
+					// 并返回普通 error（不是 UpstreamFailoverError）与已聚合 result。
+					s.writeOpenAIStreamContinuationExhausted(c, contState, sig, originalModel)
+					return buildForwardResult(
+						resp, "", nil, serviceTier, upstreamModel,
+						aggregatedUsage, aggregatedImageCount, aggregatedSearchCount, aggregatedImageOutputSizes,
+					), fmt.Errorf("upstream response failed: %s", sig.Error())
+				}
+				// 非续跑错误：开关开启时仍保留已聚合 usage（一次 Forward 一条用量，
+				// 失败尝试的 token 不丢）；UpstreamFailoverError 必须保持 result=nil。
+				if contState != nil {
+					var failoverErr *UpstreamFailoverError
+					if !errors.As(err, &failoverErr) {
+						if streamResult != nil && streamResult.usage != nil {
+							addOpenAIUsage(&aggregatedUsage, *streamResult.usage)
+						}
+						if streamResult != nil {
+							aggregatedImageCount += streamResult.imageCount
+							aggregatedSearchCount += streamResult.searchCount
+							aggregatedImageOutputSizes = append(aggregatedImageOutputSizes, streamResult.imageOutputSizes...)
+						}
+						captureFirstAttempt(streamResult)
+						return buildForwardResult(
+							resp, "", nil, serviceTier, upstreamModel,
+							aggregatedUsage, aggregatedImageCount, aggregatedSearchCount, aggregatedImageOutputSizes,
+						), err
+					}
+				}
 				return nil, err
 			}
+			if streamResult != nil {
+				if streamResult.usage != nil {
+					if isContinuation {
+						// 05 已把续跑终态 usage 重写为 prior(此前 Σ) + 本次 local，就是裁定 #1
+						// 的 Σ；直接采用累计值，禁止再相加（会双计）。
+						aggregatedUsage = *streamResult.usage
+						if snapshot := contState.Snapshot(); snapshot != nil && *streamResult.usage == snapshot.priorUsage {
+							// 终态未携带 usage 时 05 用 priorUsage 兜底；此刻累计值不可能增长。
+							logOpenAIStream503AutoContinueTerminalUsageMissing(ctx, c, account, contState)
+						}
+					} else {
+						addOpenAIUsage(&aggregatedUsage, *streamResult.usage)
+					}
+				}
+				aggregatedImageCount += streamResult.imageCount
+				aggregatedSearchCount += streamResult.searchCount
+				aggregatedImageOutputSizes = append(aggregatedImageOutputSizes, streamResult.imageOutputSizes...)
+			}
+			captureFirstAttempt(streamResult)
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 			responseID = strings.TrimSpace(streamResult.responseID)
@@ -1308,38 +1504,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			usage = &OpenAIUsage{}
 		}
 
-		forwardResult := &OpenAIForwardResult{
-			RequestID:                     resp.Header.Get("x-request-id"),
-			UpstreamHeaders:               resp.Header,
-			ResponseID:                    responseID,
-			Usage:                         *usage,
-			Model:                         originalModel,
-			BillingModel:                  billingModel,
-			UpstreamModel:                 upstreamModel,
-			UpstreamResponseModel:         observedUpstreamResponseModel(c),
-			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
-			UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
-			ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-			ReasoningEffort:               reasoningEffort,
-			Stream:                        reqStream,
-			OpenAIWSMode:                  false,
-			Duration:                      time.Since(startTime),
-			FirstTokenMs:                  firstTokenMs,
+		resultUsage := *usage
+		resultImageCount := imageCount
+		resultSearchCount := searchCount
+		resultImageOutputSizes := imageOutputSizes
+		if contState != nil {
+			resultUsage = aggregatedUsage
+			resultImageCount = aggregatedImageCount
+			resultSearchCount = aggregatedSearchCount
+			resultImageOutputSizes = aggregatedImageOutputSizes
 		}
-		if imageCount > 0 {
-			forwardResult.ImageCount = imageCount
-			forwardResult.ImageSize = imageSizeTier
-			forwardResult.ImageInputSize = imageInputSize
-			forwardResult.ImageOutputSizes = imageOutputSizes
-			forwardResult.BillingModel = imageBillingModel
+		forwardResult := buildForwardResult(
+			resp, responseID, firstTokenMs, serviceTier, upstreamModel,
+			resultUsage, resultImageCount, resultSearchCount, resultImageOutputSizes,
+		)
+		if contState != nil && contState.Continuations() > 0 {
+			logOpenAIStream503AutoContinueOK(ctx, c, account, contState, startTime, forwardResult)
 		}
-		// Grok-native web_search / x_search / tool_search tool invocations (per-1k pricing).
-		// Token cost still applies separately when usage is present; search is additive only
-		// when search_price_per_1k is configured (nil price → $0 from CalculateSearchCost).
-		if searchCount > 0 && account != nil && account.IsGrok() {
-			forwardResult.SearchCount = searchCount
-		}
-		stampOpenAIResponsesUpstreamEndpoint(c, forwardResult)
 		return forwardResult, nil
 	}
 }
@@ -1450,6 +1631,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
 	// 剥离后再出站——异账号 blob 与本账号的（指纹收敛后）出站身份自相矛盾。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
+	// 续跑 attempt 不沿用入站 turn-state（design §3 决策 3 第 5 条）：上一回合的
+	// turn 状态与“部分输出重放”的新回合语义冲突。conversation_id / session_id
+	// 在下面对 UsesOpenAICodexProtocol 分支里按 prompt_cache_key 重新派生（裁定 #6）。
+	if isOpenAIContinuationAttempt(ctx) {
+		req.Header.Del(openAICodexTurnStateHeader)
+	}
 	if account.UsesOpenAICodexProtocol() {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
@@ -1545,4 +1732,192 @@ func (s *OpenAIGatewayService) codexIdentityOverrideUA(account *Account) string 
 		return ""
 	}
 	return account.GetOpenAIUserAgent()
+}
+
+// openAIStreamFirstAttemptResult 冻结第 1 次 attempt 的身份/时间字段，
+// 保证续跑后 OpenAIForwardResult 的 RequestID/ResponseID/FirstTokenMs 等仍取第 1 次
+// （design §6.2）。
+type openAIStreamFirstAttemptResult struct {
+	requestID       string
+	upstreamHeaders http.Header
+	responseID      string
+	firstTokenMs    *int
+	serviceTier     *string
+	upstreamModel   string
+}
+
+// openAIContinuationAttemptContextKey 标记“本次上游请求是 503 续跑 attempt”。
+// buildUpstreamRequest 在该标记下剥离入站 turn-state（design §3 决策 3 第 5 条）。
+type openAIContinuationAttemptContextKey struct{}
+
+func withOpenAIContinuationAttempt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, openAIContinuationAttemptContextKey{}, true)
+}
+
+func isOpenAIContinuationAttempt(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(openAIContinuationAttemptContextKey{}).(bool)
+	return enabled
+}
+
+// sleepCtx 是可被 ctx 取消的退避等待。返回 false 表示等待期间 ctx 已取消。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if ctx == nil {
+		if d > 0 {
+			time.Sleep(d)
+		}
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// appendOpenAIStreamContinuationRetryOps 每次续跑前追加一条 ops 事件
+// （design 决策 7：Kind=retry，Reason=openai_stream_503_auto_continue）。
+func (s *OpenAIGatewayService) appendOpenAIStreamContinuationRetryOps(c *gin.Context, account *Account, sig *openAIStreamContinueSignal) {
+	if sig == nil {
+		return
+	}
+	detail := ""
+	if s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		detail = truncateString(string(sig.capacityPayload), maxBytes)
+	}
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: http.StatusServiceUnavailable,
+		UpstreamRequestID:  sig.upstreamRequestID,
+		Kind:               "retry",
+		Reason:             "openai_stream_503_auto_continue",
+		Message:            sig.message,
+		Detail:             detail,
+	})
+}
+
+// writeOpenAIStreamContinuationExhausted 在 07 拒绝续跑时，按现有 sanitize 路径
+// 向客户端写出恰好一个 response.failed（code=server_error，保留上游原文）。
+// 06 的资格门是权威门，因此该分支只在“06 已放行但 07 复核拒绝”（例如总耗时跨线）
+// 或续跑请求体构造失败时使用；常规预算耗尽仍由 06 的既有路径下发。
+func (s *OpenAIGatewayService) writeOpenAIStreamContinuationExhausted(
+	c *gin.Context,
+	cont *openAIStreamContinuationState,
+	sig *openAIStreamContinueSignal,
+	model string,
+) {
+	if c == nil || c.Writer == nil || sig == nil {
+		return
+	}
+	payload := append([]byte(nil), sig.capacityPayload...)
+	if len(payload) == 0 {
+		return
+	}
+	if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(payload); changed {
+		payload = rewritten
+	}
+	var frame string
+	if effectiveOpenAISSEEventType(payload, "") == "error" {
+		// T3/T4 复用的是裸 error 帧：合成为协议合法的 response.failed 终态。
+		responseID := ""
+		createdAt := int64(0)
+		if cont != nil {
+			responseID = cont.responseID
+			createdAt = cont.createdAt
+		}
+		frame = buildOpenAIResponseFailedSSE(responseID, model, createdAt, payload, sig.message)
+	} else {
+		sanitized, _ := sanitizeOpenAIResponseFailedEventForClient(payload, "response.failed", true)
+		frame = "event: response.failed\ndata: " + string(sanitized) + "\n\n"
+	}
+	if _, err := c.Writer.WriteString(frame); err != nil {
+		return
+	}
+	c.Writer.Flush()
+	MarkResponseCommitted(c)
+}
+
+// logOpenAIStream503AutoContinueOK 是成功收尾日志（design §7.1）。
+func logOpenAIStream503AutoContinueOK(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	cont *openAIStreamContinuationState,
+	startTime time.Time,
+	result *OpenAIForwardResult,
+) {
+	if cont == nil {
+		return
+	}
+	extraElapsedMs := int64(0)
+	if !cont.firstTriggerAt.IsZero() {
+		extraElapsedMs = time.Since(cont.firstTriggerAt).Milliseconds()
+	}
+	aggInputTokens := 0
+	aggOutputTokens := 0
+	if result != nil {
+		aggInputTokens = result.Usage.InputTokens
+		aggOutputTokens = result.Usage.OutputTokens
+	}
+	fields := []zap.Field{
+		zap.String("path", "native_sse"),
+		zap.String("endpoint", openAIStreamContinuationEndpoint(c)),
+		zap.Int("continuation_count", cont.Continuations()),
+		zap.Int64("extra_elapsed_ms", extraElapsedMs),
+		zap.Int("agg_input_tokens", aggInputTokens),
+		zap.Int("agg_output_tokens", aggOutputTokens),
+		zap.Int("dropped_reasoning_events", cont.DroppedReasoningEvents()),
+		zap.Int("overlap_trimmed_bytes", cont.OverlapTrimmedBytes()),
+		zap.Int64("elapsed_ms", time.Since(startTime).Milliseconds()),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("platform", account.Platform),
+		)
+	}
+	logger.FromContext(ctx).Info("gateway.openai_stream_503_auto_continue_ok", fields...)
+}
+
+// logOpenAIStream503AutoContinueTerminalUsageMissing 记录“续跑终态未携带 usage”
+// （design §6.3.4）。05 会用 priorUsage 兜底重写终态，因此这里看到的是累计值未增长。
+func logOpenAIStream503AutoContinueTerminalUsageMissing(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	cont *openAIStreamContinuationState,
+) {
+	fields := []zap.Field{
+		zap.String("path", "native_sse"),
+		zap.String("endpoint", openAIStreamContinuationEndpoint(c)),
+		zap.Int("continuation_index", cont.Continuations()),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("platform", account.Platform),
+		)
+	}
+	logger.FromContext(ctx).Warn("gateway.openai_stream_503_auto_continue_usage_missing_on_continuation_terminal", fields...)
 }
