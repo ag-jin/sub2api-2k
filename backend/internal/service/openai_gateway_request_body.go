@@ -902,17 +902,21 @@ func normalizeOpenAICodexCompactReasoningEffort(body []byte, effectiveModel stri
 }
 
 func resolveOpenAICompactSessionID(c *gin.Context) string {
-	if c != nil {
-		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
+	if c == nil {
+		return uuid.NewString()
+	}
+	if c.Request != nil {
+		if sessionID := firstNonEmptyHeader(c.Request.Header, "session-id", "session_id"); sessionID != "" {
 			return sessionID
 		}
-		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
+		if conversationID := firstNonEmptyHeader(c.Request.Header, "conversation-id", "conversation_id"); conversationID != "" {
 			return conversationID
 		}
-		if seed, ok := c.Get(openAICompactSessionSeedKey); ok {
-			if seedStr, ok := seed.(string); ok && strings.TrimSpace(seedStr) != "" {
-				return strings.TrimSpace(seedStr)
-			}
+	}
+	// 同一压缩会话重试必须复用 seed，即使 Request 缺失（防御性路径）。
+	if seed, ok := c.Get(openAICompactSessionSeedKey); ok {
+		if seedStr, ok := seed.(string); ok && strings.TrimSpace(seedStr) != "" {
+			return strings.TrimSpace(seedStr)
 		}
 	}
 	return uuid.NewString()

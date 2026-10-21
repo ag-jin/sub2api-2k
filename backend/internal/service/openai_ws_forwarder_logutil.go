@@ -45,6 +45,13 @@ func openAIWSHeaderValueForLog(headers http.Header, key string) string {
 	return truncateOpenAIWSLogValue(headers.Get(key), openAIWSHeaderValueMaxLen)
 }
 
+// openAIWSHeaderValueForLogAny 依次尝试多个头名并返回第一个非空值。
+// 出站头已统一为连字符 session-id / thread-id，但老客户端与历史日志仍可能
+// 使用下划线写法，诊断日志必须两种形态都能看到。
+func openAIWSHeaderValueForLogAny(headers http.Header, names ...string) string {
+	return truncateOpenAIWSLogValue(firstNonEmptyHeader(headers, names...), openAIWSHeaderValueMaxLen)
+}
+
 func hasOpenAIWSHeader(headers http.Header, key string) bool {
 	if headers == nil {
 		return false
@@ -52,16 +59,23 @@ func hasOpenAIWSHeader(headers http.Header, key string) bool {
 	return strings.TrimSpace(headers.Get(key)) != ""
 }
 
+func hasOpenAIWSHeaderAny(headers http.Header, names ...string) bool {
+	return firstNonEmptyHeader(headers, names...) != ""
+}
+
 type openAIWSSessionHeaderResolution struct {
 	SessionID          string
+	ThreadID           string
 	ConversationID     string
 	SessionSource      string
+	ThreadSource       string
 	ConversationSource string
 }
 
 func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAIWSSessionHeaderResolution {
 	resolution := openAIWSSessionHeaderResolution{
 		SessionSource:      "none",
+		ThreadSource:       "none",
 		ConversationSource: "none",
 	}
 	if c != nil && c.Request != nil {
@@ -72,12 +86,27 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 			resolution.SessionID = sessionID
 			resolution.SessionSource = "header_session_id"
 		}
-		if conversationID := strings.TrimSpace(c.Request.Header.Get("conversation_id")); conversationID != "" {
+		if threadID := strings.TrimSpace(c.Request.Header.Get("thread-id")); threadID != "" {
+			resolution.ThreadID = threadID
+			resolution.ThreadSource = "header_thread-id"
+		} else if threadID := strings.TrimSpace(c.Request.Header.Get("thread_id")); threadID != "" {
+			resolution.ThreadID = threadID
+			resolution.ThreadSource = "header_thread_id"
+		} else if threadID := strings.TrimSpace(c.Request.Header.Get("x-client-request-id")); threadID != "" {
+			resolution.ThreadID = threadID
+			resolution.ThreadSource = "header_x-client-request-id"
+		}
+		// conversation 家族同时兼容连字符（官方 0.163）与下划线（老客户端）。
+		if conversationID := firstNonEmptyHeader(c.Request.Header, "conversation-id", "conversation_id"); conversationID != "" {
+			source := "header_conversation-id"
+			if strings.TrimSpace(c.Request.Header.Get("conversation-id")) == "" {
+				source = "header_conversation_id"
+			}
 			resolution.ConversationID = conversationID
-			resolution.ConversationSource = "header_conversation_id"
+			resolution.ConversationSource = source
 			if resolution.SessionID == "" {
 				resolution.SessionID = conversationID
-				resolution.SessionSource = "header_conversation_id"
+				resolution.SessionSource = source
 			}
 		}
 	}

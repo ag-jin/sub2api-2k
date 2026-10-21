@@ -58,6 +58,59 @@ func TestOpenAIGatewayService_Forward_CompactOnlyModelMappingOverridesOAuthUpstr
 	require.Equal(t, "gpt-5.4-openai-compact", opsModel)
 }
 
+// compact 非透传路径也必须进入指纹头合成（与账号探测同构），但 compact
+// body 形态不同，不得写入 client_metadata。
+func TestOpenAIGatewayService_Forward_CompactSynthesizesFingerprintHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"compact-test","input":"hello"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact-fp"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_123","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          2,
+		Name:        "openai-oauth-compact-fp",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-compact-acc",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+
+	headers := upstream.lastReq.Header
+	require.NotEmpty(t, headers.Get("x-codex-installation-id"), "compact 真实路径必须合成 installation-id")
+	require.NotEmpty(t, headers.Get("session-id"))
+	threadID := headers.Get("thread-id")
+	require.NotEmpty(t, threadID, "compact 真实路径必须合成 thread-id")
+	require.Equal(t, threadID+":0", headers.Get("x-codex-window-id"))
+	turnMetadata := headers.Get("x-codex-turn-metadata")
+	require.NotEmpty(t, turnMetadata)
+	require.Equal(t, headers.Get("session-id"), gjson.Get(turnMetadata, "session_id").String())
+	require.Equal(t, threadID, gjson.Get(turnMetadata, "thread_id").String())
+	require.Equal(t, "turn", gjson.Get(turnMetadata, "request_kind").String())
+	require.Empty(t, headers.Get("version"))
+
+	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists(),
+		"compact body 形态不同，不得写入 client_metadata")
+}
+
 func TestOpenAIGatewayService_Forward_APIKeyCompactSanitizesStatelessReplayAfterStoreWasDropped(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

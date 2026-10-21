@@ -137,7 +137,8 @@ func TestOpenAISetupTokenWSCompatibility(t *testing.T) {
 	require.Equal(t, "chatgpt-setup", headers.Get("chatgpt-account-id"))
 	require.NotEmpty(t, headers.Get("originator"))
 	require.Equal(t, "session-one", session.SessionID)
-	require.NotEqual(t, session.SessionID, headers.Get("session_id"))
+	require.NotEqual(t, session.SessionID, headers.Get("session-id"))
+	require.Empty(t, headers.Get("session_id"))
 
 	payload := svc.buildOpenAIWSCreatePayload(map[string]any{"store": true}, account)
 	require.Equal(t, false, payload["store"])
@@ -227,7 +228,8 @@ func TestOpenAISetupTokenMessagesUsesCodexBridgeAndTurnState(t *testing.T) {
 	require.NotNil(t, secondResult)
 	require.True(t, isOpenAICompatMessagesBridgeContext(secondCtx))
 	require.Equal(t, "turn_state_setup", upstream.requests[1].Header.Get("x-codex-turn-state"))
-	require.Equal(t, generateSessionUUID(isolateOpenAIUpstreamSessionID(0, account, "stable-cache-key")), upstream.requests[1].Header.Get("session_id"))
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "stable-cache-key"), upstream.requests[1].Header.Get("session-id"))
+	require.Empty(t, upstream.requests[1].Header.Get("session_id"))
 	require.Empty(t, upstream.requests[1].Header.Get("conversation_id"))
 	requireOpenAIMessagesCodexIdentity(t, upstream.requests[1], codexCLIUserAgent, "codex-tui")
 }

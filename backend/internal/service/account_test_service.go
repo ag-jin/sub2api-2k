@@ -2501,8 +2501,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	}
 	probeSessionID := compactProbeSessionID(account.ID)
-	req.Header.Set("Session_ID", probeSessionID)
-	req.Header.Set("Conversation_ID", probeSessionID)
+	// 官方 0.163 使用连字符头名；探测流量与真实转发保持同一形态。
+	req.Header.Set("session-id", probeSessionID)
+	req.Header.Set("thread-id", probeSessionID)
 
 	if isOAuth {
 		req.Host = "chatgpt.com"
