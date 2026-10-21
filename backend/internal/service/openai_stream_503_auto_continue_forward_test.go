@@ -29,6 +29,7 @@ import (
 const (
 	contForwardFirstRequestID  = "rid-cont-forward-1"
 	contForwardSecondRequestID = "rid-cont-forward-2"
+	contForwardThirdRequestID  = "rid-cont-forward-3"
 
 	contForwardCreatedFrame = `{"type":"response.created","sequence_number":1,"response":{"id":"resp_1","created_at":1700000000}}`
 	contForwardMessageAdded = `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]},"sequence_number":2}`
@@ -43,6 +44,12 @@ const (
 
 	contForwardReasoningAdded = `{"type":"response.output_item.added","output_index":1,"item":{"id":"rs_1","type":"reasoning","summary":[]},"sequence_number":3}`
 	contForwardReasoningDelta = `{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":1,"summary_index":0,"delta":"thinking","sequence_number":4}`
+
+	// 三段拼接用例：每段都在文本中途被容量降载打断（前两段）或正常收尾（第三段）。
+	contForwardSegment1Delta = `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello ","sequence_number":3}`
+	contForwardSegment2Delta = `{"type":"response.output_text.delta","item_id":"msg_2","output_index":0,"content_index":0,"delta":"wor","sequence_number":3}`
+	contForwardSegment3Added = `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_3","type":"message","role":"assistant","content":[]},"sequence_number":2}`
+	contForwardSegment3Delta = `{"type":"response.output_text.delta","item_id":"msg_3","output_index":0,"content_index":0,"delta":"ld!","sequence_number":3}`
 
 	contForwardFunctionAdded = `{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":""},"sequence_number":4}`
 	contForwardFunctionDone  = `{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":"{}"},"sequence_number":5}`
@@ -87,6 +94,18 @@ func contForwardResponse(requestID string, body io.ReadCloser) *http.Response {
 
 func contForwardStream(requestID string, events ...string) *http.Response {
 	return contForwardResponse(requestID, io.NopCloser(strings.NewReader(contForwardSSE(events...))))
+}
+
+// contForwardJSONErrorResponse 模拟上游在出流前直接返回 HTTP 错误（非 SSE）。
+func contForwardJSONErrorResponse(requestID string, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"X-Request-Id": []string{requestID},
+		},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}
 }
 
 // contForwardSSE 按真实上游形态生成 event + data 行，便于断言
@@ -304,6 +323,120 @@ func TestOpenAIStream503AutoContinueForward_BudgetExhausted(t *testing.T) {
 	require.Equal(t, 30, result.Usage.InputTokens)
 	require.Equal(t, 15, result.Usage.OutputTokens)
 	require.True(t, logSink.ContainsMessage("gateway.openai_stream_503_auto_continue_exhausted"))
+}
+
+// B1 回归：续跑 attempt 在“上游还没出流”就返回 HTTP 503 时，
+// 不得退化为换号 failover、不得把 JSON 错误体追加到已提交的 SSE、
+// 不得登记账号健康副作用；客户端只收到恰好一个 response.failed，
+// usage 仍须取含此前尝试的 Σ（一次 Forward 一条用量）。
+func TestOpenAIStream503AutoContinueForward_ContinuationHTTP503KeepsUsage(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardStream(contForwardFirstRequestID,
+			contForwardCreatedFrame,
+			contForwardMessageAdded,
+			contForwardHelloDelta,
+			contForwardOverloaded,
+			contForwardFailedFrame,
+		),
+		contForwardJSONErrorResponse(contForwardSecondRequestID, http.StatusServiceUnavailable,
+			`{"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
+		),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	account := contForwardAccount(true)
+	c, rec, body := contForwardContext(nil)
+
+	result, err := contForwardRun(t, svc, c, account, body)
+	require.Error(t, err)
+	require.NotNil(t, result, "续跑前置失败仍须返回已聚合的 result（一次 Forward 一条用量）")
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "续跑路径不得退化为换号 failover")
+	require.Len(t, upstream.requests, 2)
+
+	// usage = 第 1 次（失败尝试）10/5；第 2 次尚未出流，无 local usage。
+	require.Equal(t, 10, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+	require.Equal(t, contForwardFirstRequestID, result.RequestID)
+	require.Equal(t, "resp_1", result.ResponseID)
+
+	downstream := rec.Body.String()
+	require.Equal(t, 1, strings.Count(downstream, "event: response.failed"), "客户端必须收到恰好一个 response.failed")
+	require.Zero(t, strings.Count(downstream, "event: error"))
+	require.Contains(t, downstream, "Our servers are currently overloaded")
+	require.NotContains(t, downstream, "server_is_overloaded", "降载码须被改写为客户端可重试的 server_error")
+	// 已提交的 SSE 流里不得混入裸 JSON 错误体（每条 data 帧都必须带 type）。
+	for _, payload := range contForwardEventPayloads(downstream) {
+		require.NotEmpty(t, gjson.Get(payload, "type").String(), "不得向已提交的 SSE 流追加裸 JSON: %s", payload)
+	}
+
+	// 不登记 failover/健康副作用：账号状态保持不变，ops 里不得出现 failover 事件。
+	require.Equal(t, StatusActive, account.Status)
+	require.True(t, account.Schedulable)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.Empty(t, account.ErrorMessage)
+	if raw, ok := c.Get(OpsUpstreamErrorsKey); ok {
+		events, _ := raw.([]*OpsUpstreamErrorEvent)
+		for _, ev := range events {
+			require.NotEqual(t, "failover", ev.Kind, "续跑 attempt 出流前失败不得登记 failover 副作用")
+		}
+	}
+}
+
+// M1 回归：两次续跑都走到终态时，客户端看到三段文本无缝拼接、恰好一个
+// response.completed，sequence_number 跨三段严格递增，usage = 三段 Σ。
+func TestOpenAIStream503AutoContinueForward_TwoContinuationsSpliceThreeSegments(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		contForwardStream(contForwardFirstRequestID,
+			contForwardCreatedFrame,
+			contForwardMessageAdded,
+			contForwardSegment1Delta,
+			contForwardOverloaded,
+			contForwardFailedFrame,
+		),
+		contForwardStream(contForwardSecondRequestID,
+			contForwardContinuationCreated,
+			contForwardContinuationAdded,
+			contForwardSegment2Delta,
+			contForwardOverloaded,
+			contForwardFailedFrame,
+		),
+		contForwardStream(contForwardThirdRequestID,
+			contForwardContinuationCreated,
+			contForwardSegment3Added,
+			contForwardSegment3Delta,
+			contForwardCompletedFrame(`{"input_tokens":2,"output_tokens":4}`, contForwardTextOutput()),
+		),
+	}}
+	svc := contTestService(config.GatewayConfig{})
+	svc.httpUpstream = upstream
+	c, rec, body := contForwardContext(nil)
+
+	result, err := contForwardRun(t, svc, c, contForwardAccount(true), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 3, "1 次原始 + 2 次续跑")
+
+	// 第 3 次请求体必须基于累计 partial "Hello wor" 构造。
+	require.Contains(t, string(upstream.bodies[2]), "Hello wor")
+
+	downstream := rec.Body.String()
+	require.Equal(t, "Hello world!", contForwardDeltas(downstream), "三段文本拼接后不得重复")
+	require.Equal(t, 1, strings.Count(downstream, "event: response.created"))
+	require.Equal(t, 1, strings.Count(downstream, "event: response.completed"))
+	require.Zero(t, strings.Count(downstream, "event: response.failed"))
+	require.Zero(t, strings.Count(downstream, "event: error"))
+	requireContForwardSequencesAscending(t, downstream)
+
+	terminal := contForwardTerminal(t, downstream)
+	require.Equal(t, "Hello world!", terminal.Get("response.output.0.content.0.text").String())
+	// 三段 usage：10/5 + 10/5 + 2/4 = 22/14。
+	require.Equal(t, int64(22), terminal.Get("response.usage.input_tokens").Int())
+	require.Equal(t, int64(14), terminal.Get("response.usage.output_tokens").Int())
+	require.Equal(t, 22, result.Usage.InputTokens)
+	require.Equal(t, 14, result.Usage.OutputTokens)
+	require.Equal(t, contForwardFirstRequestID, result.RequestID)
+	require.Equal(t, "resp_1", result.ResponseID)
 }
 
 func TestOpenAIStream503AutoContinueForward_ToolCallInProgressNotContinued(t *testing.T) {

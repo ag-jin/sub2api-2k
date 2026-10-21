@@ -1183,6 +1183,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if headerGuard != nil {
 				headerGuard.close()
 			}
+			// B1：续跑 attempt 在出流前传输失败时，06 尚未下发本次失败事件，
+			// 客户端已提交的 SSE 只能以恰好一个 response.failed 收尾。不得退化为
+			// 换号 failover、不得写 JSON、不得登记账号健康副作用；usage 仍须返回
+			// 已聚合的 Σ（一次 Forward 一条用量）。
+			if isContinuation {
+				s.writeOpenAIStreamContinuationExhausted(c, contState, contState.lastSignal, originalModel)
+				return buildForwardResult(
+					nil, "", nil, extractOpenAIServiceTierFromBody(body), upstreamModel,
+					aggregatedUsage, aggregatedImageCount, aggregatedSearchCount, aggregatedImageOutputSizes,
+				), fmt.Errorf("openai stream continuation transport failure: %w", err)
+			}
 			// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 			// a failover so the handler switches to a healthy account, and temporarily
 			// unschedule the account on durable faults (e.g. rejected proxy credentials).
@@ -1196,6 +1207,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if resp.StatusCode >= 400 {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
+			// B1：续跑 attempt 在出流前收到 HTTP 错误时，06 尚未下发本次失败事件，
+			// 已提交的 SSE 只能以恰好一个 response.failed 收尾（与
+			// writeOpenAIStreamContinuationExhausted 同一 sanitize 语义）。不得走
+			// failover/重试、不得把 JSON 错误体追加到流里、不得登记账号健康副作用；
+			// usage 仍须返回已聚合的 Σ（一次 Forward 一条用量）。
+			if isContinuation {
+				s.writeOpenAIStreamContinuationExhausted(c, contState, contState.lastSignal, originalModel)
+				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+				if upstreamMsg == "" {
+					upstreamMsg = fmt.Sprintf("upstream status %d", resp.StatusCode)
+				}
+				return buildForwardResult(
+					resp, "", nil, extractOpenAIServiceTierFromBody(body), upstreamModel,
+					aggregatedUsage, aggregatedImageCount, aggregatedSearchCount, aggregatedImageOutputSizes,
+				), fmt.Errorf("openai stream continuation upstream error: %d %s", resp.StatusCode, upstreamMsg)
+			}
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
