@@ -191,6 +191,12 @@ func resolveCodexFingerprintSeed(account *Account) (string, bool) {
 
 func prepareCodexFingerprintExtraForCreate(platform, accountType string, extra map[string]any) map[string]any {
 	prepared := stripCodexFingerprintSeed(extra)
+	// seed 只服务于 OpenAI OAuth / setup-token 的 Codex 指纹收敛。API-key 账号
+	// 运行期 GetCodexFingerprintMode 恒为 off（不参与指纹），即使 extra 里显式
+	// 写了 session/full 也不得铸造或持久化 seed——创建/复制路径一律 strip-only。
+	if platform != PlatformOpenAI || (accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken) {
+		return prepared
+	}
 	if !codexFingerprintModeRequiresSeed(resolvedCodexFingerprintMode(platform, accountType, prepared)) {
 		return prepared
 	}

@@ -2349,7 +2349,15 @@ func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyO
 	require.Equal(t, "body-session", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 	require.Equal(t, "body-session", gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").Exists())
-	require.Empty(t, upstream.lastReq.Header.Get("x-codex-window-id"))
+	// SPEC-2 决策：compact 真实路径与账号探测同构（account_test_service 的探测
+	// 也要求合成身份头）——官方 Codex 的所有请求含 compaction 都携带身份头，
+	// 因此这里不再要求 window-id 为空，而是校验合成的 <thread>:0 形态。
+	windowID := upstream.lastReq.Header.Get("x-codex-window-id")
+	require.NotEmpty(t, windowID, "compact 真实路径必须合成 x-codex-window-id")
+	threadID := upstream.lastReq.Header.Get("thread-id")
+	require.NotEmpty(t, threadID, "compact 真实路径必须合成 thread-id")
+	require.Equal(t, threadID, strings.TrimSuffix(windowID, ":0"), "window-id 必须是 <thread>:0 形态")
+	require.True(t, strings.HasSuffix(windowID, ":0"), "window-id 必须以 :0 结尾")
 }
 
 func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPromptCacheKey(t *testing.T) {

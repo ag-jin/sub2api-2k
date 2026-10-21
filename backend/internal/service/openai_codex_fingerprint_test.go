@@ -586,7 +586,9 @@ func TestFingerprintIDs_SessionModePreservesClientRequestKind(t *testing.T) {
 	clientMetadata, ok := reqBody["client_metadata"].(map[string]any)
 	require.True(t, ok)
 	var bodyMeta map[string]any
-	require.NoError(t, json.Unmarshal([]byte(clientMetadata["x-codex-turn-metadata"].(string)), &bodyMeta))
+	embeddedBodyMetadata, ok := clientMetadata["x-codex-turn-metadata"].(string)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(embeddedBodyMetadata), &bodyMeta))
 	assert.Equal(t, "compaction", bodyMeta["request_kind"], "body 内嵌 request_kind 不得被改写")
 }
 
@@ -618,7 +620,9 @@ func TestFingerprintIDs_HeaderAndBodyEmbeddedMetadataParity(t *testing.T) {
 	clientMetadata, ok := reqBody["client_metadata"].(map[string]any)
 	require.True(t, ok)
 	var bodyMeta map[string]any
-	require.NoError(t, json.Unmarshal([]byte(clientMetadata["x-codex-turn-metadata"].(string)), &bodyMeta))
+	embeddedBodyMetadata, ok := clientMetadata["x-codex-turn-metadata"].(string)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(embeddedBodyMetadata), &bodyMeta))
 
 	assert.Equal(t, "turn", headerMeta["request_kind"])
 	assert.Equal(t, headerMeta, bodyMeta, "头与 body 内嵌 turn-metadata 必须逐字段一致")
@@ -774,7 +778,10 @@ func TestBuildUpstreamRequest_APIKeyPreservesVersionHeaderOverride(t *testing.T)
 
 	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{"model":"gpt-5.6-sol","input":[]}`), "sk-test", true, "", false)
 	require.NoError(t, err)
-	assert.Equal(t, "2026-01-01", req.Header.Get("version"),
+	// 覆写表以 wire casing 直写 http.Header（见 ApplyHeaderOverrides/resolveWireCasing），
+	// "version" 不在 headerWireCasing 表中，键保持小写；Header.Get 的 canonical
+	// 查找（"Version"）会 miss，故按大小写不敏感方式取实际出站值。
+	assert.Equal(t, "2026-01-01", headerValueFold(req.Header, "version"),
 		"非 Codex 协议上游必须保留管理员 version 头覆写")
 }
 
