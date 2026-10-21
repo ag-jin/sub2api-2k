@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -49,16 +50,35 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
+	return s.handleStreamingResponseWithReasoningState(ctx, resp, c, account, startTime, originalModel, mappedModel, reasoningEffort, nil)
+}
+
+// handleStreamingResponseWithReasoningState 是 native SSE 流处理的可选续跑变体。
+//
+// cont 为 nil 时（开关关闭 / 非目标账号 / 非续跑场景），本函数与旧签名
+// handleStreamingResponseWithReasoning 逐字节等价：所有新增分支都以 cont 为前置
+// 条件短路，观察调用零开销返回。
+//
+// cont 非 nil 时：
+//   - 每帧调用 observeOpenAIStreamContinuationEvent 维护 handler 侧观察态；
+//   - 输出已开始后遇到明确的容量降载信号（T1 response.failed / T2 裸 error /
+//     T3 降载帧后读错误 / T4 降载帧后空闲超时）时返回 *openAIStreamContinueSignal，
+//     不写客户端、不做账号健康副作用；编排由 Forward（07）负责。
+func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string, cont *openAIStreamContinuationState) (*openaiStreamingResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
 	}
+	// 续跑 attempt 已经向客户端输出过内容：first-output 超时与 first-output
+	// staging 必须关闭，否则会用第 1 次的 startTime 立即判超时，或把续跑段
+	// 再次暂存后无法与已提交的流拼接（design R8）。
+	continuationAttempt := cont.InContinuation()
 	firstOutputTimeout := time.Duration(0)
-	if account != nil && account.Platform == PlatformOpenAI {
+	if !continuationAttempt && account != nil && account.Platform == PlatformOpenAI {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
 	}
 	guardFirstOutput := firstOutputTimeout > 0
-	stageFirstOutput := account != nil && account.Platform == PlatformOpenAI
+	stageFirstOutput := !continuationAttempt && account != nil && account.Platform == PlatformOpenAI
 	var attemptResponseHeaders http.Header
 	if stageFirstOutput {
 		if s.responseHeaderFilter != nil {
@@ -261,6 +281,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	suppressCurrentEvent := false
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
+	// pendingCapacityPayload 是本次 attempt 内最近一次容量降载帧（T1/T2 落点记录），
+	// 随后若读错误（T3）或空闲超时（T4），复用同一 payload 构造续跑信号，不重新分类。
+	// 它必须是流处理函数的局部变量：随本次调用生灭，不进入跨 attempt 的 cont 状态，
+	// 避免并发共享与上一次 attempt 的残留。
+	var pendingCapacityPayload []byte
+	pendingCapacityMessage := ""
+	continuationExhaustedLogged := false
 	pendingSSEEventType := ""
 	eventInProgress := false
 	eventStartsClientOutput := false
@@ -339,6 +366,38 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		// The handler must not append its generic failure after this error event.
 		MarkResponseCommitted(c)
 	}
+	// 续跑放弃日志：仅当“确实是容量降载、开关开启、但资格谓词拒绝”时记录一次。
+	// disabled/account/not_capacity 不记，避免开关关闭时产生噪声（design §7.1）；
+	// 同一 attempt 内 T1/T2 与 T3/T4 可能对同一降载帧重复评估，只保留第一条。
+	logContinuationExhaustedOnce := func(reason string) {
+		if continuationExhaustedLogged || !isOpenAIStream503AutoContinueExhaustedReason(reason) {
+			return
+		}
+		logOpenAIStream503AutoContinueExhausted(ctx, c, account, cont, reason)
+		continuationExhaustedLogged = true
+	}
+	// continuationSignalFromPendingCapacity 是 T3/T4 共用的判定：本次 attempt 已记录
+	// 容量降载帧、已向客户端输出、且客户端未断开时，复用同一 payload 过资格门。
+	// 返回 nil 表示保持现有读错误/超时路径。
+	continuationSignalFromPendingCapacity := func() *openAIStreamContinueSignal {
+		// 已经向客户端写出失败事件（response.failed / error）后不得再续跑：
+		// 续跑段将与已下发的终态冲突。
+		if cont == nil || len(pendingCapacityPayload) == 0 || clientDisconnected ||
+			failureDelivered || errorEventSent ||
+			!openAIStreamClientOutputStarted(c, clientOutputStarted) {
+			return nil
+		}
+		sig, reason := s.openAIStreamCapacityContinueSignal(
+			cont, c, account, pendingCapacityPayload, true, false,
+			pendingCapacityMessage, upstreamRequestID, usage,
+		)
+		if sig == nil {
+			logContinuationExhaustedOnce(reason)
+			return nil
+		}
+		logOpenAIStream503AutoContinueTrigger(ctx, c, account, cont, startTime, originalModel, upstreamRequestID)
+		return sig
+	}
 
 	needModelReplace := originalModel != mappedModel
 	var createdAtStamper responsesCreatedAtStamper
@@ -376,6 +435,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if stageFirstOutput && eventInProgress {
 			// EOF dispatches the final SSE event even without a trailing blank line.
 			completeGuardedEvent(true)
+		}
+		// 干净 EOF 落在 finalizeStream，而不是 handleScanErr：若本次 attempt 已记录
+		// 容量降载帧并已输出，必须在此优先返回续跑信号，且早于下面把 bare error
+		// 合成为 response.failed / 应用账号健康副作用。
+		if sig := continuationSignalFromPendingCapacity(); sig != nil {
+			_ = resp.Body.Close()
+			return resultWithUsage(), sig
 		}
 		if codexFailureTerminal && sawBareError && !sawResponseFailed && bareErrorAccountSideEffectsPending {
 			s.handleOpenAIStreamTerminalAccountSideEffects(c, account, bareErrorPayload, failedMessage, resp.Header, mappedModel)
@@ -458,6 +524,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			sendErrorEvent("response_too_large", "Upstream response exceeded the size limit")
 			return resultWithUsage(), scanErr, true
 		}
+		// T3：本次 attempt 已记录明确的容量降载帧，随后读错误/EOF。只有这种
+		// “先降载、后断流”的组合才升级为续跑；纯断流保持现有 stream_read_error 路径。
+		if sig := continuationSignalFromPendingCapacity(); sig != nil {
+			_ = resp.Body.Close()
+			return resultWithUsage(), sig, true
+		}
 		if !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
 			msg := "OpenAI stream disconnected before completion"
 			if errText := strings.TrimSpace(scanErr.Error()); errText != "" {
@@ -503,6 +575,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			// 续跑观察接线：cont == nil（开关关闭/非目标账号）时零开销直接返回。
+			// 必须在 sanitize/归一化之前观察原始上游语义（delta/item/refusal/图片）。
+			s.observeOpenAIStreamContinuationEvent(cont, dataBytes, eventType)
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
@@ -510,18 +585,18 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				if strings.TrimSpace(data) == "[DONE]" {
 					terminalEventType = "[DONE]"
 				}
+				// 除 error / response.failed 外的终态（completed 翻盘、incomplete 等）
+				// 表示本次 attempt 已自行收尾：此前记录的降载帧不再代表结局，
+				// 不能让 finalizeStream / 读错误把它升级成续跑。
+				if eventType != "error" && eventType != "response.failed" {
+					pendingCapacityPayload = nil
+					pendingCapacityMessage = ""
+				}
 			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			forceFlushFailedEvent := false
-			if !capacityFailoverSuppressedLogged && account != nil && account.Platform == PlatformOpenAI &&
-				(eventType == "error" || eventType == "response.failed") &&
-				openAIStreamClientOutputStarted(c, clientOutputStarted) &&
-				isOpenAIUpstreamCapacityShedEvent(dataBytes) {
-				logOpenAICapacityFailoverSuppressed(ctx, account, "native_sse", upstreamRequestID, eventType)
-				capacityFailoverSuppressedLogged = true
-			}
 			cyberHit := false
 			if eventType == "response.failed" || eventType == "error" {
 				if codexFailureTerminal && eventType == "error" {
@@ -551,6 +626,46 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
+				// 记录本次 attempt 的降载帧，供 T3（读错误）/T4（空闲超时）复用。
+				// cont == nil（开关关闭）时整段短路，保持零行为变化。
+				// cyber 命中的事件不记录：读错误时不携带 cyber 信息，记录会导致误触发。
+				if cont != nil && !cyberHit && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+					pendingCapacityPayload = append(pendingCapacityPayload[:0], dataBytes...)
+					pendingCapacityMessage = failedMessage
+				}
+				// T1/T2 资格评估（权威门：openAIStream503AutoContinueEligible，裁定 #7）。
+				// T1 response.failed 对所有账号生效；T2 裸 error 仅对非 codex 终态账号生效
+				// —— OAuth/SetupToken 的上游可能随后翻盘成 response.completed。
+				var continuationSignal *openAIStreamContinueSignal
+				continuationEvaluated := false
+				continuationReason := ""
+				if cont != nil && outputStarted && !cyberHit {
+					triggerEvent := false
+					switch eventType {
+					case "response.failed":
+						triggerEvent = account != nil && (account.IsOpenAIOAuthLike() || !codexFailureTerminal)
+					case "error":
+						triggerEvent = !codexFailureTerminal
+					}
+					if triggerEvent && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+						continuationEvaluated = true
+						continuationSignal, continuationReason = s.openAIStreamCapacityContinueSignal(
+							cont, c, account, dataBytes, outputStarted, cyberHit,
+							failedMessage, upstreamRequestID, usage,
+						)
+					}
+				}
+				// 未被续跑接管时保持现有“抑制 failover”日志；接管时只打触发日志，
+				// 避免同一个降载事件出现两条互相矛盾的信号（design §7.1）。
+				if !capacityFailoverSuppressedLogged && account != nil && account.Platform == PlatformOpenAI &&
+					outputStarted &&
+					isOpenAIUpstreamCapacityShedEvent(dataBytes) && continuationSignal == nil {
+					logOpenAICapacityFailoverSuppressed(ctx, account, "native_sse", upstreamRequestID, eventType)
+					capacityFailoverSuppressedLogged = true
+				}
+				if continuationEvaluated && continuationSignal == nil {
+					logContinuationExhaustedOnce(continuationReason)
+				}
 				if !outputStarted && !cyberHit {
 					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
 						sawFailedEvent = true
@@ -559,6 +674,14 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					}
 				}
 				if outputStarted && !cyberHit {
+					if continuationSignal != nil {
+						// 接管：不写客户端、不做账号健康副作用、不登记现有 ops 失败。
+						sawFailedEvent = true
+						streamEarlyErr = continuationSignal
+						logOpenAIStream503AutoContinueTrigger(ctx, c, account, cont, startTime, originalModel, upstreamRequestID)
+						_ = resp.Body.Close()
+						return
+					}
 					if codexFailureTerminal && eventType == "error" {
 						// OpenAI commonly follows a bare error with response.failed.
 						// Defer account health updates so the pair is applied once.
@@ -921,6 +1044,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			// T4：本次 attempt 已记录明确的容量降载帧，随后上游空闲超时。
+			// 与 T3 同款条件；否则保持现有 stream_timeout 行为。
+			if sig := continuationSignalFromPendingCapacity(); sig != nil {
+				_ = resp.Body.Close()
+				return resultWithUsage(), sig
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed {
 				_ = resp.Body.Close()
 				return finalizeStream()
@@ -1003,6 +1132,136 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 	}
 
+}
+
+// openAIStreamCapacityContinueSignal 在已确认是容量降载帧的前提下评估权威资格门，
+// 通过时构造续跑信号，否则返回资格谓词给出的拒绝原因（用于放弃日志）。
+//
+// 不重新分类 payload：T3/T4 会把 T1/T2 记录下的同一份降载帧传进来。
+func (s *OpenAIGatewayService) openAIStreamCapacityContinueSignal(
+	cont *openAIStreamContinuationState,
+	c *gin.Context,
+	account *Account,
+	payload []byte,
+	outputStarted bool,
+	cyberHit bool,
+	message string,
+	upstreamRequestID string,
+	usage *OpenAIUsage,
+) (*openAIStreamContinueSignal, string) {
+	if cont == nil {
+		return nil, openAIStream503AutoContinueReasonDisabled
+	}
+	eligible, reason := s.openAIStream503AutoContinueEligible(c, account, cont, payload, outputStarted, cyberHit)
+	if !eligible {
+		return nil, reason
+	}
+	attemptUsage := OpenAIUsage{}
+	if usage != nil {
+		attemptUsage = *usage
+	}
+	return &openAIStreamContinueSignal{
+		capacityPayload:   append([]byte(nil), payload...),
+		message:           strings.TrimSpace(message),
+		upstreamRequestID: strings.TrimSpace(upstreamRequestID),
+		usage:             attemptUsage,
+	}, ""
+}
+
+// isOpenAIStream503AutoContinueExhaustedReason 限定放弃日志的 reason 集合：
+// disabled / account / not_capacity 不记录，避免开关关闭或非目标账号时产生噪声。
+func isOpenAIStream503AutoContinueExhaustedReason(reason string) bool {
+	switch reason {
+	case openAIStream503AutoContinueReasonBudget,
+		openAIStream503AutoContinueReasonElapsed,
+		openAIStream503AutoContinueReasonIneligibleOutput,
+		openAIStream503AutoContinueReasonPartialTooBig,
+		openAIStream503AutoContinueReasonClientGone:
+		return true
+	}
+	return false
+}
+
+func openAIStreamContinuationEndpoint(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return ""
+	}
+	return c.Request.URL.Path
+}
+
+func openAIStreamContinuationClientRequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(ctxkey.ClientRequestID).(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// logOpenAIStream503AutoContinueTrigger 是 design §7.1 的触发日志（Warn）。
+// continuation_index 为本次信号将要开始的续跑序号（1-based）。
+func logOpenAIStream503AutoContinueTrigger(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	cont *openAIStreamContinuationState,
+	startTime time.Time,
+	model string,
+	upstreamRequestID string,
+) {
+	if cont == nil {
+		return
+	}
+	budgetLeft := openAIStream503AutoContinueMaxContinuations - cont.Continuations()
+	if budgetLeft < 0 {
+		budgetLeft = 0
+	}
+	fields := []zap.Field{
+		zap.String("path", "native_sse"),
+		zap.String("endpoint", openAIStreamContinuationEndpoint(c)),
+		zap.String("model", strings.TrimSpace(model)),
+		zap.Int("continuation_index", cont.Continuations()+1),
+		zap.String("upstream_request_id", strings.TrimSpace(upstreamRequestID)),
+		zap.Int("partial_text_bytes", len(cont.ObservedPartialText())),
+		zap.Int64("elapsed_ms", time.Since(startTime).Milliseconds()),
+		zap.Int("budget_left", budgetLeft),
+		zap.String("client_request_id", openAIStreamContinuationClientRequestID(ctx)),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("platform", account.Platform),
+		)
+	}
+	logger.FromContext(ctx).Warn("gateway.openai_stream_503_auto_continue", fields...)
+}
+
+// logOpenAIStream503AutoContinueExhausted 是 design §7.1 的放弃日志（Warn）。
+func logOpenAIStream503AutoContinueExhausted(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	cont *openAIStreamContinuationState,
+	reason string,
+) {
+	if cont == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("reason", reason),
+		zap.Int("continuation_index", cont.Continuations()+1),
+		zap.String("path", "native_sse"),
+		zap.String("endpoint", openAIStreamContinuationEndpoint(c)),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+		)
+	}
+	logger.FromContext(ctx).Warn("gateway.openai_stream_503_auto_continue_exhausted", fields...)
 }
 
 // extractOpenAISSEDataLine 低开销提取 SSE `data:` 行内容。
