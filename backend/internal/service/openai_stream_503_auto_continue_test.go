@@ -268,6 +268,103 @@ func TestOpenAIStream503AutoContinue_BudgetExhaustedKeepsLegacyPath(t *testing.T
 	require.Equal(t, openAIStream503AutoContinueReasonBudget, fields["reason"])
 }
 
+// 回归（v0.1.221 热修）：keepalive>0 时流处理走异步扫描路径。异步循环在队列
+// 未排空时不做 event-boundary flush，created/added/delta 会停留在 attempt 本地
+// 缓冲区；若在 failed 事件评估 outputStarted 之前不 flush，已 staged 的语义帧会
+// 被判成“尚未输出”，错误返回 pre-output failover 并丢弃这些帧（客户端空 body）。
+//
+// 基线没有续跑 keepalive 兜底（openAIStreamKeepaliveInterval），因此这里显式用
+// 1s keepalive 触发异步路径；预算耗尽的续跑状态使 stageFirstOutput=false，走与
+// 生产 bug 相同的非 staging 异步分支。
+func TestOpenAIStream503AutoContinue_KeepaliveAsyncPathKeepsStagedOutputOnExhaustedBudget(t *testing.T) {
+	// 真实上游会带 "event:" 行；测试历史上省略它。两种线格式都必须保证
+	// 失败事件之前 staged 的语义帧先出站。
+	dataOnlySSE := contTestSSE(
+		contTestCreatedFrame,
+		contTestMessageAddedFrame,
+		contTestPartialDeltaFrame,
+		contTestCapacityFailedFrame,
+	)
+	explicitEventSSE := "event: response.created\ndata: " + contTestCreatedFrame + "\n\n" +
+		"event: response.output_item.added\ndata: " + contTestMessageAddedFrame + "\n\n" +
+		"event: response.output_text.delta\ndata: " + contTestPartialDeltaFrame + "\n\n" +
+		"event: response.failed\ndata: " + contTestCapacityFailedFrame + "\n\n"
+
+	for _, tt := range []struct {
+		name string
+		sse  string
+	}{
+		{name: "data_only_frames", sse: dataOnlySSE},
+		{name: "explicit_event_lines", sse: explicitEventSSE},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			logSink, restore := captureStructuredLog(t)
+			defer restore()
+
+			svc := contTestService(config.GatewayConfig{StreamKeepaliveInterval: 1})
+			c, rec := contTestContext()
+			account := contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false)
+			cont := contTestState(t, svc, c, account)
+			cont.continuations = openAIStream503AutoContinueMaxContinuations
+			require.True(t, cont.InContinuation(), "续跑 attempt 跳过 first-output staging，走异步扫描路径")
+
+			_, err := contTestRun(t, svc, c, account, cont, io.NopCloser(strings.NewReader(tt.sse)), "rid-cont-async-budget")
+			require.Error(t, err)
+			_, isSignal := asOpenAIStreamContinueSignal(err)
+			require.False(t, isSignal, "预算耗尽时不得续跑")
+			require.NotContains(t, err.Error(), "failover", "已 stage 语义输出后的失败不得降级为 pre-output failover")
+
+			body := rec.Body.String()
+			require.Contains(t, body, `"type":"response.created"`)
+			require.Contains(t, body, `"delta":"partial"`, "已 staged 的语义帧必须写入客户端")
+			require.Equal(t, 1, strings.Count(body, `"type":"response.failed"`))
+			require.Contains(t, body, `"code":"server_error"`)
+
+			require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
+			fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
+			require.NotNil(t, fields)
+			require.Equal(t, openAIStream503AutoContinueReasonBudget, fields["reason"])
+		})
+	}
+}
+
+// 对照：keepalive=0 走同步扫描路径，行为必须不变。同步路径在每个事件边界
+// （queueDrained=true）已 flush staged 语义帧，失败事件判定 outputStarted 时不
+// 需要 flush 前置逻辑。
+func TestOpenAIStream503AutoContinue_SyncPathKeepsStagedOutputOnExhaustedBudget(t *testing.T) {
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
+
+	svc := contTestService(config.GatewayConfig{})
+	c, rec := contTestContext()
+	account := contTestAccount(PlatformOpenAI, AccountTypeOAuth, true, false)
+	cont := contTestState(t, svc, c, account)
+	cont.continuations = openAIStream503AutoContinueMaxContinuations
+	require.True(t, cont.InContinuation())
+
+	_, err := contTestRun(t, svc, c, account, cont, io.NopCloser(strings.NewReader(contTestSSE(
+		contTestCreatedFrame,
+		contTestMessageAddedFrame,
+		contTestPartialDeltaFrame,
+		contTestCapacityFailedFrame,
+	))), "rid-cont-sync-budget")
+	require.Error(t, err)
+	_, isSignal := asOpenAIStreamContinueSignal(err)
+	require.False(t, isSignal, "预算耗尽时不得续跑")
+	require.NotContains(t, err.Error(), "failover")
+
+	body := rec.Body.String()
+	require.Contains(t, body, `"type":"response.created"`)
+	require.Contains(t, body, `"delta":"partial"`)
+	require.Equal(t, 1, strings.Count(body, `"type":"response.failed"`))
+	require.Contains(t, body, `"code":"server_error"`)
+
+	require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
+	fields := continuationLogFields(logSink, "gateway.openai_stream_503_auto_continue_exhausted")
+	require.NotNil(t, fields)
+	require.Equal(t, openAIStream503AutoContinueReasonBudget, fields["reason"])
+}
+
 func TestOpenAIStream503AutoContinue_SwitchOffEmitsNoContinuationLogs(t *testing.T) {
 	logSink, restore := captureStructuredLog(t)
 	defer restore()

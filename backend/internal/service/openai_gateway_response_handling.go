@@ -289,6 +289,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 	pendingCapacityMessage := ""
 	continuationExhaustedLogged := false
 	pendingSSEEventType := ""
+	// eventPreambleBuffered 表示当前 SSE 事件的 "event:" 行已写入本地缓冲区。
+	// 失败事件前的语义帧 flush 必须在任何未完成事件字节之前停下，否则会把
+	// 当前 failed/error 事件的 event 行提前写给客户端（一旦随后走 failover，
+	// 客户端会收到悬空的 event 行）。
+	eventPreambleBuffered := false
 	eventInProgress := false
 	eventStartsClientOutput := false
 	eventStartsTTFTOutput := false
@@ -431,6 +436,33 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
 	}
+	// flushStagedSemanticOutputBeforeFailure 在失败事件评估 outputStarted 之前提交
+	// 已 staged 的语义帧（仅当确有语义输出且尚未写出）。
+	//
+	// 异步扫描路径（keepalive/超时启用）在队列未排空时不做 event-boundary flush，
+	// created/added/delta 可能仍停留在本地缓冲区；若直接以“字节已写出”判定
+	// outputStarted，会把“已产生语义输出后的失败”误判成 pre-output failover，
+	// 丢弃 staged 帧并返回 failover。同步路径在事件边界已经 flush，此函数为 no-op，
+	// 因此不改变同步路径字节。
+	//
+	// 调用点必须保证缓冲区末尾是完整事件：本函数不得与未写完的当前事件字节混排。
+	// 因此只在失败事件的 "event:" 行写入前、或无 event 行的失败 data 行写入前调用。
+	flushStagedSemanticOutputBeforeFailure := func() {
+		if clientDisconnected || failureDelivered ||
+			!responsesSemanticOutputSeen ||
+			openAIStreamClientOutputStarted(c, clientOutputStarted) ||
+			pendingBytes() == 0 {
+			return
+		}
+		applyAttemptResponseHeaders()
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
+			return
+		}
+		clientOutputStarted = true
+		lastDownstreamWriteAt = time.Now()
+	}
 	finalizeStream := func() (*openaiStreamingResult, error) {
 		if stageFirstOutput && eventInProgress {
 			// EOF dispatches the final SSE event even without a trailing blank line.
@@ -550,9 +582,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 		if streamEarlyErr != nil {
 			return
 		}
+		isEventLine := false
+		eventLineIsFailure := false
 		if eventType, ok := extractOpenAISSEEventLine(line); ok {
+			isEventLine = true
 			pendingSSEEventType = eventType
 			eventType = strings.TrimSpace(eventType)
+			eventLineIsFailure = eventType == "response.failed" || eventType == "error"
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 		}
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
@@ -599,6 +635,16 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 			forceFlushFailedEvent := false
 			cyberHit := false
 			if eventType == "response.failed" || eventType == "error" {
+				// 异步扫描路径（keepalive/超时启用）下，队列未排空时不会做
+				// event-boundary flush，created/added/delta 等语义帧可能仍停留在
+				// attempt 本地缓冲区。此时若直接以“字节已写出”判定 outputStarted，
+				// 会把“已产生语义输出后的失败”误判成 pre-output failover：丢弃已
+				// staged 的帧并返回 failover，而不是保留终态事件。
+				// 只有当前事件没有已写入的 "event:" 行时，缓冲区末尾才是上一事件的
+				// 完整边界；带 event 行的失败事件已在 event 行写入前完成 flush。
+				if !eventPreambleBuffered {
+					flushStagedSemanticOutputBeforeFailure()
+				}
 				if codexFailureTerminal && eventType == "error" {
 					sawBareError = true
 					bareErrorPayload = append(bareErrorPayload[:0], dataBytes...)
@@ -860,6 +906,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 		// A blank line dispatches a guarded event from the attempt-local stage.
 		if stageFirstOutput && line == "" {
 			pendingSSEEventType = ""
+			eventPreambleBuffered = false
 			if suppressCurrentEvent {
 				suppressCurrentEvent = false
 				terminalFailurePending = false
@@ -896,6 +943,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 		shouldFlush := false
 		if line == "" {
 			pendingSSEEventType = ""
+			eventPreambleBuffered = false
 			if suppressCurrentEvent {
 				suppressCurrentEvent = false
 				terminalFailurePending = false
@@ -909,6 +957,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 				terminalFailurePending = false
 			}
 		}
+		if eventLineIsFailure {
+			// 失败事件的 "event:" 行尚未写入：缓冲区末尾是上一事件的完整边界，
+			// 此刻提交此前 staged 的语义帧不会把失败事件本身提前写给客户端。
+			flushStagedSemanticOutputBeforeFailure()
+		}
 		if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
 			if _, err := writePendingString(line); err != nil {
 				handlePendingWriteError(err)
@@ -916,6 +969,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningState(ctx con
 				handlePendingWriteError(err)
 			} else {
 				eventInProgress = line != ""
+				if isEventLine {
+					eventPreambleBuffered = true
+				}
 				if shouldFlush {
 					if err := flushBuffered(); err != nil {
 						clientDisconnected = true
