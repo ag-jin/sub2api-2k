@@ -1429,7 +1429,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					s.appendOpenAIStreamContinuationRetryOps(c, account, sig)
 					if canContinue, reason := contState.CanContinue(time.Now()); canContinue {
 						contState.BeginContinuation(aggregatedUsage, sig)
-						if !sleepCtx(contState.Backoff(), c.Request.Context()) {
+						if !sleepCtx(c.Request.Context(), contState.Backoff()) {
 							// 客户端在退避期间取消：不再发上游请求。
 							return nil, context.Canceled
 						}

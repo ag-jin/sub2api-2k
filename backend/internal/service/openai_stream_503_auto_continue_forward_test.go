@@ -696,12 +696,12 @@ func TestOpenAIStream503AutoContinueForward_ContinuationSkipsFirstOutputGuard(t 
 			contForwardFailedFrame,
 		),
 		contForwardResponse(contForwardSecondRequestID, &contForwardDelayedBody{
-			payload: contForwardSSE(
+			payload: []byte(contForwardSSE(
 				contForwardContinuationCreated,
 				contForwardContinuationAdded,
 				contForwardContinuationDelta,
 				contForwardCompletedFrame(`{"input_tokens":2,"output_tokens":4}`, contForwardTextOutput()),
-			),
+			)),
 			delay: 1000 * time.Millisecond,
 		}),
 	}}
