@@ -121,14 +121,20 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 之外：该头是账号/会话级属性，不依赖入站请求是否存在，也避免预热与
 	// 实际请求因头差异落进不同的连接池兼容分桶。
 	applyOpenAICodexBetaFeatures(c, account, headers)
-	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
+	// OAuth/Codex 协议账号：将 apiKeyID 混入 session 标识符，防止跨用户会话
+	// 碰撞；出站统一使用官方 0.163 的连字符头名 session-id / thread-id。
+	// API-key 账号保持改动前的原值下划线写法 session_id / conversation_id。
 	if account != nil && account.UsesOpenAICodexProtocol() {
-		apiKeyID := getAPIKeyIDFromContext(c)
 		if sessionResolution.SessionID != "" {
-			headers.Set("session_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), sessionResolution.SessionID))
+			headers.Set("session-id", isolateOpenAIUpstreamSessionID(
+				getAPIKeyIDFromContext(c), codexAccountIdentitySource(c, account), sessionResolution.SessionID,
+			))
 		}
-		if sessionResolution.ConversationID != "" {
-			headers.Set("conversation_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), sessionResolution.ConversationID))
+		if sessionResolution.ThreadID != "" {
+			headers.Set("thread-id", sessionResolution.ThreadID)
+			// 官方语义 x-client-request-id == thread-id。客户端 copy 阶段
+			// 可能带入了不同值，这里统一回写最终 thread-id。
+			headers.Set("x-client-request-id", sessionResolution.ThreadID)
 		}
 	} else {
 		if sessionResolution.SessionID != "" {
@@ -183,6 +189,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 覆盖所有 WS 模式（ctx_pool/dedicated/passthrough）的握手头。
 	account.ApplyHeaderOverrides(headers)
+	if account != nil && account.UsesOpenAICodexProtocol() {
+		// 官方 Codex CLI 从不发送 version 头；即使账号覆写配置了也一并删除。
+		// API-key / 第三方兼容上游不受此约束，保留管理员覆写能力。
+		headers.Del("version")
+	}
 	setOpenAICodexRoutingHint(headers, account, routingModel, routingServiceTier)
 	logOpenAIRoutingDiagnostics(
 		ctx,

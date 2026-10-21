@@ -35,6 +35,17 @@ func (s *OpenAIGatewayService) prepareCodexAccountIdentitySource(ctx context.Con
 	return source, nil
 }
 
+// firstNonEmptyHeader 按顺序返回第一个非空头值。用于同时兼容官方新版连字符
+// 头名与老版本下划线头名。
+func firstNonEmptyHeader(h http.Header, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(h.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func codexAccountIdentitySource(c *gin.Context, fallback *Account) *Account {
 	if c != nil {
 		if staged, ok := c.Get(codexAccountIdentitySourceContextKey); ok {
@@ -74,10 +85,13 @@ func codexAccountIdentityNamespace(account *Account) string {
 	return ""
 }
 
-// isolateOpenAIUpstreamSessionID preserves the existing API-key isolation while
-// adding the selected OAuth credential namespace. A scheduler failover therefore
-// cannot send the same session/conversation identity through two upstream accounts.
-func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string) string {
+// deriveCodexAccountScopedSessionID 是 session 家族标识的唯一派生点。
+// 同一 (API key, 账号命名空间, 客户端原值) 永远得到同一个确定性 UUIDv4 形态
+// 字符串（小写连字符、version=4、RFC4122 variant），与官方 Codex 客户端的
+// session-id / thread-id 形态一致。header 与 body 的同值用途必须复用本函数，
+// 否则同一会话会在 client_metadata.session_id / prompt_cache_key / session-id
+// 三处出现不同值。
+func deriveCodexAccountScopedSessionID(apiKeyID int64, account *Account, raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -86,8 +100,14 @@ func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string
 	if namespace == "" {
 		return isolateOpenAISessionID(apiKeyID, raw)
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("u%d:a%s:%s", apiKeyID, namespace, raw)))
-	return fmt.Sprintf("%x", sum[:8])
+	return deriveStableUUIDv4(fmt.Sprintf("u%d:a%s:%s", apiKeyID, namespace, raw))
+}
+
+// isolateOpenAIUpstreamSessionID 是 deriveCodexAccountScopedSessionID 的历史
+// 别名（API key 隔离 + OAuth 凭据命名空间）。保留是为了让既有调用点语义
+// 明确；新代码应优先使用 deriveCodexAccountScopedSessionID。
+func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string) string {
+	return deriveCodexAccountScopedSessionID(apiKeyID, account, raw)
 }
 
 func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw string) string {
@@ -95,6 +115,28 @@ func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw 
 	namespace := codexAccountIdentityNamespace(account)
 	if raw == "" || namespace == "" {
 		return raw
+	}
+	switch kind {
+	case "session", "prompt-cache":
+		// session 家族共用同一个种子：同值必须得到同一串。
+		return deriveCodexAccountScopedSessionID(apiKeyID, account, raw)
+	case "request":
+		// 官方客户端 x-client-request-id 与 thread-id 同值；同值必须同串。
+		kind = "thread"
+	case "window":
+		// 官方 window-id 形态是 `<thread-id>:<n>`（入站解析按 ":" 切分取
+		// thread 段）。只收敛 thread 段并保留窗口序号；裸值视为 thread 段
+		// 并补 :0，避免出站出现裸 UUID window。
+		threadPart, suffix, hasSuffix := strings.Cut(raw, ":")
+		if strings.TrimSpace(threadPart) == "" {
+			return raw
+		}
+		scopedThread := scopeCodexAccountIdentityValue(account, apiKeyID, "thread", threadPart)
+		suffix = strings.TrimSpace(suffix)
+		if !hasSuffix || suffix == "" {
+			suffix = "0"
+		}
+		return scopedThread + ":" + suffix
 	}
 	return deriveStableUUIDv4(fmt.Sprintf(
 		"sub2api:codex-account-identity:%s:user:%d:account:%s:kind:%s:value:%s",
@@ -254,9 +296,9 @@ func applyCodexAccountIdentityHeaders(headers http.Header, account *Account, api
 		return
 	}
 	for _, field := range codexAccountIdentityFields {
-		// Underscore session/conversation headers are rebuilt separately from the
-		// prompt cache key by each request builder.
-		if field.name == "session_id" {
+		// session 标识由各请求构造器用 deriveCodexAccountScopedSessionID 统一
+		// 派生（含命名空间为空时的 API key 兜底），这里跳过两种写法避免二次哈希。
+		if field.name == "session_id" || field.name == "session-id" {
 			continue
 		}
 		raw := strings.TrimSpace(headers.Get(field.name))

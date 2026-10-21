@@ -1766,15 +1766,10 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	identity := resolveCodexOutboundIdentity(overrideUA)
 	headers.Set("Originator", identity.originator)
 	headers.Set("User-Agent", identity.userAgent)
-	// Version 头优先与 client_version 查询参数同源：客户端自报版本合法且不低于上游
-	// 门槛时原样使用；否则回退规范版本，避免陈旧 version 触发上游 404（issue #3901）。
-	// client_version 查询参数本身始终按客户端原值透传（内容协商语义，契约见
-	// TestFetchCodexModelsManifestPassthrough）。
-	headerVersion := NormalizeCodexClientVersion(clientVersion)
-	if headerVersion == "" || CompareVersions(headerVersion, codexUpstreamMinVersion) < 0 {
-		headerVersion = identity.version
-	}
-	headers.Set("Version", headerVersion)
+	// 官方 CLI 从不发送 version 头；版本只通过 client_version 查询参数表达，
+	// 即使账号覆写配置了 version 也一并删除。client_version 查询参数本身始终
+	// 按客户端原值透传（内容协商语义，契约见 TestFetchCodexModelsManifestPassthrough）。
+	headers.Del("Version")
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

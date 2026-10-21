@@ -354,7 +354,17 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if !compatPromptCacheTenantIsolated {
 			sessionKey = isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
 		}
-		upstreamReq.Header.Set("session_id", generateSessionUUID(sessionKey))
+		// Codex OAuth 出站对齐官方 0.163 的连字符头名；API-key 兼容路径
+		// 保持历史下划线头名。OAuth 的 sessionKey 已经是单一 helper 产出的
+		// UUID，不再二次哈希；API-key 保留历史 UUID 包装。
+		sessionValue := generateSessionUUID(sessionKey)
+		sessionHeader := "session_id"
+		if account.UsesOpenAICodexProtocol() {
+			sessionHeader = "session-id"
+			sessionValue = sessionKey
+			upstreamReq.Header.Del("session_id")
+		}
+		upstreamReq.Header.Set(sessionHeader, sessionValue)
 	}
 
 	// 7. Send request

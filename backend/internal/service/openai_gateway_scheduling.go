@@ -32,6 +32,7 @@ const (
 var explicitOpenAIHeaderSessionNames = []string{
 	"session-id",
 	"session_id",
+	"conversation-id",
 	"conversation_id",
 	openCodeSessionAffinityHeader,
 	openCodeSessionIDHeader,

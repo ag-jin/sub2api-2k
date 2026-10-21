@@ -2374,6 +2374,8 @@ func normalizeOpenAIWSHandshakeCompatibility(account *Account, headers http.Head
 		return key
 	}
 	key.sessionIDHyphen = normalizeOpenAIWSStableIdentityHeader(headers, "session-id")
+	// 仅用于兼容旧版本仍写下划线 session_id 的出站请求（例如滚动发布期间
+	// 的旧实例）；当前 Codex 构造器只写连字符形态，正常路径恒为空。
 	key.sessionIDUnderscore = normalizeOpenAIWSStableIdentityHeader(headers, "session_id")
 	key.threadID = normalizeOpenAIWSStableIdentityHeader(headers, "thread-id")
 	key.clientRequestID = normalizeOpenAIWSStableIdentityHeader(headers, "x-client-request-id")
@@ -2385,7 +2387,7 @@ func activeCodexFingerprintMode(account *Account) codexFingerprintMode {
 	if account == nil || account.GetCodexFingerprintMode() == codexFingerprintOff {
 		return codexFingerprintOff
 	}
-	if _, ok := codexFingerprintSeed(account.Extra); !ok {
+	if _, ok := resolveCodexFingerprintSeed(account); !ok {
 		return codexFingerprintOff
 	}
 	return account.GetCodexFingerprintMode()

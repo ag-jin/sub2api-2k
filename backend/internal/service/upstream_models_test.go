@@ -202,7 +202,7 @@ func TestBuildUpstreamModelsRequestSupportsOpenAIOAuth(t *testing.T) {
 	require.Equal(t, "chatgpt-account", req.Header.Get("chatgpt-account-id"))
 	require.NotEmpty(t, req.Header.Get("Originator"))
 	require.NotEmpty(t, req.Header.Get("User-Agent"))
-	require.NotEmpty(t, req.Header.Get("Version"))
+	require.Empty(t, req.Header.Get("Version"), "官方 CLI 从不发送 version 头")
 }
 
 func TestFetchUpstreamSupportedModelsParsesOpenAIOAuthManifest(t *testing.T) {

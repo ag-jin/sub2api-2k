@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -58,6 +59,45 @@ func TestCodexRequestBodyIdentityNamespaceIsStablePerOAuthAccount(t *testing.T) 
 	for _, field := range []string{"installation_id", "session_id", "thread_id", "turn_id", "window_id"} {
 		require.NotEqual(t, embeddedFirst[field], embeddedSecond[field], field)
 	}
+}
+
+// A 项：账号级 session 隔离值必须是确定性 UUIDv4，且与 body 中同值派生
+// （client_metadata.session_id / prompt_cache_key）逐字一致。
+func TestCodexAccountScopedSessionIDIsUUIDAndSharedAcrossCarriers(t *testing.T) {
+	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "chatgpt-account-11"}}
+	otherAccount := &Account{ID: 19, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "chatgpt-account-19"}}
+
+	sessionID := isolateOpenAIUpstreamSessionID(77, account, "client-session")
+	parsed, err := uuid.Parse(sessionID)
+	require.NoError(t, err, "session-id 必须是 UUID")
+	require.Equal(t, sessionID, parsed.String(), "必须是小写连字符形态")
+	require.Equal(t, uuid.Version(4), parsed.Version())
+	require.Equal(t, uuid.RFC4122, parsed.Variant())
+	require.Equal(t, sessionID, isolateOpenAIUpstreamSessionID(77, account, "client-session"), "同一账号同一客户端值必须稳定")
+	require.NotEqual(t, sessionID, isolateOpenAIUpstreamSessionID(78, account, "client-session"), "不同 API key 必须隔离")
+	require.NotEqual(t, sessionID, isolateOpenAIUpstreamSessionID(77, otherAccount, "client-session"), "不同账号必须隔离")
+
+	body := []byte(`{"model":"gpt-5.6-codex","prompt_cache_key":"client-session","client_metadata":{"session_id":"client-session"}}`)
+	scoped, changed, err := applyCodexAccountIdentityClientMetadataRaw(body, account, 77)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, sessionID, gjson.GetBytes(scoped, "client_metadata.session_id").String())
+	require.Equal(t, sessionID, gjson.GetBytes(scoped, "prompt_cache_key").String())
+}
+
+// window-id 的官方形态是 `<thread-id>:<n>`：账号收敛只应改写 thread 段，
+// 不得把整个值压成裸 UUID。
+func TestCodexAccountScopedWindowIDPreservesThreadSuffix(t *testing.T) {
+	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "chatgpt-account-11"}}
+
+	thread := scopeCodexAccountIdentityValue(account, 77, "thread", "client-thread")
+	require.Equal(t, thread+":3", scopeCodexAccountIdentityValue(account, 77, "window", "client-thread:3"))
+
+	require.Equal(t,
+		scopeCodexAccountIdentityValue(account, 77, "thread", "client-window")+":0",
+		scopeCodexAccountIdentityValue(account, 77, "window", "client-window"),
+		"裸 window 值必须补齐 :0，不能原样输出裸 UUID",
+	)
 }
 
 func TestCodexAccountIdentityNamespaceUsesStableCredentialSource(t *testing.T) {
@@ -114,7 +154,8 @@ func TestCodexAccountIdentitySourceResolvesShadowAndOverwritesFailoverContext(t 
 		"token", true, "client-session", true,
 	)
 	require.NoError(t, err)
-	require.Equal(t, isolateOpenAIUpstreamSessionID(0, parent, "client-session"), req.Header.Get("session_id"))
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, parent, "client-session"), req.Header.Get("session-id"))
+	require.Empty(t, req.Header.Get("session_id"), "出站不再使用下划线 session_id")
 
 	next := &Account{ID: 19, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
 		"chatgpt_account_id": "other-account",
@@ -153,7 +194,7 @@ func TestBuildOpenAIWSHeadersNamespacesCodexIdentityByOAuthAccount(t *testing.T)
 	first := build(account11)
 	firstAgain := build(account11)
 	second := build(account19)
-	for _, header := range []string{"session_id", "x-codex-installation-id", "thread-id", "x-codex-window-id", "x-client-request-id"} {
+	for _, header := range []string{"session-id", "x-codex-installation-id", "thread-id", "x-codex-window-id", "x-client-request-id"} {
 		require.NotEmpty(t, first.Get(header), header)
 		require.Equal(t, first.Get(header), firstAgain.Get(header), header)
 		require.NotEqual(t, first.Get(header), second.Get(header), header)
@@ -165,7 +206,9 @@ func TestBuildOpenAIWSHeadersNamespacesCodexIdentityByOAuthAccount(t *testing.T)
 		"token", true, "client-session", true,
 	)
 	require.NoError(t, err)
-	require.Equal(t, httpRequest.Header.Get("session_id"), first.Get("session_id"), "HTTP and WS must derive the same identity from the raw client key")
+	require.Equal(t, httpRequest.Header.Get("session-id"), first.Get("session-id"), "HTTP and WS must derive the same identity from the raw client key")
+	require.Empty(t, httpRequest.Header.Get("session_id"))
+	require.Empty(t, first.Get("session_id"))
 }
 
 func TestBuildUpstreamRequestNamespacesCodexIdentityByOAuthAccount(t *testing.T) {
@@ -210,8 +253,6 @@ func TestBuildUpstreamRequestNamespacesCodexIdentityByOAuthAccount(t *testing.T)
 		"x-codex-installation-id",
 		"x-codex-window-id",
 		"session-id",
-		"session_id",
-		"conversation_id",
 		"thread-id",
 		"x-client-request-id",
 		"x-codex-turn-metadata",

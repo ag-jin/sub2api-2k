@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -517,12 +516,8 @@ func generateSessionUUID(seed string) string {
 	if seed == "" {
 		return uuid.NewString()
 	}
-	hash := sha256.Sum256([]byte(seed))
-	bytes := hash[:16]
-	bytes[6] = (bytes[6] & 0x0f) | 0x40
-	bytes[8] = (bytes[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x",
-		bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
+	// 非空 seed 复用全仓唯一的确定性 UUIDv4 派生点，避免两套等价实现漂移。
+	return deriveStableUUIDv4(seed)
 }
 
 // normalizeSystemParam 将 json.RawMessage 类型的 system 参数转为标准 Go 类型（string / []any / nil），

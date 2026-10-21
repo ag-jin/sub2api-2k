@@ -536,6 +536,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if currentClientPromptCacheKey, ok := decoded["prompt_cache_key"].(string); ok {
 			clientPromptCacheKey = currentClientPromptCacheKey
 		}
+		// 在账号级 scoping 之前捕获 body 的原始会话标识：它是 session-id 头
+		// 缺失时的 fallback，必须与 body / prompt_cache_key 收敛到同一串。
+		clientBodySessionID := ""
+		if clientMetadata, ok := decoded["client_metadata"].(map[string]any); ok {
+			if value, ok := clientMetadata["session_id"].(string); ok {
+				clientBodySessionID = strings.TrimSpace(value)
+			}
+		}
 		// Account namespace is orthogonal to fingerprint convergence: preserve
 		// each client's identity cardinality, but never reuse it across OAuth
 		// credentials after scheduler failover.
@@ -545,13 +553,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		stageCodexFingerprintIDs(c, nil)
 		// 指纹收敛：一次性解析收敛 ID，请求体和出站头共享同一份 IDs（保证 turn_id 等随机字段一致）。
 		// fingerprintIDs 在此处解析，后续 buildUpstreamRequest 中使用同一份。
-		if !isCompactRequest {
+		// compact 路径同样进入头合成（与探测同构），但 body 形态不同、不写
+		// client_metadata。
+		{
 			var clientHeaders http.Header
 			if c != nil && c.Request != nil {
 				clientHeaders = c.Request.Header
 			}
-			fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders)
-			if fpIDs != nil {
+			fpIDs := resolveCodexFingerprintIDsFromRequestWithFallback(
+				account, clientHeaders, firstNonEmpty(clientBodySessionID, clientPromptCacheKey),
+			)
+			if fpIDs != nil && !isCompactRequest {
 				if applyCodexFingerprintClientMetadata(decoded, fpIDs) {
 					markDecodedModified()
 				}
@@ -1664,17 +1676,22 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 剥离后再出站——异账号 blob 与本账号的（指纹收敛后）出站身份自相矛盾。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
 	// 续跑 attempt 不沿用入站 turn-state（design §3 决策 3 第 5 条）：上一回合的
-	// turn 状态与“部分输出重放”的新回合语义冲突。conversation_id / session_id
-	// 在下面对 UsesOpenAICodexProtocol 分支里按 prompt_cache_key 重新派生（裁定 #6）。
+	// turn 状态与“部分输出重放”的新回合语义冲突。session-id 在下面对
+	// UsesOpenAICodexProtocol 分支里按客户端会话标识 / prompt_cache_key 重新派生
+	// （裁定 #6）；Codex 出站不再发送 conversation_id。
 	if isOpenAIContinuationAttempt(ctx) {
 		req.Header.Del(openAICodexTurnStateHeader)
 	}
 	if account.UsesOpenAICodexProtocol() {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
-		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
-		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		req.Header.Del("conversation_id")
-		req.Header.Del("session_id")
+		// 客户端可能来自不同代际：读连字符与下划线两种写法，出站统一为官方 0.163
+		// 的 session-id / thread-id。清除入站原值后按隔离/收敛结果重新写入，防止
+		// 跨用户会话碰撞。
+		clientSessionID := firstNonEmptyHeader(req.Header, "session-id", "session_id", "conversation-id", "conversation_id")
+		clientThreadID := firstNonEmptyHeader(req.Header, "thread-id", "thread_id", "x-client-request-id")
+		for _, name := range []string{"session-id", "session_id", "conversation-id", "conversation_id", "thread-id", "thread_id", "x-client-request-id"} {
+			req.Header.Del(name)
+		}
 
 		if compatMessagesBridge {
 			req.Header.Del("OpenAI-Beta")
@@ -1684,22 +1701,30 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		}
 		apiKeyID := getAPIKeyIDFromContext(c)
+		// fallback 链：session-id 头 → body client_metadata.session_id →
+		// prompt_cache_key → 账号级 device 兜底（applyCodexFingerprintHeaders）。
+		if clientSessionID == "" {
+			clientSessionID = stagedCodexFingerprintClientSessionID(c, account)
+		}
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", CodexCanonicalClientVersion())
+			if clientSessionID == "" {
+				clientSessionID = resolveOpenAICompactSessionID(c)
 			}
-			compactSession := resolveOpenAICompactSessionID(c)
-			req.Header.Set("session_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), compactSession))
 		} else {
 			req.Header.Set("accept", "text/event-stream")
-		}
-		if promptCacheKey != "" {
-			isolated := isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
-			req.Header.Set("session_id", isolated)
-			if !compatMessagesBridge || clientConversationID != "" {
-				req.Header.Set("conversation_id", isolated)
+			if clientSessionID == "" {
+				clientSessionID = promptCacheKey
 			}
+		}
+		if clientSessionID != "" {
+			req.Header.Set("session-id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), clientSessionID))
+		}
+		if clientThreadID != "" {
+			req.Header.Set("thread-id", clientThreadID)
+			// 官方语义 x-client-request-id == thread-id；入站原值已删除，
+			// 这里统一回写最终 thread-id。
+			req.Header.Set("x-client-request-id", clientThreadID)
 		}
 	} else if isOpenAIResponsesCompactPath(c) {
 		// compact 上游是 unary JSON 协议：API-key 账号也显式声明 Accept，
@@ -1726,7 +1751,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 指纹收敛：使用 Forward() 中预计算的收敛 ID 改写出站头，与请求体使用同一份 IDs。
 	applyStagedCodexFingerprintHeaders(c, account, req.Header)
 
-	// 终态收口：强制统一 OAuth 出站身份（User-Agent / originator / version 同源自洽）。
+	// 终态收口：强制统一 OAuth 出站身份（User-Agent / originator 同源自洽；
+	// 官方 CLI 不发送 version 头，该头由收口函数删除）。
 	// 客户端自报身份不参与构造，浏览器型 UA 也因此不会再到达上游（原浏览器 UA 兜底已被吸收）。
 	if account.UsesOpenAICodexProtocol() {
 		enforceCodexIdentityHeadersWithUA(req.Header, s.codexIdentityOverrideUA(account))
@@ -1743,6 +1769,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	if account.UsesOpenAICodexProtocol() {
+		// 官方 Codex CLI 从不发送 version 头；即使账号覆写配置了也一并删除。
+		// API-key / 第三方兼容上游不受此约束，保留管理员覆写能力。
+		req.Header.Del("version")
+	}
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body, openCodeSessionHintBody(promptCacheKey))
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。

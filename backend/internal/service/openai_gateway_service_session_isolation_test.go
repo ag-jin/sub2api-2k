@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,13 +32,13 @@ func TestIsolateOpenAISessionID(t *testing.T) {
 		require.NotEqual(t, a, b)
 	})
 
-	t.Run("format_is_16_hex_chars", func(t *testing.T) {
+	t.Run("format_is_lowercase_uuid_v4", func(t *testing.T) {
 		result := isolateOpenAISessionID(99, "test_session")
-		assert.Len(t, result, 16, "应为 16 字符的 hex 字符串")
-		for _, ch := range result {
-			assert.True(t, (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'),
-				"应仅包含 hex 字符: %c", ch)
-		}
+		parsed, err := uuid.Parse(result)
+		require.NoError(t, err, "应为合法 UUID")
+		assert.Equal(t, result, parsed.String(), "应为小写连字符形态")
+		assert.Equal(t, uuid.Version(4), parsed.Version(), "应为 UUIDv4")
+		assert.Equal(t, uuid.RFC4122, parsed.Variant(), "应为 RFC4122 variant")
 	})
 
 	t.Run("zero_apiKeyID_still_works", func(t *testing.T) {

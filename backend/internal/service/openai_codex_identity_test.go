@@ -13,7 +13,7 @@ func requireOpenAICodexProbeHeaders(t *testing.T, h http.Header) {
 	t.Helper()
 	require.Equal(t, codexCLIUserAgent, h.Get("User-Agent"))
 	require.Equal(t, openai.CodexDefaultOriginator, h.Get("Originator"))
-	require.Equal(t, codexCLIVersion, h.Get("Version"))
+	require.Empty(t, h.Get("Version"), "官方 CLI 从不发送 version 头")
 	require.Equal(t, "responses=experimental", h.Get("OpenAI-Beta"))
 	require.NotEmpty(t, h.Get("X-Codex-Window-ID"))
 }
@@ -30,7 +30,7 @@ func TestEnsureCodexIdentityHeaders(t *testing.T) {
 
 		require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 		require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 		require.Equal(t, "responses=experimental", h.Get("OpenAI-Beta"))
 	})
 
@@ -45,7 +45,7 @@ func TestEnsureCodexIdentityHeaders(t *testing.T) {
 
 		require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 		require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 		require.Equal(t, "responses=experimental", h.Get("OpenAI-Beta"))
 	})
 }
@@ -115,7 +115,7 @@ func TestEnforceCodexIdentityHeaders(t *testing.T) {
 
 			require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 			require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-			require.Equal(t, codexCLIVersion, h.Get("version"))
+			require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 		})
 	}
 }
@@ -133,7 +133,7 @@ func TestEnforceCodexIdentityHeadersWithAccountOverrideUA(t *testing.T) {
 
 		require.Equal(t, "codex_vscode", h.Get("originator"))
 		require.Equal(t, "codex_vscode/"+codexCLIVersion+" (Ubuntu 22.4.0; x86_64) vscode", h.Get("user-agent"))
-		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 	})
 
 	t.Run("非官方形态覆写 UA 回退规范身份", func(t *testing.T) {
@@ -144,7 +144,7 @@ func TestEnforceCodexIdentityHeadersWithAccountOverrideUA(t *testing.T) {
 
 		require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 		require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 	})
 
 	// 回归：覆写 UA 填写于某个历史版本时，其版本段必须被重建而不是逐字沿用——
@@ -158,7 +158,7 @@ func TestEnforceCodexIdentityHeadersWithAccountOverrideUA(t *testing.T) {
 
 		require.Equal(t, "codex_cli_rs", h.Get("originator"))
 		require.Equal(t, "codex_cli_rs/"+codexCLIVersion+" (Ubuntu 22.4.0; x86_64) xterm-256color", h.Get("user-agent"))
-		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.Empty(t, h.Get("version"), "官方 CLI 从不发送 version 头")
 		require.NotContains(t, h.Get("user-agent"), "0.125.0")
 	})
 
@@ -176,7 +176,7 @@ func TestEnforceCodexIdentityHeadersWithAccountOverrideUA(t *testing.T) {
 
 		require.Equal(t, "codex-tui", h.Get("originator"))
 		require.Equal(t, "codex-tui/0.200.1 (Mac OS X 14.0; arm64) iTerm", h.Get("user-agent"))
-		require.Equal(t, "0.200.1", h.Get("version"))
+		require.Empty(t, h.Get("version"))
 	})
 }
 
@@ -197,7 +197,7 @@ func TestEnforceCodexIdentityHeadersFollowsCanonicalResolver(t *testing.T) {
 
 	require.Equal(t, "codex_cli_rs", h.Get("originator"))
 	require.Equal(t, "codex_cli_rs/0.200.1 (Ubuntu 22.4.0; x86_64) xterm-256color", h.Get("user-agent"))
-	require.Equal(t, "0.200.1", h.Get("version"))
+	require.Empty(t, h.Get("version"))
 }
 
 // 解析器返回非法值（配置被写坏、同步到异常内容）时必须回退到内置身份，
@@ -215,7 +215,7 @@ func TestEnforceCodexIdentityHeadersRejectsInvalidCanonicalUA(t *testing.T) {
 
 	require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 	require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-	require.Equal(t, codexCLIVersion, h.Get("version"))
+	require.Empty(t, h.Get("version"))
 }
 
 // 开关是进程级快照，零值 Config（测试 / 工具手工构造，不经 viper）必须落在「强制统一开启」
@@ -257,10 +257,10 @@ func TestEnforceCodexIdentityHeaders_EnforcementDisabled(t *testing.T) {
 
 	require.Equal(t, "codex-tui", h.Get("originator"))
 	require.Equal(t, tuiUA, h.Get("user-agent"))
-	require.Equal(t, "0.145.2", h.Get("version"))
+	require.Empty(t, h.Get("version"), "关闭强制统一也不得回写 version 头")
 }
 
-// 关闭强制统一后，第三方 UA 仍整体回退为规范身份并对齐 version。
+// 关闭强制统一后，第三方 UA 仍整体回退为规范身份；version 头始终不发送。
 func TestEnforceCodexIdentityHeaders_EnforcementDisabledThirdPartyFallback(t *testing.T) {
 	SetCodexIdentityEnforcementEnabled(false)
 	t.Cleanup(func() { SetCodexIdentityEnforcementEnabled(true) })
@@ -274,7 +274,7 @@ func TestEnforceCodexIdentityHeaders_EnforcementDisabledThirdPartyFallback(t *te
 
 	require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 	require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
-	require.Equal(t, codexCLIVersion, h.Get("version"))
+	require.Empty(t, h.Get("version"))
 }
 
 // 收口必须幂等：透传等路径可能先后多次经过收口。
@@ -284,11 +284,11 @@ func TestEnforceCodexIdentityHeadersIsIdempotent(t *testing.T) {
 	h.Set("user-agent", "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)")
 
 	enforceCodexIdentityHeaders(h)
-	firstUA, firstVersion := h.Get("user-agent"), h.Get("version")
+	firstUA := h.Get("user-agent")
 	enforceCodexIdentityHeaders(h)
 
 	require.Equal(t, firstUA, h.Get("user-agent"))
-	require.Equal(t, firstVersion, h.Get("version"))
+	require.Empty(t, h.Get("version"))
 	require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
 }
 
