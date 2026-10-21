@@ -1023,6 +1023,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_ws_force_http",
 		"openai_responses_mode",
 		"openai_responses_supported",
+		// 503 流式断开自动续跑开关由转发层读取本投影判定；裁掉会导致缓存命中路径恒读到 false（"开了不生效"）。
+		service.OpenAIStream503AutoContinueExtraKey,
 		// 透传开关必须进投影：候选过滤(ListSchedulableAccounts)读的是本投影，
 		// 而 Account.IsModelSupported 靠 extra 上的这两个键短路 model_mapping 白名单。
 		// 裁掉它们，透传账号在选号阶段会退回按(常为过期的)白名单判定并被误判为
