@@ -6,9 +6,12 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 )
 
 // openAIStreamContinuationBody 把续跑 attempt 的上游 Responses SSE 流逐帧
@@ -81,6 +84,14 @@ type openAIStreamPendingDelta struct {
 	delta     string
 }
 
+// openAIStreamRewriteFailure 记录本流里第一次 sjson 改写失败的位置与原始错误。
+// 失败时帧保持原样下发（降级），收尾时只打一条 WARN（S3）。
+type openAIStreamRewriteFailure struct {
+	frameType string
+	path      string
+	err       error
+}
+
 // openAIStreamContinuationReplayer 只在 body 包装器的读 goroutine 使用。
 // snapshot 是只读的；runningText 持有“客户端最终看到的完整文本”（含第 1 次
 // 的 partial），因此终态合并时不需要再跨 goroutine 读取。
@@ -105,6 +116,10 @@ type openAIStreamContinuationReplayer struct {
 	mergedItem        json.RawMessage
 	newCompletedItems []json.RawMessage
 	sawDone           bool
+
+	// frameType 是当前正在重写的帧类型（供失败日志定位）。
+	frameType      string
+	rewriteFailure *openAIStreamRewriteFailure
 }
 
 func newOpenAIStreamContinuationReplayer(
@@ -147,6 +162,7 @@ func transformOpenAIStreamContinuation(
 
 	buffered := bufio.NewWriterSize(destination, 4*1024)
 	replayer := newOpenAIStreamContinuationReplayer(snapshot, counter, buffered)
+	defer replayer.logRewriteFailure()
 
 	writeLine := func(line string) error {
 		if _, err := buffered.WriteString(line); err != nil {
@@ -249,6 +265,7 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 	}
 
 	eventType := effectiveOpenAISSEEventType(data, upstreamEventType)
+	r.frameType = eventType
 
 	// 被映射 message 的文本 delta 需要先缓存做重叠裁剪；其余事件先 flush，
 	// 保证下游看到的事件顺序与上游一致。
@@ -295,7 +312,7 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 		if itemID != "" {
 			r.itemMap[itemID] = index
 		}
-		return r.deliverJSON(eventLine, hasEvent, setOpenAIStreamJSON(data, "output_index", index))
+		return r.deliverJSON(eventLine, hasEvent, r.setJSON(data, "output_index", index))
 
 	case "response.output_item.done":
 		item := gjson.GetBytes(data, "item")
@@ -311,11 +328,11 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 				r.mappedItemID = itemID
 			}
 			merged := r.runningText.String()
-			rewritten := setOpenAIStreamJSON(data, "output_index", r.snapshot.openTextIndex)
+			rewritten := r.setJSON(data, "output_index", r.snapshot.openTextIndex)
 			if r.snapshot.openTextItemID != "" {
-				rewritten = setOpenAIStreamJSON(rewritten, "item.id", r.snapshot.openTextItemID)
+				rewritten = r.setJSON(rewritten, "item.id", r.snapshot.openTextItemID)
 			}
-			rewritten = rewriteOpenAIStreamMessageContent(rewritten, "item.content", merged)
+			rewritten = r.rewriteMessageContent(rewritten, "item.content", merged)
 			if raw := gjson.GetBytes(rewritten, "item").Raw; raw != "" {
 				r.mergedItem = json.RawMessage(append([]byte(nil), raw...))
 			}
@@ -328,7 +345,7 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 				r.itemMap[itemID] = index
 			}
 		}
-		rewritten := setOpenAIStreamJSON(data, "output_index", index)
+		rewritten := r.setJSON(data, "output_index", index)
 		if raw := gjson.GetBytes(rewritten, "item").Raw; raw != "" {
 			r.newCompletedItems = append(r.newCompletedItems, json.RawMessage(append([]byte(nil), raw...)))
 		}
@@ -348,12 +365,12 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 
 	case "response.output_text.done":
 		if r.isMappedMessageItem(gjson.GetBytes(data, "item_id").String(), data) {
-			rewritten := setOpenAIStreamJSON(data, "output_index", r.snapshot.openTextIndex)
-			rewritten = setOpenAIStreamJSON(rewritten, "content_index", r.snapshot.openTextContent)
+			rewritten := r.setJSON(data, "output_index", r.snapshot.openTextIndex)
+			rewritten = r.setJSON(rewritten, "content_index", r.snapshot.openTextContent)
 			if r.snapshot.openTextItemID != "" {
-				rewritten = setOpenAIStreamJSON(rewritten, "item_id", r.snapshot.openTextItemID)
+				rewritten = r.setJSON(rewritten, "item_id", r.snapshot.openTextItemID)
 			}
-			rewritten = setOpenAIStreamJSON(rewritten, "text", r.runningText.String())
+			rewritten = r.setJSON(rewritten, "text", r.runningText.String())
 			return r.deliverJSON(eventLine, hasEvent, rewritten)
 		}
 		return r.deliverJSON(eventLine, hasEvent, r.rewriteNewItemIndex(data))
@@ -368,7 +385,7 @@ func (r *openAIStreamContinuationReplayer) processDataLine(
 	case "response.failed":
 		rewritten := data
 		if r.snapshot.responseID != "" && gjson.GetBytes(rewritten, "response.id").Exists() {
-			rewritten = setOpenAIStreamJSON(rewritten, "response.id", r.snapshot.responseID)
+			rewritten = r.setJSON(rewritten, "response.id", r.snapshot.responseID)
 		}
 		return r.deliverJSON(eventLine, hasEvent, rewritten)
 
@@ -455,7 +472,13 @@ func (r *openAIStreamContinuationReplayer) flushOverlap() error {
 	}
 	prefix := combined.String()
 	if len(prefix) > openAIStreamContinuationOverlapWindow {
-		prefix = prefix[:openAIStreamContinuationOverlapWindow]
+		// 窗口截断也必须落在 rune 起始字节上，否则后续按 trimmed 回放 delta
+		// 会从多字节 rune 中间切开（S2）。
+		cut := openAIStreamContinuationOverlapWindow
+		for cut > 0 && !utf8.RuneStart(prefix[cut]) {
+			cut--
+		}
+		prefix = prefix[:cut]
 	}
 	trimmed := openAIStreamContinuationOverlap(r.snapshot.partialText, prefix)
 	if trimmed > 0 && r.counter != nil {
@@ -485,27 +508,27 @@ func (r *openAIStreamContinuationReplayer) flushOverlap() error {
 }
 
 func (r *openAIStreamContinuationReplayer) rewriteMappedDeltaCoordinates(data []byte, delta string) []byte {
-	rewritten := setOpenAIStreamJSON(data, "delta", delta)
+	rewritten := r.setJSON(data, "delta", delta)
 	if r.snapshot.openTextItemID != "" {
-		rewritten = setOpenAIStreamJSON(rewritten, "item_id", r.snapshot.openTextItemID)
+		rewritten = r.setJSON(rewritten, "item_id", r.snapshot.openTextItemID)
 	}
-	rewritten = setOpenAIStreamJSON(rewritten, "output_index", r.snapshot.openTextIndex)
-	rewritten = setOpenAIStreamJSON(rewritten, "content_index", r.snapshot.openTextContent)
+	rewritten = r.setJSON(rewritten, "output_index", r.snapshot.openTextIndex)
+	rewritten = r.setJSON(rewritten, "content_index", r.snapshot.openTextContent)
 	return rewritten
 }
 
 func (r *openAIStreamContinuationReplayer) rewriteTerminal(data []byte) []byte {
 	rewritten := data
 	if r.snapshot.responseID != "" {
-		rewritten = setOpenAIStreamJSON(rewritten, "response.id", r.snapshot.responseID)
+		rewritten = r.setJSON(rewritten, "response.id", r.snapshot.responseID)
 	}
 	if r.snapshot.createdAt != 0 {
-		rewritten = setOpenAIStreamJSON(rewritten, "response.created_at", r.snapshot.createdAt)
+		rewritten = r.setJSON(rewritten, "response.created_at", r.snapshot.createdAt)
 	}
 	rewritten = r.rewriteTerminalUsage(rewritten)
 
 	if items, err := json.Marshal(r.terminalItems(data, r.runningText.String())); err == nil {
-		rewritten = setOpenAIStreamRawJSON(rewritten, "response.output", items)
+		rewritten = r.setRawJSON(rewritten, "response.output", items)
 	}
 	return rewritten
 }
@@ -552,7 +575,7 @@ func (r *openAIStreamContinuationReplayer) terminalFallbackItems(payload []byte)
 
 func (r *openAIStreamContinuationReplayer) mergedTextItem(merged string) json.RawMessage {
 	if len(r.mergedItem) > 0 {
-		return json.RawMessage(rewriteOpenAIStreamMessageContent(r.mergedItem, "content", merged))
+		return json.RawMessage(r.rewriteMessageContent(r.mergedItem, "content", merged))
 	}
 	itemID := r.snapshot.openTextItemID
 	if itemID == "" {
@@ -583,7 +606,7 @@ func (r *openAIStreamContinuationReplayer) rewriteTerminalUsage(payload []byte) 
 	if !usage.IsObject() {
 		if r.snapshot.priorUsage != (OpenAIUsage{}) {
 			if raw, err := json.Marshal(r.snapshot.priorUsage); err == nil {
-				return setOpenAIStreamRawJSON(payload, "response.usage", raw)
+				return r.setRawJSON(payload, "response.usage", raw)
 			}
 		}
 		return payload
@@ -595,27 +618,27 @@ func (r *openAIStreamContinuationReplayer) rewriteTerminalUsage(payload []byte) 
 	merged := r.snapshot.priorUsage
 	addOpenAIUsage(&merged, continuationUsage)
 
-	rewritten := setOpenAIStreamJSON(payload, "response.usage.input_tokens", merged.InputTokens)
-	rewritten = setOpenAIStreamJSON(rewritten, "response.usage.output_tokens", merged.OutputTokens)
-	rewritten = setOptionalOpenAIStreamUsage(rewritten, usage, "cache_read_input_tokens", merged.CacheReadInputTokens)
-	rewritten = setOptionalOpenAIStreamUsage(rewritten, usage, "cache_creation_input_tokens", merged.CacheCreationInputTokens)
-	rewritten = setOptionalOpenAIStreamUsage(rewritten, usage, "image_input_tokens", merged.ImageInputTokens)
-	rewritten = setOptionalOpenAIStreamUsage(rewritten, usage, "image_cache_read_tokens", merged.ImageCacheReadTokens)
-	rewritten = setOptionalOpenAIStreamUsage(rewritten, usage, "image_output_tokens", merged.ImageOutputTokens)
+	rewritten := r.setJSON(payload, "response.usage.input_tokens", merged.InputTokens)
+	rewritten = r.setJSON(rewritten, "response.usage.output_tokens", merged.OutputTokens)
+	rewritten = r.setOptionalUsage(rewritten, usage, "cache_read_input_tokens", merged.CacheReadInputTokens)
+	rewritten = r.setOptionalUsage(rewritten, usage, "cache_creation_input_tokens", merged.CacheCreationInputTokens)
+	rewritten = r.setOptionalUsage(rewritten, usage, "image_input_tokens", merged.ImageInputTokens)
+	rewritten = r.setOptionalUsage(rewritten, usage, "image_cache_read_tokens", merged.ImageCacheReadTokens)
+	rewritten = r.setOptionalUsage(rewritten, usage, "image_output_tokens", merged.ImageOutputTokens)
 	if merged.UpstreamCredit != 0 || usage.Get("upstream_credit").Exists() {
-		rewritten = setOpenAIStreamJSON(rewritten, "response.usage.upstream_credit", merged.UpstreamCredit)
+		rewritten = r.setJSON(rewritten, "response.usage.upstream_credit", merged.UpstreamCredit)
 	}
 	if usage.Get("total_tokens").Exists() {
-		rewritten = setOpenAIStreamJSON(rewritten, "response.usage.total_tokens", merged.InputTokens+merged.OutputTokens)
+		rewritten = r.setJSON(rewritten, "response.usage.total_tokens", merged.InputTokens+merged.OutputTokens)
 	}
 	return rewritten
 }
 
-func setOptionalOpenAIStreamUsage(payload []byte, source gjson.Result, field string, value int) []byte {
+func (r *openAIStreamContinuationReplayer) setOptionalUsage(payload []byte, source gjson.Result, field string, value int) []byte {
 	if value == 0 && !source.Get(field).Exists() {
 		return payload
 	}
-	return setOpenAIStreamJSON(payload, "response.usage."+field, value)
+	return r.setJSON(payload, "response.usage."+field, value)
 }
 
 func (r *openAIStreamContinuationReplayer) countDroppedReasoning() {
@@ -643,12 +666,12 @@ func (r *openAIStreamContinuationReplayer) rewriteNewItemIndex(payload []byte) [
 	if !ok {
 		return payload
 	}
-	return setOpenAIStreamJSON(payload, "output_index", index)
+	return r.setJSON(payload, "output_index", index)
 }
 
 func (r *openAIStreamContinuationReplayer) deliverJSON(eventLine string, hasEvent bool, payload []byte) error {
 	r.nextSequence++
-	rewritten := setOpenAIStreamJSON(payload, "sequence_number", r.nextSequence)
+	rewritten := r.setJSON(payload, "sequence_number", r.nextSequence)
 	return r.writeFrame(eventLine, hasEvent, rewritten)
 }
 
@@ -685,6 +708,11 @@ func openAIStreamContinuationOverlap(prior, prefix string) int {
 		limit = openAIStreamContinuationOverlapWindow
 	}
 	for k := limit; k > 0; k-- {
+		// k 是 prefix 的切分点；只接受完整 rune 边界，避免把多字节
+		// rune 切成非法 UTF-8（S2）。k == len(prefix) 由调用方保证对齐。
+		if k < len(prefix) && !utf8.RuneStart(prefix[k]) {
+			continue
+		}
 		if strings.HasSuffix(prior, prefix[:k]) {
 			return k
 		}
@@ -692,7 +720,7 @@ func openAIStreamContinuationOverlap(prior, prefix string) int {
 	return 0
 }
 
-func rewriteOpenAIStreamMessageContent(payload []byte, contentPath, text string) []byte {
+func (r *openAIStreamContinuationReplayer) rewriteMessageContent(payload []byte, contentPath, text string) []byte {
 	content := gjson.GetBytes(payload, contentPath)
 	if !content.IsArray() || len(content.Array()) == 0 {
 		raw, err := json.Marshal([]any{
@@ -705,27 +733,71 @@ func rewriteOpenAIStreamMessageContent(payload []byte, contentPath, text string)
 		if err != nil {
 			return payload
 		}
-		return setOpenAIStreamRawJSON(payload, contentPath, raw)
+		return r.setRawJSON(payload, contentPath, raw)
 	}
-	rewritten := setOpenAIStreamJSON(payload, contentPath+".0.text", text)
+	rewritten := r.setJSON(payload, contentPath+".0.text", text)
 	if gjson.GetBytes(rewritten, contentPath+".0.type").String() == "" {
-		rewritten = setOpenAIStreamJSON(rewritten, contentPath+".0.type", "output_text")
+		rewritten = r.setJSON(rewritten, contentPath+".0.type", "output_text")
 	}
 	return rewritten
 }
 
-func setOpenAIStreamJSON(payload []byte, path string, value any) []byte {
+// setJSON / setRawJSON 在 sjson 改写失败时保留原帧，并记录首个失败点（S3）。
+func (r *openAIStreamContinuationReplayer) setJSON(payload []byte, path string, value any) []byte {
+	rewritten, err := setOpenAIStreamJSON(payload, path, value)
+	if err != nil {
+		r.noteRewriteFailure(path, err)
+	}
+	return rewritten
+}
+
+func (r *openAIStreamContinuationReplayer) setRawJSON(payload []byte, path string, raw []byte) []byte {
+	rewritten, err := setOpenAIStreamRawJSON(payload, path, raw)
+	if err != nil {
+		r.noteRewriteFailure(path, err)
+	}
+	return rewritten
+}
+
+func (r *openAIStreamContinuationReplayer) noteRewriteFailure(path string, err error) {
+	if r == nil || err == nil || r.rewriteFailure != nil {
+		return
+	}
+	r.rewriteFailure = &openAIStreamRewriteFailure{
+		frameType: r.frameType,
+		path:      path,
+		err:       err,
+	}
+}
+
+// logRewriteFailure 在流收尾时打一条 WARN，含帧类型与原始错误。
+// 失败帧已按原样下发，这里只做可观测性，不改变客户端行为。
+func (r *openAIStreamContinuationReplayer) logRewriteFailure() {
+	if r == nil || r.rewriteFailure == nil {
+		return
+	}
+	failure := r.rewriteFailure
+	logger.L().Warn("gateway.openai_stream_continuation_rewrite_failed",
+		zap.String("component", "service.openai_stream_continuation"),
+		zap.String("frame_type", failure.frameType),
+		zap.String("path", failure.path),
+		zap.Error(failure.err),
+	)
+}
+
+// setOpenAIStreamJSON 返回改写后的帧与 sjson 的原始错误；调用方决定降级策略。
+func setOpenAIStreamJSON(payload []byte, path string, value any) ([]byte, error) {
 	rewritten, err := sjson.SetBytes(payload, path, value)
 	if err != nil {
-		return payload
+		return payload, err
 	}
-	return rewritten
+	return rewritten, nil
 }
 
-func setOpenAIStreamRawJSON(payload []byte, path string, raw []byte) []byte {
+func setOpenAIStreamRawJSON(payload []byte, path string, raw []byte) ([]byte, error) {
 	rewritten, err := sjson.SetRawBytes(payload, path, raw)
 	if err != nil {
-		return payload
+		return payload, err
 	}
-	return rewritten
+	return rewritten, nil
 }

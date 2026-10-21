@@ -83,9 +83,13 @@ type openAIStreamContinuationState struct {
 	currentBody    []byte
 	lastSignal     *openAIStreamContinueSignal
 
-	responseID        string
-	createdAt         int64
-	text              string
+	responseID string
+	createdAt  int64
+	// text 只保存用于续跑的 partial 文本（上限 MaxPartialBytes），追加是 O(1)。
+	// textBytes 独立累计真实字节数，即使文本被截断也继续增长，保证
+	// partial_too_large 资格判定按真实大小触发（S1）。
+	text              strings.Builder
+	textBytes         int
 	openTextItemID    string
 	openTextIndex     int
 	openTextContent   int
@@ -170,7 +174,31 @@ func (st *openAIStreamContinuationState) ObservedPartialText() string {
 	if st == nil {
 		return ""
 	}
-	return st.text
+	return st.text.String()
+}
+
+// appendText 以 O(1) 追加 delta；超过 MaxPartialBytes 后只停止存储，
+// 字节计数继续增长（用于 partial_too_large 判定）。
+func (st *openAIStreamContinuationState) appendText(delta string) {
+	if st == nil || delta == "" {
+		return
+	}
+	st.textBytes += len(delta)
+	remaining := openAIStream503AutoContinueMaxPartialBytes - st.text.Len()
+	if remaining <= 0 {
+		return
+	}
+	if len(delta) > remaining {
+		delta = delta[:remaining]
+	}
+	_, _ = st.text.WriteString(delta)
+}
+
+// resetText 用快照继承的 partial 重置累加器（只在 BeginContinuation 调用）。
+func (st *openAIStreamContinuationState) resetText(partial string) {
+	st.text.Reset()
+	_, _ = st.text.WriteString(partial)
+	st.textBytes = len(partial)
 }
 
 func (st *openAIStreamContinuationState) Continuations() int {
@@ -268,10 +296,10 @@ func (st *openAIStreamContinuationState) CanContinue(now time.Time) (bool, strin
 	if !st.firstTriggerAt.IsZero() && now.Sub(st.firstTriggerAt) > openAIStream503AutoContinueMaxElapsed {
 		return false, openAIStream503AutoContinueReasonElapsed
 	}
-	if len(st.text) > openAIStream503AutoContinueMaxPartialBytes {
+	if st.textBytes > openAIStream503AutoContinueMaxPartialBytes {
 		return false, openAIStream503AutoContinueReasonPartialTooBig
 	}
-	if !st.hasOpenText || len(st.inProgressNonText) > 0 || st.sawRefusal || st.sawImageOutput {
+	if !st.HasOpenTextItem() || st.HasInProgressNonText() || st.SawRefusal() || st.SawImageOutput() {
 		return false, openAIStream503AutoContinueReasonIneligibleOutput
 	}
 	return true, ""
@@ -293,7 +321,7 @@ func (st *openAIStreamContinuationState) BeginContinuation(priorUsage OpenAIUsag
 		responseID:             st.responseID,
 		createdAt:              st.createdAt,
 		priorUsage:             priorUsage,
-		partialText:            st.text,
+		partialText:            st.text.String(),
 		openTextItemID:         st.openTextItemID,
 		openTextIndex:          st.openTextIndex,
 		openTextContent:        st.openTextContent,
@@ -307,7 +335,7 @@ func (st *openAIStreamContinuationState) BeginContinuation(priorUsage OpenAIUsag
 	st.snapshot = snapshot
 
 	// 续跑 attempt 从快照继承：文本、坐标、索引、序号。
-	st.text = snapshot.partialText
+	st.resetText(snapshot.partialText)
 	st.openTextItemID = snapshot.openTextItemID
 	st.openTextIndex = snapshot.openTextIndex
 	st.openTextContent = snapshot.openTextContent
@@ -354,7 +382,7 @@ func (s *OpenAIGatewayService) openAIStream503AutoContinueEligible(
 		return false, openAIStream503AutoContinueReasonAccount
 	}
 	if !outputStarted || cyberHit ||
-		!st.hasOpenText || st.HasInProgressNonText() || st.sawRefusal || st.sawImageOutput {
+		!st.HasOpenTextItem() || st.HasInProgressNonText() || st.SawRefusal() || st.SawImageOutput() {
 		return false, openAIStream503AutoContinueReasonIneligibleOutput
 	}
 	if !isOpenAIUpstreamCapacityShedEvent(data) {
@@ -446,7 +474,7 @@ func (s *OpenAIGatewayService) observeOpenAIStreamContinuationEvent(
 
 	case "response.output_text.delta":
 		if delta := gjson.GetBytes(data, "delta").String(); delta != "" {
-			st.text += delta
+			st.appendText(delta)
 			st.hasOpenText = true
 			if st.openTextItemID == "" {
 				st.openTextItemID = gjson.GetBytes(data, "item_id").String()
